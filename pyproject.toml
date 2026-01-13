@@ -4,23 +4,29 @@ build-backend = "hatchling.build"
 
 [project]
 name = "logctx"
-version = "0.1.0"
-description = "Context-aware structured logging for Django with ECS compliance and distributed tracing"
+version = "0.2.0"
+description = "Context-aware structured logging with ECS compliance and distributed tracing"
 readme = "README.md"
 license = {text = "Proprietary"}
 requires-python = ">=3.10"
+
+# Core dependencies (framework-agnostic)
 dependencies = [
-    "django>=4.0",
     "structlog>=24.1.0",
     "ecs-logging>=2.1.0",
     "cryptography>=41.0.0",
     "django-cid>=3.0",
-    "django-ipware>=5.0.0",
-    "sentry-sdk>=1.0.0",
 ]
 
 [project.optional-dependencies]
-auditlog = ["django-auditlog>=3.0"]
+django = [
+    "django>=4.0",
+    "django-ipware>=5.0.0",
+    "sentry-sdk>=1.0.0",
+]
+auditlog = [
+    "django-auditlog>=3.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["logctx"]

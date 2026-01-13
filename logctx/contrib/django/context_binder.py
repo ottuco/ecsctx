@@ -5,7 +5,7 @@ from cid.locals import get_cid
 from django.core.exceptions import ObjectDoesNotExist
 import structlog
 
-from logctx.structlog.processors import _tokenize
+from logctx.processors import _tokenize
 
 
 class LogContextBinder:

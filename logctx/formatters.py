@@ -1,7 +1,7 @@
 from ecs_logging import StructlogFormatter
 
 
-class OttuECSFormatter(StructlogFormatter):
+class ECSFormatter(StructlogFormatter):
     """
     Custom ECS formatter that uses ECS 1.12.0 instead of library default.
 

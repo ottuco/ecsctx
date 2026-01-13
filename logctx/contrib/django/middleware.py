@@ -15,7 +15,7 @@ from ipware import get_client_ip
 import sentry_sdk
 import structlog
 
-from logctx.context import bind_logging_context, get_trace_id, reset_logging_context
+from logctx import bind_logging_context, get_trace_id, reset_logging_context
 
 logger = structlog.get_logger(__name__)
 
@@ -24,7 +24,7 @@ class LoggingContextMiddleware(MiddlewareMixin):
     """
     Bind logging context for all requests.
 
-    Context binding: request_id → span.id, ip → client.ip, user_id → user.id
+    Context binding: request_id -> span.id, ip -> client.ip, user_id -> user.id
     Request/response logging removed - use api_logging decorator on views.
     """
 

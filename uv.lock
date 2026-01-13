@@ -258,16 +258,12 @@ wheels = [
 
 [[package]]
 name = "logctx"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
-    { name = "django", version = "5.2.10", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "django", version = "6.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "django-cid" },
-    { name = "django-ipware" },
     { name = "ecs-logging" },
-    { name = "sentry-sdk" },
     { name = "structlog" },
 ]
 
@@ -275,19 +271,25 @@ dependencies = [
 auditlog = [
     { name = "django-auditlog" },
 ]
+django = [
+    { name = "django", version = "5.2.10", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "django", version = "6.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "django-ipware" },
+    { name = "sentry-sdk" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=41.0.0" },
-    { name = "django", specifier = ">=4.0" },
+    { name = "django", marker = "extra == 'django'", specifier = ">=4.0" },
     { name = "django-auditlog", marker = "extra == 'auditlog'", specifier = ">=3.0" },
     { name = "django-cid", specifier = ">=3.0" },
-    { name = "django-ipware", specifier = ">=5.0.0" },
+    { name = "django-ipware", marker = "extra == 'django'", specifier = ">=5.0.0" },
     { name = "ecs-logging", specifier = ">=2.1.0" },
-    { name = "sentry-sdk", specifier = ">=1.0.0" },
+    { name = "sentry-sdk", marker = "extra == 'django'", specifier = ">=1.0.0" },
     { name = "structlog", specifier = ">=24.1.0" },
 ]
-provides-extras = ["auditlog"]
+provides-extras = ["django", "auditlog"]
 
 [[package]]
 name = "pycparser"

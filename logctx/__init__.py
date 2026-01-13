@@ -1,11 +1,13 @@
 """
-logctx - Context-aware structured logging for Django with ECS compliance and distributed tracing.
+logctx - Context-aware structured logging with ECS compliance and distributed tracing.
 
-This package provides:
-- Automatic context injection via middleware (request_id, user_id, ip, trace_id)
+This package provides framework-agnostic logging utilities:
+- Automatic context injection (request_id, user_id, ip, trace_id)
 - ECS-compliant output for Elasticsearch compatibility
 - PII masking via tokenization
 - W3C Trace Context support for distributed tracing
+
+For Django integration, use logctx.contrib.django.
 """
 
 from logctx.context import (
@@ -17,18 +19,17 @@ from logctx.context import (
     logging_context,
     reset_logging_context,
 )
+from logctx.ecs_validator import ecs_validator
 from logctx.enums import APIType, Entity, Event, RequestDirection
-from logctx.middleware import LoggingContextMiddleware
-from logctx.structlog.ecs_validator import ecs_validator
-from logctx.structlog.formatters import OttuECSFormatter
-from logctx.structlog.loggers import get_logger, ottu_logger
-from logctx.structlog.processors import (
+from logctx.formatters import ECSFormatter
+from logctx.processors import (
     contextvars_injector,
+    make_contextvars_injector,
     mask_sensitive_data,
     namespace_ecs_fields,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     # Context
@@ -44,15 +45,13 @@ __all__ = [
     "Event",
     "RequestDirection",
     "APIType",
-    # Middleware
-    "LoggingContextMiddleware",
-    # Structlog
-    "ottu_logger",
-    "get_logger",
+    # Formatters
+    "ECSFormatter",
+    # Processors
     "contextvars_injector",
+    "make_contextvars_injector",
     "mask_sensitive_data",
     "namespace_ecs_fields",
-    "OttuECSFormatter",
     "ecs_validator",
     # Version
     "__version__",

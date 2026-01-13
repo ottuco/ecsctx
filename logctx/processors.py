@@ -1,3 +1,10 @@
+"""
+Framework-agnostic structlog processors for ECS-compliant logging.
+
+All configuration is passed via environment variables or processor factory parameters.
+For Django integration, use logctx.contrib.django.processors which reads from settings.
+"""
+
 import base64
 import contextlib
 from functools import lru_cache
@@ -8,23 +15,14 @@ import re
 import sys
 
 from cryptography.fernet import Fernet
-from django.conf import settings
 from structlog.contextvars import get_contextvars
 
 from logctx.context import get_logging_context, get_trace_id
 
 
 def _get_app_version() -> str:
-    """Get application version from environment or settings."""
-    version = os.environ.get("APP_VERSION")
-    if version:
-        return version
-    try:
-        from django.conf import settings as django_settings
-
-        return getattr(django_settings, "APP_VERSION", "0.0.0")
-    except Exception:
-        return "0.0.0"
+    """Get application version from environment."""
+    return os.environ.get("APP_VERSION", "0.0.0")
 
 
 def _detect_service():
@@ -125,7 +123,7 @@ def namespace_ecs_fields(_logger, _method_name, event_dict):
 
     Removes flat 'level' key since StructlogFormatter sets log.level from method name.
 
-    Note: ecs.version is handled by OttuECSFormatter - setting it here doesn't work
+    Note: ecs.version is handled by ECSFormatter - setting it here doesn't work
     because ecs-logging's normalize_dict converts dotted keys to nested objects,
     then format_to_ecs adds a new flat key via setdefault.
     """
@@ -137,46 +135,63 @@ def namespace_ecs_fields(_logger, _method_name, event_dict):
     return event_dict
 
 
-def contextvars_injector(_logger, _method_name, event_dict):
+def make_contextvars_injector(merchant_id: str | None = None):
     """
-    Structlog processor that injects context from multiple sources.
+    Factory that creates a contextvars_injector processor with the given config.
 
-    Injection order (later sources don't override earlier ones):
-    1. Explicit log parameters (already in event_dict)
-    2. LoggingContext from decorators/middleware
-    3. Structlog contextvars
-    4. CID trace_id
-    5. Service metadata
+    Args:
+        merchant_id: Merchant identifier to include in logs. If None, reads from
+                     MERCHANT_ID environment variable.
     """
-    # 1. Inject from LoggingContext (decorators set this)
-    event_dict = _inject_logging_context(event_dict)
+    _merchant_id = merchant_id or os.environ.get("MERCHANT_ID")
 
-    # 2. Add trace.id from CID (parses W3C traceparent format)
-    with contextlib.suppress(Exception):
-        trace_id = get_trace_id()
-        if trace_id and "trace" not in event_dict:
-            event_dict["trace"] = {"id": trace_id}
+    def contextvars_injector(_logger, _method_name, event_dict):
+        """
+        Structlog processor that injects context from multiple sources.
 
-    # 3. Add structlog context vars (skip during early startup)
-    with contextlib.suppress(Exception):
-        context = get_contextvars()
-        if context:
-            for key, value in context.items():
-                if key not in event_dict:
-                    event_dict[key] = value
+        Injection order (later sources don't override earlier ones):
+        1. Explicit log parameters (already in event_dict)
+        2. LoggingContext from decorators/middleware
+        3. Structlog contextvars
+        4. CID trace_id
+        5. Service metadata
+        """
+        # 1. Inject from LoggingContext (decorators set this)
+        event_dict = _inject_logging_context(event_dict)
 
-    # 4. Add service metadata (always injected)
-    service_name, service_version = _detect_service()
-    event_dict["service"] = {
-        "name": service_name,
-        "version": service_version,
-    }
-    event_dict["project"] = {
-        "name": os.environ.get("PROJECT_NAME", "connect"),
-    }
-    event_dict["merchant_id"] = settings.MERCHANT_ID
+        # 2. Add trace.id from CID (parses W3C traceparent format)
+        with contextlib.suppress(Exception):
+            trace_id = get_trace_id()
+            if trace_id and "trace" not in event_dict:
+                event_dict["trace"] = {"id": trace_id}
 
-    return event_dict
+        # 3. Add structlog context vars (skip during early startup)
+        with contextlib.suppress(Exception):
+            context = get_contextvars()
+            if context:
+                for key, value in context.items():
+                    if key not in event_dict:
+                        event_dict[key] = value
+
+        # 4. Add service metadata (always injected)
+        service_name, service_version = _detect_service()
+        event_dict["service"] = {
+            "name": service_name,
+            "version": service_version,
+        }
+        event_dict["project"] = {
+            "name": os.environ.get("PROJECT_NAME", "connect"),
+        }
+        if _merchant_id:
+            event_dict["merchant_id"] = _merchant_id
+
+        return event_dict
+
+    return contextvars_injector
+
+
+# Default processor using environment variables
+contextvars_injector = make_contextvars_injector()
 
 
 # =============================================================================
@@ -235,10 +250,13 @@ SENSITIVE_KEY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Module-level Fernet instance, initialized lazily
+_FERNET_INSTANCE = None
+_FERNET_SECRET = None
 
-def _get_fernet_key() -> bytes:
-    """Derive a valid Fernet key (32 url-safe base64 bytes) from the setting."""
-    secret = getattr(settings, "LOG_TOKENIZE_SECRET", None)
+
+def _get_fernet_key(secret: str | None = None) -> bytes:
+    """Derive a valid Fernet key (32 url-safe base64 bytes) from the secret."""
     if not secret:
         secret = os.environ.get(
             "LOG_TOKENIZE_SECRET", "default-change-in-production-must-be-long"
@@ -251,14 +269,14 @@ def _get_fernet_key() -> bytes:
     return base64.urlsafe_b64encode(hasher.digest())
 
 
-_FERNET_INSTANCE = None
-
-
-def _get_fernet() -> Fernet:
+def _get_fernet(secret: str | None = None) -> Fernet:
     """Gets or creates a cached Fernet instance (Lazy Load)."""
-    global _FERNET_INSTANCE
-    if _FERNET_INSTANCE is None:
-        _FERNET_INSTANCE = Fernet(_get_fernet_key())
+    global _FERNET_INSTANCE, _FERNET_SECRET
+
+    # Re-create if secret changed
+    if _FERNET_INSTANCE is None or (secret and secret != _FERNET_SECRET):
+        _FERNET_SECRET = secret
+        _FERNET_INSTANCE = Fernet(_get_fernet_key(secret))
     return _FERNET_INSTANCE
 
 
