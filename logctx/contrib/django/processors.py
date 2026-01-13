@@ -1,25 +1,30 @@
 """
-Django-specific processor wrappers that read configuration from Django settings.
+Django-specific processor wrappers.
 
-These read Django settings lazily to avoid circular imports during Django bootstrap.
+Note: merchant_id is injected dynamically via LoggingContext.extra
+using bind_logging_context(extra={"merchant_id": "..."})
 """
+
+import contextlib
+import os
+
+from structlog.contextvars import get_contextvars
+
+from logctx.context import get_trace_id
+from logctx.processors import _detect_service, _inject_logging_context
 
 
 def contextvars_injector(_logger, _method_name, event_dict):
     """
     Structlog processor that injects context from multiple sources.
 
-    Reads MERCHANT_ID from Django settings lazily to avoid import-time
-    circular dependency issues.
+    Injection order (later sources don't override earlier ones):
+    1. Explicit log parameters (already in event_dict)
+    2. LoggingContext from decorators/middleware
+    3. Structlog contextvars
+    4. CID trace_id
+    5. Service metadata
     """
-    # Import lazily to avoid circular imports during Django settings load
-    from django.conf import settings
-
-    from logctx.context import get_trace_id
-    from logctx.processors import _detect_service, _inject_logging_context
-    from structlog.contextvars import get_contextvars
-    import contextlib
-    import os
 
     # 1. Inject from LoggingContext (decorators set this)
     event_dict = _inject_logging_context(event_dict)
@@ -47,10 +52,5 @@ def contextvars_injector(_logger, _method_name, event_dict):
     event_dict["project"] = {
         "name": os.environ.get("PROJECT_NAME", "connect"),
     }
-
-    # Read from Django settings lazily
-    merchant_id = getattr(settings, "MERCHANT_ID", None)
-    if merchant_id:
-        event_dict["merchant_id"] = merchant_id
 
     return event_dict

@@ -135,63 +135,48 @@ def namespace_ecs_fields(_logger, _method_name, event_dict):
     return event_dict
 
 
-def make_contextvars_injector(merchant_id: str | None = None):
+def contextvars_injector(_logger, _method_name, event_dict):
     """
-    Factory that creates a contextvars_injector processor with the given config.
+    Structlog processor that injects context from multiple sources.
 
-    Args:
-        merchant_id: Merchant identifier to include in logs. If None, reads from
-                     MERCHANT_ID environment variable.
+    Injection order (later sources don't override earlier ones):
+    1. Explicit log parameters (already in event_dict)
+    2. LoggingContext from decorators/middleware
+    3. Structlog contextvars
+    4. CID trace_id
+    5. Service metadata
+
+    Note: merchant_id is injected dynamically via LoggingContext.extra
+    using bind_logging_context(extra={"merchant_id": "..."})
     """
-    _merchant_id = merchant_id or os.environ.get("MERCHANT_ID")
+    # 1. Inject from LoggingContext (decorators set this)
+    event_dict = _inject_logging_context(event_dict)
 
-    def contextvars_injector(_logger, _method_name, event_dict):
-        """
-        Structlog processor that injects context from multiple sources.
+    # 2. Add trace.id from CID (parses W3C traceparent format)
+    with contextlib.suppress(Exception):
+        trace_id = get_trace_id()
+        if trace_id and "trace" not in event_dict:
+            event_dict["trace"] = {"id": trace_id}
 
-        Injection order (later sources don't override earlier ones):
-        1. Explicit log parameters (already in event_dict)
-        2. LoggingContext from decorators/middleware
-        3. Structlog contextvars
-        4. CID trace_id
-        5. Service metadata
-        """
-        # 1. Inject from LoggingContext (decorators set this)
-        event_dict = _inject_logging_context(event_dict)
+    # 3. Add structlog context vars (skip during early startup)
+    with contextlib.suppress(Exception):
+        context = get_contextvars()
+        if context:
+            for key, value in context.items():
+                if key not in event_dict:
+                    event_dict[key] = value
 
-        # 2. Add trace.id from CID (parses W3C traceparent format)
-        with contextlib.suppress(Exception):
-            trace_id = get_trace_id()
-            if trace_id and "trace" not in event_dict:
-                event_dict["trace"] = {"id": trace_id}
+    # 4. Add service metadata (always injected)
+    service_name, service_version = _detect_service()
+    event_dict["service"] = {
+        "name": service_name,
+        "version": service_version,
+    }
+    event_dict["project"] = {
+        "name": os.environ.get("PROJECT_NAME", "connect"),
+    }
 
-        # 3. Add structlog context vars (skip during early startup)
-        with contextlib.suppress(Exception):
-            context = get_contextvars()
-            if context:
-                for key, value in context.items():
-                    if key not in event_dict:
-                        event_dict[key] = value
-
-        # 4. Add service metadata (always injected)
-        service_name, service_version = _detect_service()
-        event_dict["service"] = {
-            "name": service_name,
-            "version": service_version,
-        }
-        event_dict["project"] = {
-            "name": os.environ.get("PROJECT_NAME", "connect"),
-        }
-        if _merchant_id:
-            event_dict["merchant_id"] = _merchant_id
-
-        return event_dict
-
-    return contextvars_injector
-
-
-# Default processor using environment variables
-contextvars_injector = make_contextvars_injector()
+    return event_dict
 
 
 # =============================================================================

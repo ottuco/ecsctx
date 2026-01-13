@@ -183,11 +183,28 @@ LOGGING = get_logging_config(loggers={
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MERCHANT_ID` | Merchant identifier in logs | None |
 | `LOG_TOKENIZE_SECRET` | Fernet key for PII encryption | Warning value |
 | `APP_VERSION` | Application version | "0.0.0" |
 | `SERVICE_TYPE` | Service type (app, rq, celery) | Auto-detected |
 | `PROJECT_NAME` | Project name in logs | "connect" |
+
+## Dynamic merchant_id
+
+Bind `merchant_id` dynamically per request in your middleware:
+
+```python
+from logctx import bind_logging_context
+
+# In your middleware, after identifying the tenant/merchant
+merchant_id = get_merchant_from_request(request)
+if merchant_id:
+    bind_logging_context(extra={"merchant_id": merchant_id})
+
+# All subsequent logs include this merchant_id
+logger.info("Processing payment")  # → {"merchant_id": "tenant-123", ...}
+```
+
+You can also pass it explicitly: `logger.info("msg", merchant_id="x")`
 
 ## Log Output Example
 
