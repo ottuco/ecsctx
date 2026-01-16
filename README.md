@@ -8,7 +8,7 @@ Framework-agnostic core with Django integration via `logctx.contrib.django`.
 
 This package provides:
 
-- **Automatic context injection** via middleware (request_id, user_id, ip, trace_id)
+- **Automatic context injection** via middleware (span_id, user_id, ip, trace_id)
 - **ECS 1.12.0 compliant output** for Elasticsearch/Kibana compatibility
 - **Structured logging** via structlog processors
 - **PII masking & tokenization** - Encrypt sensitive data (emails, phones, names) for ISO 27001 compliance
@@ -26,7 +26,7 @@ This package provides:
 │                          ↓                                       │
 │  2. CidMiddleware reads traceparent, stores in contextvar       │
 │                          ↓                                       │
-│  3. LoggingContextMiddleware binds request_id, user_id, ip      │
+│  3. LoggingContextMiddleware binds span_id, user_id, ip         │
 │                          ↓                                       │
 │  4. View executes, calls logger.info()                          │
 │                          ↓                                       │
@@ -232,7 +232,6 @@ You can also pass it explicitly: `logger.info("msg", merchant_id="x")`
 logctx/
 ├── __init__.py             # Core exports (framework-agnostic)
 ├── context.py              # LoggingContext, get_trace_id, bind_logging_context
-├── enums.py                # Entity, Event, RequestDirection, APIType
 ├── formatters.py           # ECSFormatter
 ├── ecs_validator.py        # ECS field validator
 ├── processors.py           # contextvars_injector, mask_sensitive_data
@@ -260,19 +259,12 @@ from logctx import (
     get_trace_id,
     build_traceparent,
 
-    # Enums
-    Entity,
-    Event,
-    RequestDirection,
-    APIType,
-
     # Formatters & Processors
     ECSFormatter,
     ecs_validator,
     contextvars_injector,
     mask_sensitive_data,
     namespace_ecs_fields,
-    make_contextvars_injector,
 )
 ```
 
@@ -311,13 +303,10 @@ import structlog
 from logctx import (
     ECSFormatter,
     ecs_validator,
+    contextvars_injector,
     mask_sensitive_data,
     namespace_ecs_fields,
-    make_contextvars_injector,
 )
-
-# Create processor with your config
-contextvars_injector = make_contextvars_injector(merchant_id="my-merchant")
 
 structlog.configure(
     processors=[

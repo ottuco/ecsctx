@@ -2,18 +2,16 @@
 Logging context management using contextvars for thread-safe, async-compatible context propagation.
 
 This module provides:
-- LoggingContext: Dataclass holding logging context (source, target, event, etc.)
+- LoggingContext: Dataclass holding logging context (span_id, user_id, ip, etc.)
 - Context variable management: get/set/reset functions
 - logging_context: Context manager for setting context within a scope
 
 ECS Field Mapping:
     Internal attributes are mapped to ECS-compliant output keys in to_dict():
-    - source/target/direction/api_type → request.* namespace
-    - event → event.action
-    - session_id/orn/reference_number → payment.* namespace
-    - request_id → span.id
+    - span_id → span.id
     - user_id → user.id
     - ip → client.ip
+    - session_id/orn/reference_number → payment.* namespace
     - pg_code → pg_code (flat)
 
     See: https://www.elastic.co/docs/reference/ecs/ecs-field-reference
@@ -22,52 +20,42 @@ ECS Field Mapping:
 import contextlib
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from cid.locals import get_cid
-
-from logctx.enums import APIType, Entity, Event, RequestDirection
-
-if TYPE_CHECKING:
-    pass
 
 
 @dataclass(frozen=False)
 class LoggingContext:
     """
-    Logging context data.
+    Logging context data aligned with ECS/OpenTelemetry standards.
 
     Internal attribute names are developer-friendly. The to_dict() method
     maps them to ECS-compliant output keys for Elasticsearch.
 
     Attributes:
-        source: Entity initiating the request (MERCHANT, PG, OTTU_CORE, etc.) → request.source
-        target: Entity receiving the request → request.target
-        event: Type of event (POST, GET, WEBHOOK, CALLBACK, etc.) → event.action
-        direction: Whether INBOUND or OUTBOUND → request.direction
-        api_type: API type (PUBLIC, PRIVATE, INTERNAL, CALLBACK) → request.api_type
-        session_id: Payment session identifier → payment.session_id
-        orn: Object Reference Number (audit log correlation) → payment.orn
-        request_id: Unique ID for this request (UUID) → span.id
+        span_id: Unique ID for this request (UUID) → span.id
         user_id: Authenticated user ID → user.id
         ip: Client IP address → client.ip
+        session_id: Payment session identifier → payment.session_id
+        orn: Object Reference Number (audit log correlation) → payment.orn
         pg_code: Payment gateway code (e.g., "knet", "mpgs") → pg_code
         reference_number: Transaction reference number → payment.reference
         extra: Additional context data (merged into root)
     """
 
-    source: "Entity | str | None" = None
-    target: "Entity | str | None" = None
-    event: "Event | str | None" = None
-    direction: "RequestDirection | str | None" = None
-    api_type: "APIType | str | None" = None
-    session_id: str | None = None
-    orn: str | None = None
-    request_id: str | None = None
+    # ECS Core Identity
+    span_id: str | None = None
     user_id: int | None = None
     ip: str | None = None
+
+    # Payment Domain (custom namespace)
+    session_id: str | None = None
+    orn: str | None = None
     pg_code: str | None = None
     reference_number: str | None = None
+
+    # Extension point
     extra: dict = field(default_factory=dict)
 
     def merge(self, **kwargs) -> "LoggingContext":
@@ -86,16 +74,11 @@ class LoggingContext:
         new_extra = {**self.extra, **kwargs.pop("extra", {})}
 
         current_values = {
-            "source": self.source,
-            "target": self.target,
-            "event": self.event,
-            "direction": self.direction,
-            "api_type": self.api_type,
-            "session_id": self.session_id,
-            "orn": self.orn,
-            "request_id": self.request_id,
+            "span_id": self.span_id,
             "user_id": self.user_id,
             "ip": self.ip,
+            "session_id": self.session_id,
+            "orn": self.orn,
             "pg_code": self.pg_code,
             "reference_number": self.reference_number,
             "extra": new_extra,
@@ -107,17 +90,15 @@ class LoggingContext:
 
         return LoggingContext(**current_values)
 
-    def to_dict(self) -> dict[str, Any]:  # noqa: PLR0912 - ECS mapping requires checking each field
+    def to_dict(self) -> dict[str, Any]:
         """
         Convert context to ECS-compliant dictionary for logging.
 
         Maps internal attributes to ECS field names:
-        - request.source, request.target, request.direction, request.api_type
-        - event.action
-        - payment.session_id, payment.orn, payment.reference
         - span.id
         - user.id
         - client.ip
+        - payment.session_id, payment.orn, payment.reference
         - pg_code (flat)
 
         Returns:
@@ -125,38 +106,15 @@ class LoggingContext:
         """
         result: dict[str, Any] = {}
 
-        # Build request.* namespace
-        request_obj: dict[str, Any] = {}
-        if self.source is not None:
-            request_obj["source"] = (
-                self.source.value if isinstance(self.source, Entity) else self.source
-            )
-        if self.target is not None:
-            request_obj["target"] = (
-                self.target.value if isinstance(self.target, Entity) else self.target
-            )
-        if self.direction is not None:
-            request_obj["direction"] = (
-                self.direction.value
-                if isinstance(self.direction, RequestDirection)
-                else self.direction
-            )
-        if self.api_type is not None:
-            request_obj["api_type"] = (
-                self.api_type.value
-                if isinstance(self.api_type, APIType)
-                else self.api_type
-            )
-        if request_obj:
-            result["request"] = request_obj
+        # ECS standard fields
+        if self.span_id is not None:
+            result["span"] = {"id": self.span_id}
 
-        # Build event.* namespace
-        if self.event is not None:
-            result["event"] = {
-                "action": (
-                    self.event.value if isinstance(self.event, Event) else self.event
-                )
-            }
+        if self.user_id is not None:
+            result["user"] = {"id": self.user_id}
+
+        if self.ip is not None:
+            result["client"] = {"ip": self.ip}
 
         # Build payment.* namespace
         payment_obj: dict[str, Any] = {}
@@ -168,16 +126,6 @@ class LoggingContext:
             payment_obj["reference"] = self.reference_number
         if payment_obj:
             result["payment"] = payment_obj
-
-        # ECS standard fields
-        if self.request_id is not None:
-            result["span"] = {"id": self.request_id}
-
-        if self.user_id is not None:
-            result["user"] = {"id": self.user_id}
-
-        if self.ip is not None:
-            result["client"] = {"ip": self.ip}
 
         # Flat fields
         if self.pg_code is not None:
@@ -236,23 +184,23 @@ class logging_context:  # noqa: N801 - lowercase for context manager consistency
     enabling proper context stacking for nested operations.
 
     Usage:
-        with logging_context(source=Entity.OTTU_CORE, target=Entity.PG):
-            # All logs within this block will have request.source/request.target set
-            logger.info("Making payment request")
+        with logging_context(session_id="abc123", pg_code="knet"):
+            # All logs within this block will have payment.session_id set
+            logger.info("Processing payment")
 
         # After exiting, previous context is restored
 
     Example with nesting:
-        # Outer context (e.g., from middleware)
-        with logging_context(source=Entity.MERCHANT, target=Entity.OTTU_CORE):
-            logger.info("Request received")  # request.source=merchant, request.target=ottu_core
+        # Outer context (e.g., from middleware with span_id, user_id)
+        with logging_context(session_id="abc123"):
+            logger.info("Request received")  # payment.session_id=abc123
 
-            # Inner context (e.g., outbound call)
-            with logging_context(source=Entity.OTTU_CORE, target=Entity.PG):
-                logger.info("Calling PG")  # request.source=ottu_core, request.target=payment_gateway
+            # Inner context (e.g., payment gateway call)
+            with logging_context(pg_code="knet"):
+                logger.info("Calling gateway")  # payment.session_id=abc123, pg_code=knet
 
             # Back to outer context
-            logger.info("Returning to merchant")  # request.source=merchant, request.target=ottu_core
+            logger.info("Continuing")  # payment.session_id=abc123
     """
 
     def __init__(self, **kwargs):
@@ -260,7 +208,7 @@ class logging_context:  # noqa: N801 - lowercase for context manager consistency
         Initialize with context fields to set.
 
         Args:
-            **kwargs: Any LoggingContext field (source, target, event, etc.)
+            **kwargs: Any LoggingContext field (span_id, user_id, ip, session_id, etc.)
         """
         self._kwargs = kwargs
         self._token: Token | None = None
@@ -364,10 +312,10 @@ def get_span_id() -> str | None:
     Get current request's span ID from logging context.
 
     Returns:
-        The request_id (UUID) set by LoggingContextMiddleware, or None
+        The span_id (UUID) set by LoggingContextMiddleware, or None
     """
     ctx = get_logging_context()
-    return ctx.request_id
+    return ctx.span_id
 
 
 def build_traceparent() -> str | None:

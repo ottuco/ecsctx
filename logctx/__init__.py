@@ -20,16 +20,14 @@ from logctx.context import (
     reset_logging_context,
 )
 from logctx.ecs_validator import ecs_validator
-from logctx.enums import APIType, Entity, Event, RequestDirection
 from logctx.formatters import ECSFormatter
 from logctx.processors import (
     contextvars_injector,
-    make_contextvars_injector,
     mask_sensitive_data,
     namespace_ecs_fields,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # Context
@@ -40,16 +38,10 @@ __all__ = [
     "reset_logging_context",
     "build_traceparent",
     "logging_context",
-    # Enums
-    "Entity",
-    "Event",
-    "RequestDirection",
-    "APIType",
     # Formatters
     "ECSFormatter",
     # Processors
     "contextvars_injector",
-    "make_contextvars_injector",
     "mask_sensitive_data",
     "namespace_ecs_fields",
     "ecs_validator",

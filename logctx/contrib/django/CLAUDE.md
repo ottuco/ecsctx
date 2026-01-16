@@ -3,7 +3,7 @@
 Django middleware and processors with lazy settings loading to avoid circular imports.
 
 ## Entry Points
-- `middleware.py` - `LoggingContextMiddleware` (binds request_id, user_id, ip)
+- `middleware.py` - `LoggingContextMiddleware` (binds span_id, user_id, ip)
 - `processors.py` - Django-aware `contextvars_injector`
 - `logging.py` - `get_logging_config()`, `setup_logging()`, presets (`RQ_LOGGERS`, `CELERY_LOGGERS`)
 

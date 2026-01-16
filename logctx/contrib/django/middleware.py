@@ -1,7 +1,7 @@
 """
 Logging context middleware for request lifecycle.
 
-Binds request_id, user_id, ip to structlog context for all log events.
+Binds span_id, user_id, ip to structlog context for all log events.
 Request/response logging is handled by the api_logging decorator.
 
 Note: trace_id is handled by CidMiddleware + structlog processor.
@@ -24,19 +24,19 @@ class LoggingContextMiddleware(MiddlewareMixin):
     """
     Bind logging context for all requests.
 
-    Context binding: request_id -> span.id, ip -> client.ip, user_id -> user.id
+    Context binding: span_id -> span.id, ip -> client.ip, user_id -> user.id
     Request/response logging removed - use api_logging decorator on views.
     """
 
     def process_request(self, request):
-        """Bind request_id and client IP to logging context."""
-        request_id = str(uuid.uuid4())
-        request._request_id = request_id
+        """Bind span_id and client IP to logging context."""
+        span_id = str(uuid.uuid4())
+        request._span_id = span_id
 
         ip, _ = get_client_ip(request)
 
         request._logging_context_token = bind_logging_context(
-            request_id=request_id,
+            span_id=span_id,
             ip=str(ip) if ip else None,
         )
 
@@ -56,7 +56,7 @@ class LoggingContextMiddleware(MiddlewareMixin):
                 reset_logging_context(token)
                 ip, _ = get_client_ip(request)
                 request._logging_context_token = bind_logging_context(
-                    request_id=request._request_id,
+                    span_id=request._span_id,
                     ip=str(ip) if ip else None,
                     user_id=user_id,
                 )
