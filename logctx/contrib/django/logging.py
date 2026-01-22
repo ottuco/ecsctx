@@ -205,6 +205,7 @@ def configure_structlog():
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
+            contextvars_injector,
             structlog.processors.add_log_level,
             structlog.stdlib.PositionalArgumentsFormatter(),
             structlog.processors.TimeStamper(fmt="iso"),
