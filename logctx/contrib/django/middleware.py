@@ -83,3 +83,4 @@ class LoggingContextMiddleware(MiddlewareMixin):
         token = getattr(request, "_logging_context_token", None)
         if token:
             reset_logging_context(token)
+            request._logging_context_token = None

@@ -171,8 +171,9 @@ def reset_logging_context(token: Token) -> None:
         token: Token returned from set_logging_context()
     """
     # Token was created in a different context (async boundary crossed)
+    # or token was already used (e.g., process_exception before process_response)
     # Context will "leak" but better than crashing
-    with contextlib.suppress(ValueError):
+    with contextlib.suppress(ValueError, RuntimeError):
         _logging_context.reset(token)
 
 
