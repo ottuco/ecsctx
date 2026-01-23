@@ -28,7 +28,7 @@ auditlog = [
     "django-auditlog>=3.0",
 ]
 rq = [
-    "rq>=2.6.1",
+    "rq>=1.16.2",
 ]
 
 [tool.hatch.build.targets.wheel]

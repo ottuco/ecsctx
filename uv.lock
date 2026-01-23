@@ -332,7 +332,7 @@ requires-dist = [
     { name = "django-cid", specifier = ">=3.0" },
     { name = "django-ipware", marker = "extra == 'django'", specifier = ">=5.0.0" },
     { name = "ecs-logging", specifier = ">=2.1.0" },
-    { name = "rq", marker = "extra == 'rq'", specifier = ">=2.6.1" },
+    { name = "rq", marker = "extra == 'rq'", specifier = ">=1.16.2" },
     { name = "sentry-sdk", marker = "extra == 'django'", specifier = ">=1.0.0" },
     { name = "structlog", specifier = ">=24.1.0" },
 ]
