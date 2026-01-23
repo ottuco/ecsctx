@@ -7,7 +7,7 @@ from web requests to RQ background jobs.
 
 from dataclasses import asdict
 from functools import wraps
-
+import uuid
 from rq import get_current_job
 
 from logctx.context import (
@@ -61,6 +61,10 @@ def with_log_context(func):
             ctx_dict = log_context_data.get("ctx", {})
             trace_id = log_context_data.get("trace_id")
 
+            # new span id for job as it will be in different container/service/space.
+            _span_id = str(uuid.uuid4())
+            ctx_dict["span_id"] = _span_id
+
             extra = ctx_dict.get("extra", {})
             if trace_id:
                 extra["trace"] = {"id": trace_id}
@@ -69,6 +73,7 @@ def with_log_context(func):
             ctx_dict["extra"] = extra
 
             ctx = LoggingContext(**ctx_dict)
+            
             token = set_logging_context(ctx)
             try:
                 return func(*args, **kwargs)
