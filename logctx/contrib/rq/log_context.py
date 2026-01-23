@@ -20,7 +20,7 @@ from logctx.context import (
 
 
 # Reserved kwarg for passing full log context to RQ jobs
-_LOG_CONTEXT_KEY = "_rq_log_context"
+LOG_CONTEXT_KEY = "_rq_log_context"
 
 
 def capture_log_context() -> dict | None:
@@ -52,7 +52,7 @@ def with_log_context(func):
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
-        log_context_data = kwargs.pop(_LOG_CONTEXT_KEY, None)
+        log_context_data = kwargs.pop(LOG_CONTEXT_KEY, None)
 
         current_job = get_current_job()
         job_id = current_job.id if current_job else None
