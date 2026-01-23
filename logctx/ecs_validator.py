@@ -46,7 +46,7 @@ ECS_RESERVED_FIELDS = frozenset({
 # Our allowed nested usage (these are OK as dicts)
 ALLOWED_NESTED = frozenset({
     "request",  # Our custom: request.source, request.target, request.direction
-    "payment",  # Our custom: payment.session_id, payment.orn
+    "payment",  # Our custom: payment.order_id, payment.orn
     "project",  # Our custom: project.name
 })
 

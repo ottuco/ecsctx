@@ -87,4 +87,4 @@ def with_log_context(func):
     return wrapper
 
 
-__all__ = ["capture_log_context", "with_log_context", "_LOG_CONTEXT_KEY"]
+__all__ = ["capture_log_context", "with_log_context", "LOG_CONTEXT_KEY"]
