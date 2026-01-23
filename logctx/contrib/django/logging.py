@@ -142,6 +142,7 @@ def get_logging_config(
                 "()": structlog.stdlib.ProcessorFormatter,
                 "processors": [
                     structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                    structlog.processors.ExceptionRenderer(),
                     ecs_validator,
                     ECSFormatter(),
                 ],
@@ -210,6 +211,7 @@ def configure_structlog():
             structlog.stdlib.PositionalArgumentsFormatter(),
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
+            structlog.processors.ExceptionRenderer(),
             structlog.processors.format_exc_info,
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
