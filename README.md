@@ -294,6 +294,38 @@ from logctx.contrib.django import (
 from logctx.contrib.django.context_binder import LogContextBinder
 ```
 
+### RQ (`logctx.contrib.rq`)
+
+## RQ Context Propagation
+
+The `logctx.contrib.rq` module provides utilities for propagating logging context from web requests to RQ background jobs.
+
+### Usage
+
+1. **Decorate your RQ jobs:**
+
+```python
+from logctx.contrib.rq import with_log_context
+
+@with_log_context
+def my_background_task(user_id, amount):
+    logger.info("Processing payment")  # Automatically has request context
+```
+
+#### Capture context when enqueuing
+
+```python
+from logctx.contrib.rq import _capture_log_context, _LOG_CONTEXT_KEY
+
+def enqueue_task():
+    context_data = _capture_log_context()
+    kwargs = {}
+    if context_data:
+        kwargs[_LOG_CONTEXT_KEY] = context_data
+    
+    queue.enqueue(my_background_task, user_id=123, amount=100, **kwargs)
+```
+
 ## Framework-Agnostic Usage
 
 For non-Django projects, use the core processors directly:

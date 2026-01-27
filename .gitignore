@@ -27,3 +27,5 @@ htmlcov/
 
 # mypy
 .mypy_cache/
+.serena/*
+

@@ -27,6 +27,10 @@ django = [
 auditlog = [
     "django-auditlog>=3.0",
 ]
+rq = [
+    "rq==1.16.2",
+]
+
 
 [tool.hatch.build.targets.wheel]
 packages = ["logctx"]

@@ -48,9 +48,9 @@ class LoggingContext:
     span_id: str | None = None
     user_id: int | None = None
     ip: str | None = None
-
-    # Payment Domain (custom namespace)
     session_id: str | None = None
+
+    # Payment Domain (custom namespace)    
     orn: str | None = None
     pg_code: str | None = None
     reference_number: str | None = None
@@ -118,8 +118,6 @@ class LoggingContext:
 
         # Build payment.* namespace
         payment_obj: dict[str, Any] = {}
-        if self.session_id is not None:
-            payment_obj["session_id"] = self.session_id
         if self.orn is not None:
             payment_obj["orn"] = self.orn
         if self.reference_number is not None:
@@ -130,6 +128,9 @@ class LoggingContext:
         # Flat fields
         if self.pg_code is not None:
             result["pg_code"] = self.pg_code
+        
+        if self.session_id is not None:
+            result["session_id"] = self.session_id
 
         # Merge extra into root
         if self.extra:

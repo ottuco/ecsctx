@@ -31,10 +31,8 @@ class LogContextBinder:
         """Extract and structure context data for logging with proper ECS namespaces."""
         context: dict[str, Any] = {"trace_id": get_cid()}
 
-        # Payment namespace: session_id, order_no
+        # Payment namespace: order_no
         payment: dict[str, Any] = {}
-        if session_id := getattr(source, "session_id", None):
-            payment["session_id"] = session_id
         if order_no := getattr(source, "order_no", None):
             payment["order_no"] = order_no
         if payment:

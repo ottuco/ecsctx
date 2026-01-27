@@ -46,11 +46,11 @@ class LoggingContextMiddleware(MiddlewareMixin):
             sentry_sdk.set_tag("trace_id", trace_id)
 
     def process_view(self, request, view_func, view_args, view_kwargs):
-        """Bind user_id to context if authenticated."""
+        """Bind user object to context if authenticated for automatic serialization."""
         if hasattr(request, "user") and request.user.is_authenticated:
-            user_id = request.user.pk
-
-            # Rebind context with user_id
+            user_obj = request.user
+            
+            # Rebind context with user object
             token = getattr(request, "_logging_context_token", None)
             if token:
                 reset_logging_context(token)
@@ -58,7 +58,7 @@ class LoggingContextMiddleware(MiddlewareMixin):
                 request._logging_context_token = bind_logging_context(
                     span_id=request._span_id,
                     ip=str(ip) if ip else None,
-                    user_id=user_id,
+                    user=user_obj,
                 )
 
     def process_response(self, request, response):

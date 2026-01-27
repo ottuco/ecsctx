@@ -7,11 +7,53 @@ using bind_logging_context(extra={"merchant_id": "..."})
 
 import contextlib
 import os
+from django.contrib.auth import get_user_model
 
 from structlog.contextvars import get_contextvars
 
 from logctx.context import get_trace_id
 from logctx.processors import _detect_service, _inject_logging_context
+
+
+def _get_django_user_model():
+    """Get the Django User model from settings."""
+    try:
+        return get_user_model()
+    except Exception:
+        # Fallback to default User model if get_user_model fails
+        from django.contrib.auth.models import User
+        return User
+
+
+def _is_django_user(obj) -> bool:
+    """Detect if object is an instance of Django User model."""
+    try:
+        user_model = _get_django_user_model()
+        return isinstance(obj, user_model)
+    except Exception:
+        return False
+
+
+def _serialize_django_user(user_obj) -> dict:
+    """Serialize Django User object to ECS-compliant format."""
+    if not _is_django_user(user_obj):
+        return user_obj
+    
+    user_data = {
+        "id": str(user_obj.pk) if hasattr(user_obj, 'pk') and user_obj.pk else None,
+    }
+    
+    # Add common Django User fields if they exist
+    optional_fields = [
+        "username", "email", "first_name", "last_name",
+    ]
+    
+    for field in optional_fields:
+        if hasattr(user_obj, field):
+            value = getattr(user_obj, field)
+            user_data[field] = value
+    
+    return user_data
 
 
 def contextvars_injector(_logger, _method_name, event_dict):
@@ -24,6 +66,7 @@ def contextvars_injector(_logger, _method_name, event_dict):
     3. Structlog contextvars
     4. CID trace_id
     5. Service metadata
+    6. Django User object serialization (NEW)
     """
 
     # 1. Inject from LoggingContext (decorators set this)
@@ -52,5 +95,11 @@ def contextvars_injector(_logger, _method_name, event_dict):
     event_dict["project"] = {
         "name": os.environ.get("PROJECT_NAME", "connect"),
     }
+
+    # 5. Serialize Django User objects
+    for key, value in event_dict.items():
+        if key == "user" and _is_django_user(value):
+            event_dict["user"] = _serialize_django_user(value)
+            break  # Only process the first user object found
 
     return event_dict
