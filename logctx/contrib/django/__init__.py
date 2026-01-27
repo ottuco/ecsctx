@@ -1,5 +1,6 @@
 """Django-specific integrations for logctx."""
 
+from logctx.contrib.django.decorators import api_logging
 from logctx.contrib.django.logging import (
     CELERY_LOGGERS,
     CELERY_LOGGERS_DEBUG,
@@ -29,4 +30,6 @@ __all__ = [
     "RQ_LOGGERS_DEBUG",
     "CELERY_LOGGERS",
     "CELERY_LOGGERS_DEBUG",
+    # Decorators
+    "api_logging",
 ]

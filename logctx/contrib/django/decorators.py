@@ -1,3 +1,10 @@
+import structlog
+from ipware import get_client_ip
+from rest_framework.response import Response
+
+logger = structlog.get_logger(__name__)
+
+
 def api_logging(view_cls):
     """
     Log INBOUND request and OUTBOUND response for DRF views.
@@ -8,7 +15,7 @@ def api_logging(view_cls):
     - Field explosion prevented by ES flattened type mapping
     """
 
-    EXCEPTION_STATUS_MAP = {
+    exception_status_map = {
         "ValidationError": 400,
         "ParseError": 400,
         "AuthenticationFailed": 401,
@@ -26,14 +33,14 @@ def api_logging(view_cls):
         """
         if response is not None:
             return response.status_code
-        
+
         if exception is not None:
-            if hasattr(exception, 'status_code'):
+            if hasattr(exception, "status_code"):
                 return exception.status_code
 
             exc_name = exception.__class__.__name__
-            if exc_name in EXCEPTION_STATUS_MAP:
-                return EXCEPTION_STATUS_MAP[exc_name]
+            if exc_name in exception_status_map:
+                return exception_status_map[exc_name]
         return 500
 
     class LoggedView(view_cls):
@@ -78,16 +85,16 @@ def api_logging(view_cls):
                 raise e
             finally:
                 # This block runs regardless of whether the view succeeded or crashed
-                exception_type = exc.__class__.__name__ if exception_instance else None
+                exception_type = exc.__class__.__name__ if exc else None
                 status_code = _resolve_status_code(response, exc)
                 self._log_outbound(request, response, status_code, exception_type)
 
             return response
-        
+
         def _log_outbound(self, request, response, status_code, exception_type=None):
             # Extract response details safely
             response_headers = dict(response.items()) if response and hasattr(response, "items") else {}
-            
+
             response_body = None
             if response and isinstance(response, Response) and hasattr(response, "data"):
                 response_body = response.data
