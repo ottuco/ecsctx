@@ -127,4 +127,5 @@ def api_logging(view_cls):
 
     LoggedView.__name__ = view_cls.__name__
     LoggedView.__module__ = view_cls.__module__
+    LoggedView.__doc__ = view_cls.__doc__
     return LoggedView
