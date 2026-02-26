@@ -25,6 +25,17 @@ from typing import Any
 from cid.locals import get_cid
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base. New values win at leaf level."""
+    result = {**base}
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 @dataclass(frozen=False)
 class LoggingContext:
     """
@@ -71,7 +82,7 @@ class LoggingContext:
         Returns:
             New LoggingContext with merged values
         """
-        new_extra = {**self.extra, **kwargs.pop("extra", {})}
+        new_extra = _deep_merge(self.extra, kwargs.pop("extra", {}))
 
         current_values = {
             "span_id": self.span_id,
