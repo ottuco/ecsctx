@@ -5,19 +5,17 @@ All configuration is passed via environment variables or processor factory param
 For Django integration, use logctx.contrib.django.processors which reads from settings.
 """
 
-import base64
 import contextlib
-from functools import lru_cache
-import hashlib
 import json
 import os
 import re
 import sys
 
-from cryptography.fernet import Fernet
 from structlog.contextvars import get_contextvars
 
 from logctx.context import get_logging_context, get_trace_id
+from logctx.pii import is_configured as _pii_configured
+from logctx.pii import tokenize as _pii_tokenize
 
 
 def _get_app_version() -> str:
@@ -33,22 +31,26 @@ def _detect_service():
     service_type = os.environ.get("SERVICE_TYPE")
     if service_type:
         if service_type == "rq":
-            import rq  # noqa: PLC0415 - Conditional import based on service type
+            # Deferred: optional dependency, absent in non-rq deployments
+            import rq  # noqa: PLC0415
 
             return "rq", rq.VERSION
         if service_type == "rqscheduler":
-            import rq_scheduler  # noqa: PLC0415 - Conditional import based on service type
+            # Deferred: optional dependency, absent in non-rq deployments
+            import rq_scheduler  # noqa: PLC0415
 
             return "rqscheduler", ".".join(map(str, rq_scheduler.VERSION))
         return service_type, _get_app_version()
 
     # Auto-detect from command line
     if any("rqworker" in arg for arg in sys.argv):
-        import rq  # noqa: PLC0415 - Conditional import based on service type
+        # Deferred: optional dependency, absent in non-rq deployments
+        import rq  # noqa: PLC0415
 
         return "rq", rq.VERSION
     if any("rqscheduler" in arg for arg in sys.argv):
-        import rq_scheduler  # noqa: PLC0415 - Conditional import based on service type
+        # Deferred: optional dependency, absent in non-rq deployments
+        import rq_scheduler  # noqa: PLC0415
 
         return "rqscheduler", ".".join(map(str, rq_scheduler.VERSION))
     return "app", _get_app_version()
@@ -220,7 +222,8 @@ SAFE_NAME_KEYS = frozenset({
 
 # Regex patterns for PII in string values
 EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
-# Phone: roughly 10-15 digits, optional +, spaces/dashes. Avoids matching timestamps/IDs often.
+# Phone: roughly 10-15 digits, optional +, spaces/dashes.
+# Avoids matching timestamps/IDs often.
 PHONE_PATTERN = re.compile(
     r"\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4,6}\b"
 )
@@ -228,69 +231,37 @@ PHONE_PATTERN = re.compile(
 # Pattern to find keys that suggest PII (Names, Contact Info) in a JSON string
 # Capture Group 1: The Key (with quotes)
 # Capture Group 2: The Value (with quotes)
-# Looks for keys containing: name, payer, billing, shipping, customer, cardholder, email, phone, mobile, tel
-# We use a broad pattern to catch variations like "Pyr_Name", "delivery_tel", "billing_email", "udf3"
+# Looks for keys containing: name, payer, billing, shipping, customer, cardholder,
+# email, phone, mobile, tel
+# We use a broad pattern to catch variations like "Pyr_Name", "delivery_tel",
+# "billing_email", "udf3"
 SENSITIVE_KEY_PATTERN = re.compile(
     r'("[\w-]*(?:name|payer|billing|shipping|customer|cardholder|email|phone|mobile|tel|contact|recipient|beneficiary|address|udf)[\w-]*")\s*:\s*("[^"]*")',
     re.IGNORECASE,
 )
 
-# Module-level Fernet instance, initialized lazily
-_FERNET_INSTANCE = None
-_FERNET_SECRET = None
+# Token prefixes for idempotency checks
+_TOKEN_PREFIXES = ("ptok:", '"ptok:')
 
 
-def _get_fernet_key(secret: str | None = None) -> bytes:
-    """Derive a valid Fernet key (32 url-safe base64 bytes) from the secret."""
-    if not secret:
-        secret = os.environ.get(
-            "LOG_TOKENIZE_SECRET", "default-change-in-production-must-be-long"
-        )
+def _tokenize(value: str, field_type: str = "generic") -> str:
+    """Tokenize a value using HMAC-SHA-256 via the PII module.
 
-    # Ensure we have 32 bytes for the key derivation
-    # We use SHA256 of the secret to get exactly 32 bytes, then base64 encode it for Fernet
-    hasher = hashlib.sha256()
-    hasher.update(secret.encode() if isinstance(secret, str) else secret)
-    return base64.urlsafe_b64encode(hasher.digest())
-
-
-def _get_fernet(secret: str | None = None) -> Fernet:
-    """Gets or creates a cached Fernet instance (Lazy Load)."""
-    global _FERNET_INSTANCE, _FERNET_SECRET
-
-    # Re-create if secret changed
-    if _FERNET_INSTANCE is None or (secret and secret != _FERNET_SECRET):
-        _FERNET_SECRET = secret
-        _FERNET_INSTANCE = Fernet(_get_fernet_key(secret))
-    return _FERNET_INSTANCE
-
-
-@lru_cache(maxsize=2048)
-def _tokenize(value: str) -> str:
-    """
-    Encrypt the value using Fernet (AES).
-    REVERSIBLE: You can decrypt this token using the project's secret key.
-    Format: 'enc_<base64>'
+    Requires PII to be configured (PII_TOKEN_KEYSET_PATH set).
     """
     if not value:
         return value
 
-    # Idempotency check: if already encrypted, return as-is
-    # Handles cases where context binder or other layers pre-masked data
-    if value.startswith(("enc_", '"enc_')):
+    # Idempotency: already tokenized
+    if value.startswith(_TOKEN_PREFIXES):
         return value
 
-    # If value is quoted (from regex match), strip quotes
+    # Handle quoted values from regex matches
     is_quoted = value.startswith('"') and value.endswith('"')
-    clean_val = value.strip('"')
+    clean_val = value.strip('"') if is_quoted else value
 
-    # Encrypt
-    token = _get_fernet().encrypt(clean_val.encode()).decode()
-
-    # Prefix to identify encrypted values easily
-    tokenized = f"enc_{token}"
-
-    return f'"{tokenized}"' if is_quoted else tokenized
+    token = _pii_tokenize(clean_val, field_type)
+    return f'"{token}"' if is_quoted else token
 
 
 def _mask_auth_value(value: str) -> str:
@@ -322,10 +293,10 @@ def _scrub_string_content(text: str) -> str:
     Scrub PII from a string using regex.
     Handles Emails, Phones, Credit Cards.
     """
-    text = EMAIL_PATTERN.sub(lambda m: _tokenize(m.group()), text)
+    text = EMAIL_PATTERN.sub(lambda m: _tokenize(m.group(), "email"), text)
     # Only scrub phones that look like phones (length check is in regex)
     # But be careful with IDs.
-    text = PHONE_PATTERN.sub(lambda m: _tokenize(m.group()), text)
+    text = PHONE_PATTERN.sub(lambda m: _tokenize(m.group(), "phone"), text)
 
     return text
 
@@ -386,6 +357,10 @@ def mask_sensitive_data(_logger, _method_name, event_dict):
     - Headers: mask Authorization/Api-Key values
     - Payload/Http: Serialize -> Regex Mask -> Deserialize
     """
+    # Skip masking entirely if PII module is not configured
+    if not _pii_configured():
+        return event_dict
+
     # Mask top-level headers
     if "headers" in event_dict and isinstance(event_dict["headers"], dict):
         event_dict["headers"] = _mask_headers(event_dict["headers"])

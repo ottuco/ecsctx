@@ -27,5 +27,6 @@ htmlcov/
 
 # mypy
 .mypy_cache/
-.serena/*
 
+# claude code local settings
+.claude/settings.local.json

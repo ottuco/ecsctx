@@ -7,12 +7,27 @@ using bind_logging_context(extra={"merchant_id": "..."})
 
 import contextlib
 import os
-from django.contrib.auth import get_user_model
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import User as _DefaultUser
 from structlog.contextvars import get_contextvars
 
 from logctx.context import get_trace_id
+from logctx.pii import configure_pii
+from logctx.pii import is_configured as _pii_configured
 from logctx.processors import _detect_service, _inject_logging_context
+
+_pii_auto_configured = False
+
+
+def _auto_configure_pii():
+    """Auto-configure PII from environment on first use."""
+    global _pii_auto_configured
+    if _pii_auto_configured or _pii_configured():
+        return
+    _pii_auto_configured = True
+    if os.environ.get("PII_TOKEN_KEYSET_PATH"):
+        configure_pii()
 
 
 def _get_django_user_model():
@@ -21,8 +36,7 @@ def _get_django_user_model():
         return get_user_model()
     except Exception:
         # Fallback to default User model if get_user_model fails
-        from django.contrib.auth.models import User
-        return User
+        return _DefaultUser
 
 
 def _is_django_user(obj) -> bool:
@@ -38,21 +52,21 @@ def _serialize_django_user(user_obj) -> dict:
     """Serialize Django User object to ECS-compliant format."""
     if not _is_django_user(user_obj):
         return user_obj
-    
+
     user_data = {
         "id": str(user_obj.pk) if hasattr(user_obj, 'pk') and user_obj.pk else None,
     }
-    
+
     # Add common Django User fields if they exist
     optional_fields = [
         "username", "email", "first_name", "last_name",
     ]
-    
+
     for field in optional_fields:
         if hasattr(user_obj, field):
             value = getattr(user_obj, field)
             user_data[field] = value
-    
+
     return user_data
 
 
@@ -68,6 +82,9 @@ def contextvars_injector(_logger, _method_name, event_dict):
     5. Service metadata
     6. Django User object serialization (NEW)
     """
+
+    # 0. Auto-configure PII from env vars on first call
+    _auto_configure_pii()
 
     # 1. Inject from LoggingContext (decorators set this)
     event_dict = _inject_logging_context(event_dict)

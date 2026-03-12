@@ -21,13 +21,15 @@ from logctx.context import (
 )
 from logctx.ecs_validator import ecs_validator
 from logctx.formatters import ECSFormatter
+from logctx.pii import configure_pii, protect, reveal, tokenize
+from logctx.pii import is_configured as pii_configured
 from logctx.processors import (
     contextvars_injector,
     mask_sensitive_data,
     namespace_ecs_fields,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     # Context
@@ -45,6 +47,12 @@ __all__ = [
     "mask_sensitive_data",
     "namespace_ecs_fields",
     "ecs_validator",
+    # PII
+    "configure_pii",
+    "pii_configured",
+    "tokenize",
+    "protect",
+    "reveal",
     # Version
     "__version__",
 ]
