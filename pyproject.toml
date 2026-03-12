@@ -7,8 +7,24 @@ name = "logctx"
 version = "0.4.0"
 description = "Context-aware structured logging with ECS compliance and distributed tracing"
 readme = "README.md"
-license = {text = "Proprietary"}
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: Django",
+    "Intended Audience :: Developers",
+]
+
+[project.urls]
+Homepage = "https://github.com/ottuco/logctx"
+Repository = "https://github.com/ottuco/logctx"
+Issues = "https://github.com/ottuco/logctx/issues"
 
 # Core dependencies (framework-agnostic)
 dependencies = [

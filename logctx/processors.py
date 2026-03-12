@@ -14,7 +14,6 @@ import sys
 from structlog.contextvars import get_contextvars
 
 from logctx.context import get_logging_context, get_trace_id
-from logctx.pii import is_configured as _pii_configured
 from logctx.pii import tokenize as _pii_tokenize
 
 
@@ -56,47 +55,75 @@ def _detect_service():
     return "app", _get_app_version()
 
 
-# ECS-compliant primary keys for log events
-# These keys are kept at root level, all others go into 'extra'
-PRIMARY_KEYS = frozenset({
-    "payload",
-    "headers",
+# ECS-compliant root allowlist for log events.
+# Keys in this set stay at root level; non-allowlisted scalars/lists go into 'extra'.
+# Non-allowlisted dicts stay at root (deliberate namespaces like customer={}).
+ROOT_ALLOWLIST = frozenset({
+    # ECS field-set objects (must be dicts)
     "http",  # ECS: http.request, http.response
     "url",  # ECS: url.path
-    "view",  # Custom: view class name
-    "event",  # ECS: action
-    "payment",  # Custom: session_id, order_no
-    "span",  # ECS: id (request_id)
-    "user",  # ECS: id
+    "event",  # ECS: event.kind, event.category, event.type, event.outcome
+    "span",  # ECS: span.id
+    "user",  # ECS: user.id
     "user_agent",  # ECS: user_agent.original
-    "client",  # ECS: ip
-    "trace",  # ECS: id (correlation ID from CID)
-    "context",
+    "client",  # ECS: client.ip
+    "trace",  # ECS: trace.id
+    "service",  # ECS: service.name, service.version
+    "error",  # ECS: error.type
+    "log",  # ECS: log.level
+    # Custom namespaces
+    "payment",  # Custom: payment.orn, payment.pg_code, payment.reference
+    "project",  # Custom: project.name
+    # structlog / ECS base scalars
+    "message",
     "timestamp",
     "level",
-    "service",
-    "project",
+    # Sanctioned flat custom IDs
     "merchant_id",
-    "pg_code",
-    "message",
+    "session_id",
+    # ECS labels (flat dict of keyword values)
+    "labels",
+    # Payload containers (for PII masking path)
+    "payload",
+    "headers",
+    # Custom scalar
+    "view",
 })
+
+# Deprecated alias for backward compatibility
+PRIMARY_KEYS = ROOT_ALLOWLIST
 
 
 def reshape_log_event(event_dict) -> dict:
-    """Reshape log event to separate primary keys from extra data."""
-    reshaped = {}
-    extra = {}
+    """Reshape log event: allowlisted keys and dicts stay at root, bare scalars/lists go into extra.
+
+    - Keys in ROOT_ALLOWLIST always stay at root.
+    - Non-allowlisted dict values stay at root (deliberate namespaces).
+    - Non-allowlisted scalars/lists are wrapped into ``extra``.
+    """
     if not isinstance(event_dict, dict):
         return event_dict
 
+    reshaped = {}
+    extra = {}
+
     for key, value in event_dict.items():
-        if key in PRIMARY_KEYS:
+        if key in ROOT_ALLOWLIST:
+            reshaped[key] = value
+        elif isinstance(value, dict):
+            # Deliberate namespaced dict stays at root
             reshaped[key] = value
         else:
             extra[key] = value
 
     if extra:
-        reshaped["extra"] = extra
+        existing_extra = reshaped.get("extra", {})
+        if isinstance(existing_extra, dict):
+            existing_extra.update(extra)
+            reshaped["extra"] = existing_extra
+        else:
+            reshaped["extra"] = extra
+
     return reshaped
 
 
@@ -121,9 +148,10 @@ def _inject_logging_context(event_dict: dict) -> dict:
 
 def namespace_ecs_fields(_logger, _method_name, event_dict):
     """
-    Handle ECS field normalization.
+    Handle ECS field normalization and reshaping.
 
-    Removes flat 'level' key since StructlogFormatter sets log.level from method name.
+    1. Removes flat 'level' key since StructlogFormatter sets log.level from method name.
+    2. Reshapes event: allowlisted/dict keys stay at root, bare scalars go into 'extra'.
 
     Note: ecs.version is handled by ECSFormatter - setting it here doesn't work
     because ecs-logging's normalize_dict converts dotted keys to nested objects,
@@ -133,6 +161,9 @@ def namespace_ecs_fields(_logger, _method_name, event_dict):
     # StructlogFormatter will set log.level correctly using the method name
     # This prevents duplication: log.level: ["info", "info"]
     event_dict.pop("level", None)
+
+    # Reshape: move non-allowlisted scalars into extra
+    event_dict = reshape_log_event(event_dict)
 
     return event_dict
 
@@ -261,9 +292,6 @@ def _tokenize(value: str, field_type: str = "generic") -> str:
     # Handle quoted values from regex matches
     is_quoted = value.startswith('"') and value.endswith('"')
     clean_val = value.strip('"') if is_quoted else value
-
-    if not _pii_configured():
-        return f'"{_REDACTED}"' if is_quoted else _REDACTED
 
     try:
         token = _pii_tokenize(clean_val, field_type)

@@ -54,6 +54,11 @@ def api_logging(view_cls):
             # Log INBOUND
             log_kwargs = {
                 "view": view_cls.__name__,
+                "event": {
+                    "kind": "event",
+                    "category": ["web"],
+                    "type": ["access"],
+                },
                 "http": {
                     "request": {
                         "method": request.method,
@@ -105,6 +110,12 @@ def api_logging(view_cls):
 
             log_payload = {
                 "view": view_cls.__name__,
+                "event": {
+                    "kind": "event",
+                    "category": ["web"],
+                    "type": ["access"],
+                    "outcome": "success" if status_code < 400 else "failure",
+                },
                 "http": {
                     "request": {"method": request.method},
                     "response": {

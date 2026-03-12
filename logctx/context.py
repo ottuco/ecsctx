@@ -11,8 +11,9 @@ ECS Field Mapping:
     - span_id → span.id
     - user_id → user.id
     - ip → client.ip
-    - session_id/orn/reference_number → payment.* namespace
-    - pg_code → pg_code (flat)
+    - orn/pg_code/reference_number → payment.* namespace
+    - session_id → session_id (flat)
+    - labels → labels (flat dict of keyword values)
 
     See: https://www.elastic.co/docs/reference/ecs/ecs-field-reference
 """
@@ -48,11 +49,12 @@ class LoggingContext:
         span_id: Unique ID for this request (UUID) → span.id
         user_id: Authenticated user ID → user.id
         ip: Client IP address → client.ip
-        session_id: Payment session identifier → payment.session_id
+        session_id: Payment session identifier → session_id (flat)
         orn: Object Reference Number (audit log correlation) → payment.orn
-        pg_code: Payment gateway code (e.g., "knet", "mpgs") → pg_code
+        pg_code: Payment gateway code (e.g., "knet", "mpgs") → payment.pg_code
         reference_number: Transaction reference number → payment.reference
         extra: Additional context data (merged into root)
+        labels: Low-cardinality keyword labels for filtering → labels
     """
 
     # ECS Core Identity
@@ -69,6 +71,9 @@ class LoggingContext:
     # Extension point
     extra: dict = field(default_factory=dict)
 
+    # Low-cardinality keyword labels for Elasticsearch filtering
+    labels: dict = field(default_factory=dict)
+
     def merge(self, **kwargs) -> "LoggingContext":
         """
         Create a new context with merged values.
@@ -83,6 +88,7 @@ class LoggingContext:
             New LoggingContext with merged values
         """
         new_extra = _deep_merge(self.extra, kwargs.pop("extra", {}))
+        new_labels = _deep_merge(self.labels, kwargs.pop("labels", {}))
 
         current_values = {
             "span_id": self.span_id,
@@ -93,6 +99,7 @@ class LoggingContext:
             "pg_code": self.pg_code,
             "reference_number": self.reference_number,
             "extra": new_extra,
+            "labels": new_labels,
         }
 
         for key, value in kwargs.items():
@@ -109,8 +116,9 @@ class LoggingContext:
         - span.id
         - user.id
         - client.ip
-        - payment.session_id, payment.orn, payment.reference
-        - pg_code (flat)
+        - payment.orn, payment.pg_code, payment.reference
+        - session_id (flat)
+        - labels (flat dict)
 
         Returns:
             Dictionary with nested ECS-compliant keys
@@ -131,17 +139,20 @@ class LoggingContext:
         payment_obj: dict[str, Any] = {}
         if self.orn is not None:
             payment_obj["orn"] = self.orn
+        if self.pg_code is not None:
+            payment_obj["pg_code"] = self.pg_code
         if self.reference_number is not None:
             payment_obj["reference"] = self.reference_number
         if payment_obj:
             result["payment"] = payment_obj
 
-        # Flat fields
-        if self.pg_code is not None:
-            result["pg_code"] = self.pg_code
-        
+        # Flat custom IDs
         if self.session_id is not None:
             result["session_id"] = self.session_id
+
+        # Labels for low-cardinality keyword filtering
+        if self.labels:
+            result["labels"] = self.labels
 
         # Merge extra into root
         if self.extra:

@@ -50,9 +50,10 @@ ALLOWED_NESTED = frozenset({
     "project",  # Our custom: project.name
 })
 
-# Fields to skip validation (structlog internals)
+# Fields to skip validation (structlog internals + custom ECS-compatible fields)
 SKIP_VALIDATION = frozenset({
     "event",  # structlog's message key (StructlogFormatter converts to 'message')
+    "labels",  # ECS labels field (flat dict of keyword values, not a nested field-set)
 })
 
 

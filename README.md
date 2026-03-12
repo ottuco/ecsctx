@@ -1,11 +1,8 @@
 # logctx
 
-Context-aware structured logging with ECS compliance and distributed tracing for Ottu services.
+Context-aware structured logging with [ECS](https://www.elastic.co/docs/reference/ecs/ecs-field-reference) compliance and [W3C Trace Context](https://www.w3.org/TR/trace-context/) distributed tracing.
 
-Framework-agnostic core with Django integration via `logctx.contrib.django`.
-
-> **Audience**: Ottu engineers integrating logctx into new or existing Django / FastAPI projects.
-> **Stack**: `structlog` + `logctx` + ECS 1.12.0 + Vector → Elasticsearch (o11y).
+Framework-agnostic core with Django, Celery, and RQ integrations.
 
 ---
 
@@ -39,9 +36,9 @@ Framework-agnostic core with Django integration via `logctx.contrib.django`.
 
 **ECS (Elastic Common Schema)** is a standard field naming convention for Elasticsearch. Instead of every team inventing their own field names (`user_name` vs `username` vs `user.name`), ECS defines a shared vocabulary: `user.id`, `client.ip`, `trace.id`, `error.message`, etc. logctx outputs ECS 1.12.0 compliant JSON.
 
-**Why you should care:** Elasticsearch creates index mappings from the first document it sees. If one service sends `error` as a string and another sends `error` as an object (`{"message": "..."}"`), Elasticsearch gets a **mapping conflict** — it can't store both in the same index. Mapping conflicts silently drop fields. Your logs look fine locally but are missing data in Kibana. This is the #1 class of bugs we've fixed across Ottu services.
+**Why you should care:** Elasticsearch creates index mappings from the first document it sees. If one service sends `error` as a string and another sends `error` as an object (`{"message": "..."}"`), Elasticsearch gets a **mapping conflict** — it can't store both in the same index. Mapping conflicts silently drop fields. Your logs look fine locally but are missing data in Kibana.
 
-**Data streams** organize our logs using the naming pattern `logs-{dataset}-{namespace}` (e.g., `logs-keyloop-production`). Elasticsearch automatically manages index lifecycle (rollover, retention, deletion) through data streams. The `dataset` comes from `PROJECT_NAME` and `namespace` from `ENVIRONMENT` — both set as environment variables in your deployment. All logs pass through a shared `common-logs` ingest pipeline on our o11y Elasticsearch instance that enforces ECS field types.
+**Data streams** organize logs using the naming pattern `logs-{dataset}-{namespace}` (e.g., `logs-myproject-production`). Elasticsearch automatically manages index lifecycle (rollover, retention, deletion) through data streams. The `dataset` comes from `PROJECT_NAME` and `namespace` from `ENVIRONMENT` — both set as environment variables in your deployment.
 
 > **Reference**: [ECS Field Reference](https://www.elastic.co/docs/reference/ecs/ecs-field-reference) — bookmark this. You'll need it when adding custom structured fields.
 
@@ -72,10 +69,10 @@ Framework-agnostic core with Django integration via `logctx.contrib.django`.
 └──────────────────────┬──────────────────────────────────────┘
                        │  HTTPS + gzip + API key auth
 ┌──────────────────────▼──────────────────────────────────────┐
-│               Elasticsearch (o11y)                           │
-│   https://o11y.ottu.dev/elasticsearch/                      │
+│               Elasticsearch                                   │
+│   https://your-elasticsearch-host/                           │
 │                                                              │
-│   Data stream: logs-keyloop-production                      │
+│   Data stream: logs-myproject-production                    │
 │   Ingest pipeline: common-logs (ECS type enforcement)       │
 │   → Kibana dashboards, alerts, search                       │
 └─────────────────────────────────────────────────────────────┘
@@ -106,7 +103,7 @@ Framework-agnostic core with Django integration via `logctx.contrib.django`.
 8. Processor chain:
    contextvars_injector → namespace_ecs_fields → mask_sensitive_data → ecs_validator
                       ↓
-9. ECS-formatted JSON → stdout → Vector → Elasticsearch (o11y)
+9. ECS-formatted JSON → stdout → Vector → Elasticsearch
 ```
 
 ### Processor Chain (Execution Order)
@@ -119,7 +116,7 @@ Framework-agnostic core with Django integration via `logctx.contrib.django`.
 4. structlog.stdlib.PositionalArgumentsFormatter()
 5. structlog.processors.CallsiteParameterAdder # func_name, lineno, pathname
 6. contextvars_injector                        # ← Injects LoggingContext + trace + service
-7. namespace_ecs_fields                        # ← Clean up flat 'level' key
+7. namespace_ecs_fields                        # ← Reshape fields + clean up flat 'level' key
 8. mask_sensitive_data                         # ← PII tokenization (HMAC/AES-GCM)
 9. ecs_validator                               # ← Warn on ECS field violations
 10. ECSFormatter                               # ← Format to ECS 1.12.0 JSON
@@ -160,17 +157,10 @@ server {
 ### 1. Install
 
 ```bash
-# With Django support
-uv add "logctx[django] @ git+https://github.com/ottuco/logctx.git"
-
-# With Django + Celery
-uv add "logctx[django,celery] @ git+https://github.com/ottuco/logctx.git"
-
-# With Django + RQ
-uv add "logctx[django,rq] @ git+https://github.com/ottuco/logctx.git"
-
-# With Django + auditlog integration
-uv add "logctx[django,auditlog] @ git+https://github.com/ottuco/logctx.git"
+pip install logctx[django]               # With Django support
+pip install logctx[django,celery]        # With Django + Celery
+pip install logctx[django,rq]            # With Django + RQ
+pip install logctx[django,auditlog]      # With Django + auditlog integration
 ```
 
 ### 2. Configure settings.py
@@ -205,7 +195,6 @@ CID_GENERATE = True
 CID_HEADER = "HTTP_TRACEPARENT"
 
 # PII is auto-configured from PII_TOKEN_KEYSET_PATH env var
-# (set by Helm chart when pii.access is enabled)
 ```
 
 ### 3. Use in your code
@@ -421,11 +410,12 @@ log.info("outer_event")        # session_id gone
 
 ### The `extra` Parameter
 
-`extra={}` contents get **merged to root** in the final JSON. There is no `extra.*` wrapper in output.
+`extra={}` contents from `LoggingContext` get **merged to root** before the processor chain runs. The `namespace_ecs_fields` processor then reshapes the event: allowlisted fields and dicts stay at root, while bare non-allowlisted scalars/lists are wrapped into an `extra` object in the final output.
 
 ```python
 bind_logging_context(extra={"merchant_id": "acme", "myapp": {"store_id": "s1"}})
-# Output JSON: {"merchant_id": "acme", "myapp": {"store_id": "s1"}, ...}
+# "merchant_id" stays at root (allowlisted flat ID)
+# "myapp" stays at root (dict = deliberate namespace)
 ```
 
 ### Deep Merge Behavior
@@ -491,7 +481,9 @@ bind_logging_context(extra={
 
 | Location | Fields | Why |
 |----------|--------|-----|
-| **Root level** | `merchant_id`, `session_id`, `pg_code` | Shared across all services |
+| **Root level (flat)** | `merchant_id`, `session_id` | Sanctioned cross-service flat IDs |
+| **Root level (labels)** | `labels.env`, `labels.region` | Low-cardinality filterable keywords via ECS `labels` |
+| **Payment namespace** | `payment.pg_code`, `payment.orn`, `payment.reference` | Payment domain fields |
 | **Service namespace** | `enterprise_id`, `store_id` (keyloop), `shop`, `reference` (shopify) | Avoids ES mapping conflicts between services |
 
 ### In Log Kwargs (Dynamic Key)
@@ -663,12 +655,16 @@ This ensures the receiving service can correlate its logs with yours under the s
 
 ## 12. PII Masking & Tokenization
 
-logctx automatically detects and protects sensitive data for **ISO 27001 compliance**. Uses two cryptographic primitives:
+logctx automatically detects and protects sensitive data in logs. The `mask_sensitive_data` processor uses regex-based scrubbing on JSON-serialized payloads to find and tokenize PII.
 
-- **HMAC-SHA-256** — Deterministic tokens (`ptok:v1:...`) for fraud correlation. Same input always produces the same token.
-- **AES-256-GCM** — Randomized ciphertext (`penc:v1:<kid>:...`) for reversible encryption when authorized decryption is needed.
+**Log processor path** (automatic via `mask_sensitive_data`):
+- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`) for fraud correlation. Same input always produces the same token.
+- When PII is not configured: detected values are replaced with `[PII_REDACTED]` — raw PII never appears in logs.
 
-Keys are delivered via mounted keyset files (Vault → ESO → K8s Secret → file mount). When PII is not configured, detected values are replaced with `[PII_REDACTED]` — raw PII never appears in logs.
+**Explicit encryption API** (standalone, NOT part of the log processor pipeline):
+- `protect()` / `reveal()` use **AES-256-GCM** for randomized ciphertext (`penc:v1:<kid>:...`) when reversible encryption is needed. Requires `PII_ACCESS=full`.
+
+Keys are delivered via mounted keyset files or fetched from Vault.
 
 ### What Gets Detected
 
@@ -708,8 +704,8 @@ PII_ENV=prod               # Environment name for domain separation (tokens diff
 
 ```bash
 PII_PROVIDER=file
-PII_TOKEN_KEYSET_PATH=/var/run/ottu/pii/token-keyset.json
-PII_REVEAL_KEYSET_PATH=/var/run/ottu/pii/reveal-keyset.json   # only if PII_ACCESS=full
+PII_TOKEN_KEYSET_PATH=/var/run/pii/token-keyset.json
+PII_REVEAL_KEYSET_PATH=/var/run/pii/reveal-keyset.json   # only if PII_ACCESS=full
 ```
 
 **Vault provider** — authenticates via AppRole and fetches keysets from KV v2:
@@ -717,11 +713,11 @@ PII_REVEAL_KEYSET_PATH=/var/run/ottu/pii/reveal-keyset.json   # only if PII_ACCE
 ```bash
 PII_PROVIDER=vault
 PII_VAULT_ADDR=https://vault.example.com
-PII_VAULT_ROLE_ID_PATH=/etc/ottu/pii/vault-role-id
-PII_VAULT_SECRET_ID_PATH=/etc/ottu/pii/vault-secret-id
+PII_VAULT_ROLE_ID_PATH=/etc/pii/vault-role-id
+PII_VAULT_SECRET_ID_PATH=/etc/pii/vault-secret-id
 PII_VAULT_TOKEN_KEYSET_PATH=secret/data/platform/pii/token-keyset
 PII_VAULT_REVEAL_KEYSET_PATH=secret/data/platform/pii/reveal-keyset  # only if PII_ACCESS=full
-PII_VAULT_CACERT_PATH=/etc/ottu/pii/vault-ca.crt   # optional, for private CA
+PII_VAULT_CACERT_PATH=/etc/pii/vault-ca.crt   # optional, for private CA
 PII_REFRESH_SECONDS=300                              # keyset refresh interval
 PII_VAULT_TIMEOUT=10                                 # HTTP timeout for Vault calls
 ```
@@ -802,25 +798,49 @@ except requests.HTTPError as e:
     })
 ```
 
-### Custom Fields Are Fine at Root Level
+### Custom Fields and the Root Allowlist
 
-Only ECS reserved names need the dict treatment. Your own fields can live at root:
+Only ECS reserved names need the dict treatment. However, the `namespace_ecs_fields` processor enforces a **root allowlist** — bare scalar/list kwargs that are not in the allowlist get automatically wrapped into an `extra` object:
+
+| Category | Fields | Behavior |
+|---|---|---|
+| ECS field-sets | `http`, `url`, `event`, `span`, `user`, `user_agent`, `client`, `trace`, `service`, `error`, `log` | Stay at root (must be dicts) |
+| Custom namespaces | `payment`, `project` | Stay at root (dicts) |
+| Sanctioned flat IDs | `merchant_id`, `session_id` | Stay at root (scalars) |
+| Labels | `labels` | Stays at root (flat dict of keyword values) |
+| Payload containers | `payload`, `headers` | Stay at root (for PII masking) |
+| Non-allowlisted dicts | Any dict kwarg (e.g., `myapp={"store_id": "s1"}`) | Stays at root (deliberate namespace) |
+| Non-allowlisted scalars | Any bare scalar kwarg | Wrapped into `extra` |
 
 ```python
-# Fine — "disclosure_pk" is not ECS-reserved
-log.info("disclosure_created", disclosure_pk=42)
+# "merchant_id" stays at root (allowlisted)
+log.info("payment_started", merchant_id="acme")
 
-# Fine — "pg_code" is not ECS-reserved
-log.info("payment_started", pg_code="knet")
+# "disclosure_pk" is not allowlisted — goes into extra.disclosure_pk
+log.info("disclosure_created", disclosure_pk=42)
 ```
 
-The `ecs_validator` processor in the chain will **warn** (not block) if you violate these rules. Watch your console during development.
+### Elasticsearch Indexing: `labels` vs `extra`
+
+- **`labels.*`**: Use for intentionally filterable, low-cardinality keywords (e.g., `labels.env`, `labels.region`). Elasticsearch indexes these as `keyword` by default under the ECS `labels` field.
+- **`extra.*`**: Non-filterable detail data. If your Elasticsearch index should not index `extra` children, map it as `flattened` or `enabled: false` in your index template.
+
+```python
+# Good: filterable metadata in labels
+bind_logging_context(labels={"env": "prod", "region": "us-east-1"})
+
+# Good: non-filterable details as bare kwargs (auto-wrapped into extra)
+log.info("payment_processed", amount=100, currency="KWD")
+# Output: {..., "extra": {"amount": 100, "currency": "KWD"}}
+```
+
+The `ecs_validator` processor will **warn** (not block) if ECS reserved fields are used as flat values. Watch your console during development.
 
 ---
 
 ## 14. Good vs Bad Practices (Hall of Mistake)
 
-Real mistakes from Ottu service git histories. Learn from them.
+Common mistakes and how to avoid them.
 
 ### Mistake #1: Using stdlib `logging` Instead of `structlog`
 
@@ -942,7 +962,7 @@ bind_logging_context(extra={
 # Output: {"my_service": {"store_id": "s1", "enterprise_id": "e1", ...}}
 ```
 
-**Rule of thumb:** Fields shared across all services (`merchant_id`, `session_id`, `pg_code`) live at root. Fields specific to one integration go under a namespace.
+**Rule of thumb:** Only `merchant_id` and `session_id` are sanctioned flat custom root fields. Payment domain fields (`pg_code`, `orn`, `reference_number`) live under `payment.*`. Use `labels` for low-cardinality filterable metadata. Fields specific to one integration go under a service namespace.
 
 ---
 
@@ -1143,11 +1163,11 @@ if err == null {
 }
 '''
 
-# Ship to Elasticsearch (o11y)
+# Ship to Elasticsearch
 [sinks.elasticsearch]
 type = "elasticsearch"
 inputs = ["parse_container_logs"]
-endpoints = ["${ES_URL:-https://o11y.ottu.dev/elasticsearch/}"]
+endpoints = ["${ES_URL:-https://your-elasticsearch-host/}"]
 api_version = "v8"
 mode = "data_stream"
 compression = "gzip"
@@ -1223,7 +1243,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - ES_API_KEY=${ES_API_KEY}
-      - ES_URL=${ES_URL:-https://o11y.ottu.dev/elasticsearch/}
+      - ES_URL=${ES_URL:-https://your-elasticsearch-host/}
       - ENVIRONMENT=${ENVIRONMENT:-dev}
       - PROJECT_NAME=${PROJECT_NAME}
     restart: unless-stopped
@@ -1242,7 +1262,7 @@ Examples:
 - `logs-event-backend-staging`
 - `logs-checkout-dev`
 
-The `common-logs` ingest pipeline on o11y enforces ECS field types, so malformed fields (e.g., flat `error` string) get flagged at ingest time.
+If you use a `common-logs` ingest pipeline, it can enforce ECS field types so malformed fields (e.g., flat `error` string) get flagged at ingest time.
 
 ---
 
@@ -1267,7 +1287,7 @@ The `common-logs` ingest pipeline on o11y enforces ECS field types, so malformed
 | `SERVICE_TYPE` | Service type: `app`, `rq`, `celery` | Auto-detected from argv | No |
 | `PROJECT_NAME` | Project name in `project.name` + Vector data stream | `"connect"` | **Yes** |
 | `ENVIRONMENT` | Environment name for Vector data stream namespace | - | **Yes** |
-| `ES_URL` | Elasticsearch endpoint | `https://o11y.ottu.dev/elasticsearch/` | **Yes (production)** |
+| `ES_URL` | Elasticsearch endpoint | `https://your-elasticsearch-host/` | **Yes (production)** |
 | `ES_API_KEY` | Elasticsearch API key for Vector auth | - | **Yes (production)** |
 
 ### .env Example
@@ -1275,12 +1295,12 @@ The `common-logs` ingest pipeline on o11y enforces ECS field types, so malformed
 ```bash
 PII_PROVIDER=file
 PII_ACCESS=tokenize
-PII_TOKEN_KEYSET_PATH=/var/run/ottu/pii/token-keyset.json
+PII_TOKEN_KEYSET_PATH=/var/run/pii/token-keyset.json
 PII_ENV=prod
 APP_VERSION=1.2.3
 PROJECT_NAME=keyloop
 ENVIRONMENT=production
-ES_URL=https://o11y.ottu.dev/elasticsearch/
+ES_URL=https://your-elasticsearch-host/
 ES_API_KEY=your-api-key-here
 ```
 
@@ -1309,7 +1329,7 @@ from logctx import (
     # Processors
     contextvars_injector,   # Injects context into log events
     mask_sensitive_data,    # PII tokenization (HMAC/AES-GCM)
-    namespace_ecs_fields,   # Clean up flat ECS fields
+    namespace_ecs_fields,   # Reshape fields + clean up flat ECS fields
     ecs_validator,          # Warn on ECS field violations
 
     # PII
@@ -1374,11 +1394,12 @@ class LoggingContext:
     span_id: str | None          # → span.id (UUID per request/task)
     user_id: int | None          # → user.id
     ip: str | None               # → client.ip
-    session_id: str | None       # → payment.session_id
+    session_id: str | None       # → session_id (flat)
     orn: str | None              # → payment.orn
-    pg_code: str | None          # → pg_code (flat, not ECS-reserved)
+    pg_code: str | None          # → payment.pg_code
     reference_number: str | None # → payment.reference
     extra: dict                  # → merged to root (deep merge)
+    labels: dict                 # → labels (flat dict of keyword values)
 ```
 
 ---
@@ -1415,16 +1436,22 @@ class LoggingContext:
   },
   "payment": {
     "orn": "ref-123",
-    "session_id": "sess-456"
+    "pg_code": "knet"
   },
+  "session_id": "sess-456",
   "merchant_id": "acme-corp",
-  "pg_code": "knet",
+  "labels": {
+    "env": "production",
+    "region": "us-east-1"
+  },
   "keyloop": {
     "enterprise_id": "ent-789",
     "store_id": "store-001"
   },
-  "amount": 100,
-  "currency": "KWD"
+  "extra": {
+    "amount": 100,
+    "currency": "KWD"
+  }
 }
 ```
 
@@ -1432,9 +1459,11 @@ class LoggingContext:
 - `trace.id` — from W3C traceparent, links across services
 - `span.id` — unique per request/task boundary
 - `user.email` — PII tokenized (HMAC-SHA-256)
-- `payment.*` — mapped from `LoggingContext` fields
+- `payment.*` — mapped from `LoggingContext` fields (`pg_code`, `orn`, `reference`)
+- `session_id` — flat root field (sanctioned custom ID)
+- `labels.*` — low-cardinality keyword metadata for Elasticsearch filtering
 - `keyloop.*` — service-namespaced fields (avoids ES collisions)
-- `merchant_id`, `pg_code` — root-level shared fields
+- `extra.*` — non-allowlisted bare scalar kwargs, auto-wrapped by `namespace_ecs_fields`
 
 ---
 
@@ -1449,8 +1478,10 @@ logctx/
 ├── ecs_validator.py           # ECS field validation (warn on violations)
 ├── pii/
 │   ├── __init__.py            # configure_pii, tokenize, protect, reveal
+│   ├── provider.py            # KeysetProvider ABC
 │   ├── crypto.py              # HMAC-SHA-256 + AES-256-GCM primitives
 │   ├── keyset.py              # FileKeysetProvider (mtime-based hot-reload)
+│   ├── vault.py               # VaultKeysetProvider (AppRole auth)
 │   └── normalize.py           # Email/phone normalization for deterministic tokens
 └── contrib/
     ├── django/
@@ -1471,24 +1502,17 @@ logctx/
 ## Installation Options
 
 ```bash
-# Core only (framework-agnostic, e.g., FastAPI)
-uv add "logctx @ git+https://github.com/ottuco/logctx.git"
-
-# Django
-uv add "logctx[django] @ git+https://github.com/ottuco/logctx.git"
-
-# Django + Celery
-uv add "logctx[django,celery] @ git+https://github.com/ottuco/logctx.git"
-
-# Django + RQ
-uv add "logctx[django,rq] @ git+https://github.com/ottuco/logctx.git"
-
-# Django + auditlog
-uv add "logctx[django,auditlog] @ git+https://github.com/ottuco/logctx.git"
+pip install logctx                       # Core only (framework-agnostic, e.g., FastAPI)
+pip install logctx[django]               # Django
+pip install logctx[django,celery]        # Django + Celery
+pip install logctx[django,rq]            # Django + RQ
+pip install logctx[django,auditlog]      # Django + auditlog
 ```
+
+Requires Python >= 3.10.
 
 ---
 
 ## License
 
-Proprietary — Ottu
+MIT. See [LICENSE](LICENSE).
