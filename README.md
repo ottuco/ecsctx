@@ -453,7 +453,7 @@ Successive calls **merge** into existing context, not replace:
 ```python
 bind_logging_context(extra={"merchant_id": "acme"})
 bind_logging_context(extra={"myapp": {"store_id": "s1"}})
-# Context now has BOTH merchant_id AND myapp.store_id
+# Context now has both: merchant_id stays at root (allowlisted), myapp goes to extra.myapp
 ```
 
 ### Three Iron Rules
