@@ -47,11 +47,14 @@ def aes_protect(
     key: bytes,
     field_type: str,
     env: str,
+    *,
+    kid: str,
 ) -> str:
-    """Encrypt with AES-256-GCM: penc:v1:<base64url(nonce+ciphertext+tag)>.
+    """Encrypt with AES-256-GCM: penc:v1:<kid>:<base64url(nonce+ct+tag)>.
 
     Each call produces different ciphertext (random nonce).
     AAD includes env and field_type for domain separation.
+    kid is embedded so reveal() can find the right key after rotation.
     """
     aad = f"{env}|{field_type}".encode()
     nonce = os.urandom(12)  # 96-bit nonce for GCM
@@ -60,12 +63,20 @@ def aes_protect(
     # nonce (12) + ciphertext + tag (16) packed together
     payload = nonce + ct
     encoded = base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
-    return f"{CIPHER_PREFIX}:v{CIPHER_VERSION}:{encoded}"
+    return f"{CIPHER_PREFIX}:v{CIPHER_VERSION}:{kid}:{encoded}"
 
 
 def _b64_pad(s: str) -> str:
     """Re-add base64 padding."""
     return s + "=" * (-len(s) % 4)
+
+
+def parse_penc_kid(ciphertext: str) -> str:
+    """Extract the kid from a penc:vN:<kid>:<payload> string."""
+    parts = ciphertext.split(":", 3)
+    if len(parts) != 4 or parts[0] != CIPHER_PREFIX:
+        raise ValueError(f"Not a valid encrypted value: {ciphertext[:20]}...")
+    return parts[2]
 
 
 def aes_reveal(
@@ -74,12 +85,12 @@ def aes_reveal(
     field_type: str,
     env: str,
 ) -> str:
-    """Decrypt a penc:vN:... value back to plaintext."""
-    parts = ciphertext.split(":", 2)
-    if len(parts) != 3 or parts[0] != CIPHER_PREFIX:
+    """Decrypt a penc:vN:<kid>:<payload> value back to plaintext."""
+    parts = ciphertext.split(":", 3)
+    if len(parts) != 4 or parts[0] != CIPHER_PREFIX:
         raise ValueError(f"Not a valid encrypted value: {ciphertext[:20]}...")
 
-    payload = base64.urlsafe_b64decode(_b64_pad(parts[2]))
+    payload = base64.urlsafe_b64decode(_b64_pad(parts[3]))
     nonce = payload[:12]
     ct = payload[12:]
     aad = f"{env}|{field_type}".encode()

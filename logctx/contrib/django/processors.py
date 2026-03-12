@@ -13,21 +13,13 @@ from django.contrib.auth.models import User as _DefaultUser
 from structlog.contextvars import get_contextvars
 
 from logctx.context import get_trace_id
-from logctx.pii import configure_pii
-from logctx.pii import is_configured as _pii_configured
+from logctx.pii import configure_pii_from_env
 from logctx.processors import _detect_service, _inject_logging_context
-
-_pii_auto_configured = False
 
 
 def _auto_configure_pii():
     """Auto-configure PII from environment on first use."""
-    global _pii_auto_configured
-    if _pii_auto_configured or _pii_configured():
-        return
-    _pii_auto_configured = True
-    if os.environ.get("PII_TOKEN_KEYSET_PATH"):
-        configure_pii()
+    configure_pii_from_env()
 
 
 def _get_django_user_model():
@@ -54,18 +46,20 @@ def _serialize_django_user(user_obj) -> dict:
         return user_obj
 
     user_data = {
-        "id": str(user_obj.pk) if hasattr(user_obj, 'pk') and user_obj.pk else None,
+        "id": str(user_obj.pk) if hasattr(user_obj, "pk") and user_obj.pk else None,
     }
 
     # Add common Django User fields if they exist
     optional_fields = [
-        "username", "email", "first_name", "last_name",
+        "username",
+        "email",
+        "first_name",
+        "last_name",
     ]
 
-    for field in optional_fields:
-        if hasattr(user_obj, field):
-            value = getattr(user_obj, field)
-            user_data[field] = value
+    for field_name in optional_fields:
+        if hasattr(user_obj, field_name):
+            user_data[field_name] = getattr(user_obj, field_name)
 
     return user_data
 

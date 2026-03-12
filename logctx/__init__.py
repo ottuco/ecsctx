@@ -21,7 +21,14 @@ from logctx.context import (
 )
 from logctx.ecs_validator import ecs_validator
 from logctx.formatters import ECSFormatter
-from logctx.pii import configure_pii, protect, reveal, tokenize
+from logctx.pii import (
+    PIIAccessDeniedError,
+    configure_pii,
+    configure_pii_from_env,
+    protect,
+    reveal,
+    tokenize,
+)
 from logctx.pii import is_configured as pii_configured
 from logctx.processors import (
     contextvars_injector,
@@ -49,10 +56,12 @@ __all__ = [
     "ecs_validator",
     # PII
     "configure_pii",
+    "configure_pii_from_env",
     "pii_configured",
     "tokenize",
     "protect",
     "reveal",
+    "PIIAccessDeniedError",
     # Version
     "__version__",
 ]

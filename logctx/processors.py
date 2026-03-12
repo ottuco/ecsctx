@@ -242,17 +242,19 @@ SENSITIVE_KEY_PATTERN = re.compile(
 
 # Token prefixes for idempotency checks
 _TOKEN_PREFIXES = ("ptok:", '"ptok:')
+_REDACTED = "[PII_REDACTED]"
 
 
 def _tokenize(value: str, field_type: str = "generic") -> str:
     """Tokenize a value using HMAC-SHA-256 via the PII module.
 
-    Requires PII to be configured (PII_TOKEN_KEYSET_PATH set).
+    If PII is not configured, returns [PII_REDACTED] to prevent
+    raw PII from appearing in logs.
     """
     if not value:
         return value
 
-    # Idempotency: already tokenized
+    # Idempotency: already tokenized or redacted
     if value.startswith(_TOKEN_PREFIXES):
         return value
 
@@ -260,7 +262,13 @@ def _tokenize(value: str, field_type: str = "generic") -> str:
     is_quoted = value.startswith('"') and value.endswith('"')
     clean_val = value.strip('"') if is_quoted else value
 
-    token = _pii_tokenize(clean_val, field_type)
+    if not _pii_configured():
+        return f'"{_REDACTED}"' if is_quoted else _REDACTED
+
+    try:
+        token = _pii_tokenize(clean_val, field_type)
+    except Exception:
+        return f'"{_REDACTED}"' if is_quoted else _REDACTED
     return f'"{token}"' if is_quoted else token
 
 
@@ -357,10 +365,6 @@ def mask_sensitive_data(_logger, _method_name, event_dict):
     - Headers: mask Authorization/Api-Key values
     - Payload/Http: Serialize -> Regex Mask -> Deserialize
     """
-    # Skip masking entirely if PII module is not configured
-    if not _pii_configured():
-        return event_dict
-
     # Mask top-level headers
     if "headers" in event_dict and isinstance(event_dict["headers"], dict):
         event_dict["headers"] = _mask_headers(event_dict["headers"])

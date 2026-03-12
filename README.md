@@ -120,7 +120,7 @@ Framework-agnostic core with Django integration via `logctx.contrib.django`.
 5. structlog.processors.CallsiteParameterAdder # func_name, lineno, pathname
 6. contextvars_injector                        # ← Injects LoggingContext + trace + service
 7. namespace_ecs_fields                        # ← Clean up flat 'level' key
-8. mask_sensitive_data                         # ← PII encryption (Fernet)
+8. mask_sensitive_data                         # ← PII tokenization (HMAC/AES-GCM)
 9. ecs_validator                               # ← Warn on ECS field violations
 10. ECSFormatter                               # ← Format to ECS 1.12.0 JSON
 ```
@@ -204,8 +204,8 @@ INSTALLED_APPS = [
 CID_GENERATE = True
 CID_HEADER = "HTTP_TRACEPARENT"
 
-# PII tokenization secret (REQUIRED in production)
-LOG_TOKENIZE_SECRET = env.str("LOG_TOKENIZE_SECRET")
+# PII is auto-configured from PII_TOKEN_KEYSET_PATH env var
+# (set by Helm chart when pii.access is enabled)
 ```
 
 ### 3. Use in your code
@@ -663,15 +663,20 @@ This ensures the receiving service can correlate its logs with yours under the s
 
 ## 12. PII Masking & Tokenization
 
-logctx automatically detects and encrypts sensitive data for **ISO 27001 compliance**. Uses **Fernet (AES-128) reversible encryption** — tokenized values can be decrypted with your secret key for authorized investigations.
+logctx automatically detects and protects sensitive data for **ISO 27001 compliance**. Uses two cryptographic primitives:
+
+- **HMAC-SHA-256** — Deterministic tokens (`ptok:v1:...`) for fraud correlation. Same input always produces the same token.
+- **AES-256-GCM** — Randomized ciphertext (`penc:v1:<kid>:...`) for reversible encryption when authorized decryption is needed.
+
+Keys are delivered via mounted keyset files (Vault → ESO → K8s Secret → file mount). When PII is not configured, detected values are replaced with `[PII_REDACTED]` — raw PII never appears in logs.
 
 ### What Gets Detected
 
 | Type | Detection | Output |
 |------|-----------|--------|
-| **Emails** | Regex: `user@domain.com` patterns | `"enc_gAAAAABl..."` |
-| **Phone numbers** | Regex: 10-15 digits with +/spaces/dashes | `"enc_gAAAAABl..."` |
-| **Names** | Keys containing: `name`, `customer`, `payer`, `billing`, `shipping`, `cardholder`, `email`, `phone`, `mobile`, `contact`, `recipient`, `beneficiary`, `address`, `udf` | `"enc_gAAAAABl..."` |
+| **Emails** | Regex: `user@domain.com` patterns | `"ptok:v1:KeND..."` |
+| **Phone numbers** | Regex: 10-15 digits with +/spaces/dashes | `"ptok:v1:x8Fp..."` |
+| **Names** | Keys containing: `name`, `customer`, `payer`, `billing`, `shipping`, `cardholder`, `email`, `phone`, `mobile`, `contact`, `recipient`, `beneficiary`, `address`, `udf` | `"ptok:v1:..."` |
 | **Auth headers** | `authorization`, `api-key`, `x-api-key` keys | `"Bearer ****<last4>"` (masked, not tokenized) |
 
 ### Whitelist (NOT Masked)
@@ -687,29 +692,36 @@ installation_name, event_name, customer_id, id, pk
 
 ### Configuration
 
-```bash
-# REQUIRED in production — used as Fernet encryption key
-LOG_TOKENIZE_SECRET=your-secure-secret-here
+PII keyset files are mounted by the infrastructure (Vault → ESO → K8s Secret). Set environment variables to point to them:
 
-# Default (DO NOT use in production):
-# "default-change-in-production-must-be-long"
+```bash
+# REQUIRED — path to the HMAC token keyset file
+PII_TOKEN_KEYSET_PATH=/var/run/ottu/pii/token-keyset.json
+
+# OPTIONAL — path to the AES-GCM reveal keyset file (for services that need decrypt)
+PII_REVEAL_KEYSET_PATH=/var/run/ottu/pii/reveal-keyset.json
+
+# Environment name for domain separation (tokens differ across envs)
+PII_ENV=dev
 ```
+
+Django services auto-configure from these env vars on first log call. Non-Django services call `configure_pii()` at startup.
 
 ### How It Works
 
 1. Log event dict is serialized to JSON string
-2. Sensitive keys are found and their values tokenized (Fernet encrypted)
+2. Sensitive keys are found and their values tokenized (HMAC-SHA-256)
 3. String content is scanned for email/phone patterns and tokenized
 4. Auth header values are masked (truncated, not encrypted)
 5. JSON is parsed back to dict
-6. Results are LRU-cached (2048 entries) — same input → same output within process
+6. Input is normalized before tokenization (emails lowercased, phones to E.164)
 
 ### Example Output
 
 ```json
 {
-  "customer_name": "enc_gAAAAABl...",
-  "email": "enc_gAAAAABl...",
+  "customer_name": "ptok:v1:KeNDkDCY0cXCg3VJU4xf...",
+  "email": "ptok:v1:x8FpQm2kL9nR7vBwYzA3...",
   "amount": 100,
   "gateway_name": "knet"
 }
@@ -1037,8 +1049,8 @@ Expected stdout:
 ```json
 {
   "message": "test_pii",
-  "customer_name": "enc_gAAAAABl...",
-  "email": "enc_gAAAAABl...",
+  "customer_name": "ptok:v1:...",
+  "email": "ptok:v1:...",
   "amount": 100
 }
 ```
@@ -1080,7 +1092,7 @@ docker compose logs vector
 2. Select the data stream: `logs-{PROJECT_NAME}-{ENVIRONMENT}`
 3. Search: `message: "test_pii"`
 4. Verify fields are nested correctly (`trace.id`, not flat `trace_id`)
-5. Verify PII is tokenized (`enc_...`, not plain text)
+5. Verify PII is tokenized (`ptok:v1:...`, not plain text)
 
 ---
 
@@ -1217,7 +1229,9 @@ The `common-logs` ingest pipeline on o11y enforces ECS field types, so malformed
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `LOG_TOKENIZE_SECRET` | Fernet encryption key for PII masking | `"default-change-in-production-must-be-long"` | **Yes (production)** |
+| `PII_TOKEN_KEYSET_PATH` | Path to HMAC token keyset file | — | **Yes (production)** |
+| `PII_REVEAL_KEYSET_PATH` | Path to AES-GCM reveal keyset file | — | Only for services needing decrypt |
+| `PII_ENV` | Environment name for token domain separation | `"unknown"` | Recommended |
 | `APP_VERSION` | Application version in `service.version` | `"0.0.0"` | No |
 | `SERVICE_TYPE` | Service type: `app`, `rq`, `celery` | Auto-detected from argv | No |
 | `PROJECT_NAME` | Project name in `project.name` + Vector data stream | `"connect"` | **Yes** |
@@ -1228,7 +1242,8 @@ The `common-logs` ingest pipeline on o11y enforces ECS field types, so malformed
 ### .env Example
 
 ```bash
-LOG_TOKENIZE_SECRET=your-secure-fernet-key-here
+PII_TOKEN_KEYSET_PATH=/var/run/ottu/pii/token-keyset.json
+PII_ENV=prod
 APP_VERSION=1.2.3
 PROJECT_NAME=keyloop
 ENVIRONMENT=production
@@ -1260,9 +1275,16 @@ from logctx import (
 
     # Processors
     contextvars_injector,   # Injects context into log events
-    mask_sensitive_data,    # PII tokenization (Fernet)
+    mask_sensitive_data,    # PII tokenization (HMAC/AES-GCM)
     namespace_ecs_fields,   # Clean up flat ECS fields
     ecs_validator,          # Warn on ECS field violations
+
+    # PII
+    configure_pii,          # Configure PII keyset provider
+    pii_configured,         # Check if PII is configured
+    tokenize,               # HMAC-SHA-256 deterministic token
+    protect,                # AES-256-GCM reversible encryption
+    reveal,                 # Decrypt penc:vN:... values
 )
 ```
 
@@ -1346,7 +1368,7 @@ class LoggingContext:
   "user": {
     "id": 42,
     "username": "merchant_admin",
-    "email": "enc_gAAAAABl..."
+    "email": "ptok:v1:..."
   },
   "client": {
     "ip": "192.168.1.1"
@@ -1376,7 +1398,7 @@ class LoggingContext:
 **Field annotations:**
 - `trace.id` — from W3C traceparent, links across services
 - `span.id` — unique per request/task boundary
-- `user.email` — PII tokenized (Fernet encrypted)
+- `user.email` — PII tokenized (HMAC-SHA-256)
 - `payment.*` — mapped from `LoggingContext` fields
 - `keyloop.*` — service-namespaced fields (avoids ES collisions)
 - `merchant_id`, `pg_code` — root-level shared fields
@@ -1392,6 +1414,11 @@ logctx/
 ├── processors.py              # contextvars_injector, mask_sensitive_data
 ├── formatters.py              # ECSFormatter (v1.12.0)
 ├── ecs_validator.py           # ECS field validation (warn on violations)
+├── pii/
+│   ├── __init__.py            # configure_pii, tokenize, protect, reveal
+│   ├── crypto.py              # HMAC-SHA-256 + AES-256-GCM primitives
+│   ├── keyset.py              # FileKeysetProvider (mtime-based hot-reload)
+│   └── normalize.py           # Email/phone normalization for deterministic tokens
 └── contrib/
     ├── django/
     │   ├── __init__.py        # Django exports

@@ -13,6 +13,8 @@ mounted file by ESO.  Structure::
     }
 """
 
+from __future__ import annotations
+
 import base64
 import json
 import os
@@ -86,7 +88,13 @@ class FileKeysetProvider:
         default_factory=threading.Lock, init=False, repr=False
     )
 
-    def _maybe_reload(self) -> None:
+    @property
+    def access_mode(self) -> str:
+        """Return 'full' if reveal keyset is configured, else 'tokenize'."""
+        return "full" if self.reveal_keyset_path else "tokenize"
+
+    def refresh_if_needed(self) -> None:
+        """Check file mtimes and reload keysets if changed."""
         now = time.monotonic()
         if (
             now - self._last_check < self.stale_seconds
@@ -117,7 +125,7 @@ class FileKeysetProvider:
                     self._reveal_mtime = reveal_mtime
 
     def get_token_keyset(self) -> Keyset:
-        self._maybe_reload()
+        self.refresh_if_needed()
         if self._token_keyset is None:
             raise RuntimeError(
                 f"Failed to load token keyset from {self.token_keyset_path}"
@@ -126,10 +134,13 @@ class FileKeysetProvider:
 
     def get_reveal_keyset(self) -> Keyset:
         if self.reveal_keyset_path is None:
-            raise RuntimeError(
-                "Reveal keyset not configured. This provider has tokenize-only access."
+            from logctx.pii import PIIAccessDeniedError  # noqa: PLC0415 - Delayed import to prevent circular dependency with logctx.pii.__init__
+
+            raise PIIAccessDeniedError(
+                "Reveal keyset not configured. "
+                "Set PII_ACCESS=full and provide a reveal keyset path."
             )
-        self._maybe_reload()
+        self.refresh_if_needed()
         if self._reveal_keyset is None:
             raise RuntimeError(
                 f"Failed to load reveal keyset from {self.reveal_keyset_path}"

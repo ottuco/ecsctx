@@ -1,9 +1,9 @@
 from typing import Any
 
+import structlog
 from auditlog.models import LogEntry
 from cid.locals import get_cid
 from django.core.exceptions import ObjectDoesNotExist
-import structlog
 
 from logctx.processors import _tokenize
 
@@ -48,10 +48,10 @@ class LogContextBinder:
         # PII: Pre-mask to avoid triple-processing cost
 
         if email := getattr(source, "customer_email", None):
-            customer["email"] = _tokenize(email)
+            customer["email"] = _tokenize(email, "email")
 
         if phone := getattr(source, "customer_phone", None):
-            customer["phone"] = _tokenize(phone)
+            customer["phone"] = _tokenize(phone, "phone")
 
         if image := getattr(source, "customer_image", None):
             customer["image"] = image
