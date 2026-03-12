@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from logctx.pii.keyset import Keyset
+from ecsctx.pii.keyset import Keyset
 
 
 class KeysetProvider(ABC):

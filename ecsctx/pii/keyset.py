@@ -134,7 +134,7 @@ class FileKeysetProvider:
 
     def get_reveal_keyset(self) -> Keyset:
         if self.reveal_keyset_path is None:
-            from logctx.pii import PIIAccessDeniedError  # noqa: PLC0415 - Delayed import to prevent circular dependency with logctx.pii.__init__
+            from ecsctx.pii import PIIAccessDeniedError  # noqa: PLC0415 - Delayed import to prevent circular dependency with ecsctx.pii.__init__
 
             raise PIIAccessDeniedError(
                 "Reveal keyset not configured. "

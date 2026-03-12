@@ -2,17 +2,21 @@
 Pre-built Django LOGGING configuration for plug-and-play setup.
 
 Usage in settings.py:
-    from logctx.contrib.django.logging import get_logging_config, setup_logging
+    from ecsctx.contrib.django.logging import get_logging_config, setup_logging
     LOGGING = get_logging_config()
     setup_logging()
 
     # With RQ task queue:
-    from logctx.contrib.django.logging import get_logging_config, setup_logging, RQ_LOGGERS
+    from ecsctx.contrib.django.logging import (
+        get_logging_config, setup_logging, RQ_LOGGERS,
+    )
     LOGGING = get_logging_config(loggers=RQ_LOGGERS)
     setup_logging()
 
     # With Celery:
-    from logctx.contrib.django.logging import get_logging_config, setup_logging, CELERY_LOGGERS
+    from ecsctx.contrib.django.logging import (
+        get_logging_config, setup_logging, CELERY_LOGGERS,
+    )
     LOGGING = get_logging_config(loggers=CELERY_LOGGERS)
     setup_logging()
 
@@ -23,13 +27,19 @@ Usage in settings.py:
     })
 """
 
+from __future__ import annotations
+
 import logging
 
 import structlog
 
-from logctx import ECSFormatter, ecs_validator, mask_sensitive_data, namespace_ecs_fields
-from logctx.contrib.django.processors import contextvars_injector
-
+from ecsctx import (
+    ECSFormatter,
+    ecs_validator,
+    mask_sensitive_data,
+    namespace_ecs_fields,
+)
+from ecsctx.contrib.django.processors import contextvars_injector
 
 # =============================================================================
 # LOGGER PRESETS
@@ -105,7 +115,8 @@ def get_logging_config(
         root_level: Log level for root logger (default: INFO)
         handler_level: Minimum level for console handler (default: DEBUG)
         use_cid_filter: Whether to add CID correlation filter (default: True)
-        loggers: Additional logger configurations to merge (use presets like RQ_LOGGERS, CELERY_LOGGERS)
+        loggers: Additional logger configurations to merge (use presets like
+            RQ_LOGGERS, CELERY_LOGGERS)
 
     Returns:
         Complete LOGGING dict ready to use in Django settings.
@@ -143,6 +154,8 @@ def get_logging_config(
                 "processors": [
                     structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                     structlog.processors.ExceptionRenderer(),
+                    namespace_ecs_fields,
+                    mask_sensitive_data,
                     ecs_validator,
                     ECSFormatter(),
                 ],

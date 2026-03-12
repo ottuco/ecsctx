@@ -1,7 +1,7 @@
-"""Django-specific integrations for logctx."""
+"""Django-specific integrations for ecsctx."""
 
-from logctx.contrib.django.decorators import api_logging
-from logctx.contrib.django.logging import (
+from ecsctx.contrib.django.decorators import api_logging
+from ecsctx.contrib.django.logging import (
     CELERY_LOGGERS,
     CELERY_LOGGERS_DEBUG,
     RQ_LOGGERS,
@@ -10,11 +10,11 @@ from logctx.contrib.django.logging import (
     get_logging_config,
     setup_logging,
 )
-from logctx.contrib.django.middleware import LoggingContextMiddleware
-from logctx.contrib.django.processors import contextvars_injector
+from ecsctx.contrib.django.middleware import LoggingContextMiddleware
+from ecsctx.contrib.django.processors import contextvars_injector
 
 # LogContextBinder is not imported here to avoid circular imports during Django setup.
-# Import it explicitly: from logctx.contrib.django.context_binder import LogContextBinder
+# Import it explicitly: from ecsctx.contrib.django.context_binder import LogContextBinder
 
 __all__ = [
     # Middleware

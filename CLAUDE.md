@@ -1,10 +1,10 @@
-# logctx
+# ecsctx
 
 ECS-compliant structured logging with W3C Trace Context support. Framework-agnostic core with Django integration.
 
 ## Entry Points
-- `logctx/__init__.py` - All public exports
-- `logctx/contrib/django/` - Django middleware and processors
+- `ecsctx/__init__.py` - All public exports
+- `ecsctx/contrib/django/` - Django middleware and processors
 
 ## Critical Context
 - `LoggingContext.to_dict()` maps internal attrs to ECS fields (span_id→span.id, user_id→user.id, ip→client.ip)
@@ -13,8 +13,8 @@ ECS-compliant structured logging with W3C Trace Context support. Framework-agnos
 - Django `contextvars_injector` reads settings lazily to avoid circular imports during bootstrap
 
 ## Submodules
-- `logctx/` - Core module (context, processors, formatters)
-- `logctx/contrib/django/` - Django middleware, lazy-loading processors, auditlog binder
+- `ecsctx/` - Core module (context, processors, formatters)
+- `ecsctx/contrib/django/` - Django middleware, lazy-loading processors, auditlog binder
 
 ## Footguns ⚠️
 - ECS reserved fields (`client`, `user`, `host`, `span`, `trace`) must be nested objects, never flat strings

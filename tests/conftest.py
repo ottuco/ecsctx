@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from logctx.pii import _reset as _reset_pii
+from ecsctx.pii import _reset as _reset_pii
 
 
 def _make_key_b64(length: int = 32) -> str:

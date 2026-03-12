@@ -10,7 +10,7 @@ from functools import wraps
 import uuid
 from rq import get_current_job
 
-from logctx.context import (
+from ecsctx.context import (
     LoggingContext,
     get_logging_context,
     get_trace_id,

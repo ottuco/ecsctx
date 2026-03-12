@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-from logctx.pii.keyset import Keyset, parse_keyset
+from ecsctx.pii.keyset import Keyset, parse_keyset
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,7 @@ class VaultKeysetProvider:
 
     def get_reveal_keyset(self) -> Keyset:
         if self._access_mode == "tokenize":
-            from logctx.pii import PIIAccessDeniedError  # noqa: PLC0415 - Delayed import to prevent circular dependency with logctx.pii.__init__
+            from ecsctx.pii import PIIAccessDeniedError  # noqa: PLC0415 - Delayed import to prevent circular dependency with ecsctx.pii.__init__
 
             raise PIIAccessDeniedError(
                 "Reveal keyset not available. "

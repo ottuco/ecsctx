@@ -1,7 +1,7 @@
 """
 Celery context propagation utilities.
 
-Propagates logctx's LoggingContext across Celery task boundaries using signals.
+Propagates ecsctx's LoggingContext across Celery task boundaries using signals.
 When a task is published, the current logging context is captured into the task
 headers. When a worker executes the task, the context is restored so all logs
 within the task include the original request's trace_id, session_id, etc.
@@ -11,7 +11,7 @@ Signal-based: no decorators needed on task functions. Just call
 
 Usage:
     # In your celery app config (e.g., config/celery.py):
-    from logctx.contrib.celery import install_celery_hooks
+    from ecsctx.contrib.celery import install_celery_hooks
     install_celery_hooks()
 """
 
@@ -20,7 +20,7 @@ from dataclasses import asdict
 
 from celery import signals
 
-from logctx.context import (
+from ecsctx.context import (
     LoggingContext,
     get_logging_context,
     get_trace_id,
@@ -115,7 +115,7 @@ def install_celery_hooks():
 
     Usage::
 
-        from logctx.contrib.celery import install_celery_hooks
+        from ecsctx.contrib.celery import install_celery_hooks
         install_celery_hooks()
     """
     signals.before_task_publish.connect(_capture_context_on_publish)

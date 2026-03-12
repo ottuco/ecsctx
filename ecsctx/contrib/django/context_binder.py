@@ -5,7 +5,7 @@ from auditlog.models import LogEntry
 from cid.locals import get_cid
 from django.core.exceptions import ObjectDoesNotExist
 
-from logctx.processors import _tokenize
+from ecsctx.processors import _tokenize
 
 
 class LogContextBinder:

@@ -1,4 +1,4 @@
-# /logctx/contrib/django
+# /ecsctx/contrib/django
 
 Django middleware and processors with lazy settings loading to avoid circular imports.
 

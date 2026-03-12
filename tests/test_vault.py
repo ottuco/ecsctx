@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from logctx.pii import PIIAccessDeniedError
-from logctx.pii.vault import VaultKeysetProvider
+from ecsctx.pii import PIIAccessDeniedError
+from ecsctx.pii.vault import VaultKeysetProvider
 from tests.conftest import make_keyset_json
 
 

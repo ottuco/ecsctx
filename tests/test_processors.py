@@ -1,7 +1,7 @@
 """Tests for PII masking and field reshaping in log processors."""
 
-from logctx.pii import configure_pii, is_configured
-from logctx.processors import _tokenize, reshape_log_event
+from ecsctx.pii import configure_pii, is_configured
+from ecsctx.processors import _tokenize, namespace_ecs_fields, reshape_log_event
 
 
 class TestTokenizeInProcessor:
@@ -67,7 +67,18 @@ class TestReshapeLogEvent:
         assert "some_random_key" not in result
         assert result["extra"] == {"some_random_key": "val", "another_key": 42}
 
-    def test_namespaced_dicts_stay_at_root(self):
+    def test_allowlisted_dicts_stay_at_root(self):
+        event = {
+            "message": "hello",
+            "payment": {"orn": "123"},
+            "http": {"request": {"method": "POST"}},
+        }
+        result = reshape_log_event(event)
+        assert result["payment"] == {"orn": "123"}
+        assert result["http"] == {"request": {"method": "POST"}}
+        assert "extra" not in result
+
+    def test_non_allowlisted_dicts_go_to_extra(self):
         event = {
             "message": "hello",
             "payment": {"orn": "123"},
@@ -75,8 +86,8 @@ class TestReshapeLogEvent:
         }
         result = reshape_log_event(event)
         assert result["payment"] == {"orn": "123"}
-        assert result["customer"] == {"id": "c1", "email": "x@y.com"}
-        assert "extra" not in result
+        assert "customer" not in result
+        assert result["extra"] == {"customer": {"id": "c1", "email": "x@y.com"}}
 
     def test_lists_go_into_extra(self):
         event = {"message": "hello", "tags": ["a", "b"]}
@@ -96,3 +107,28 @@ class TestReshapeLogEvent:
 
     def test_non_dict_passthrough(self):
         assert reshape_log_event("not a dict") == "not a dict"
+
+    def test_ecs_event_stays_at_root(self):
+        event = {"message": "hello", "ecs_event": {"kind": "event"}}
+        result = reshape_log_event(event)
+        assert result["ecs_event"] == {"kind": "event"}
+        assert "extra" not in result
+
+
+class TestNamespaceEcsFields:
+    def test_ecs_event_renamed_to_event(self):
+        event_dict = {
+            "event": "test message",
+            "ecs_event": {"kind": "event", "category": ["web"]},
+            "level": "info",
+        }
+        result = namespace_ecs_fields(None, None, event_dict)
+        assert result["event"] == {"kind": "event", "category": ["web"]}
+        assert "ecs_event" not in result
+        assert "level" not in result
+
+    def test_no_ecs_event_passthrough(self):
+        event_dict = {"event": "test message", "merchant_id": "m1"}
+        result = namespace_ecs_fields(None, None, event_dict)
+        assert "ecs_event" not in result
+        assert result["merchant_id"] == "m1"

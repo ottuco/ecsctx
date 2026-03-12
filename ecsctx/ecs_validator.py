@@ -67,13 +67,24 @@ def ecs_validator(_logger, _method_name, event_dict):
     for key, value in event_dict.items():
         # Skip structlog internals and allowed nested fields
         if key in SKIP_VALIDATION or key in ALLOWED_NESTED:
+            # Validate labels has only flat values (str/int/float/bool)
+            if key == "labels" and isinstance(value, dict):
+                for label_key, label_value in value.items():
+                    if isinstance(label_value, (dict, list)):
+                        warnings.warn(
+                            f"ECS conflict: 'labels.{label_key}' must be a flat value "
+                            f"(str/int/float/bool), got {type(label_value).__name__}.",
+                            UserWarning,
+                            stacklevel=6,
+                        )
             continue
 
         # Check if reserved field is used as flat value (not dict)
         if key in ECS_RESERVED_FIELDS and not isinstance(value, dict):
             warnings.warn(
-                f"ECS conflict: '{key}' is a reserved field and should be a nested object, "
-                f"got {type(value).__name__}. Use '{key}.xxx' structure instead.",
+                f"ECS conflict: '{key}' is a reserved field and should be a"
+                f" nested object, got {type(value).__name__}."
+                f" Use '{key}.xxx' structure instead.",
                 UserWarning,
                 stacklevel=6,
             )

@@ -1,5 +1,6 @@
 """
-Logging context management using contextvars for thread-safe, async-compatible context propagation.
+Logging context management using contextvars for thread-safe,
+async-compatible context propagation.
 
 This module provides:
 - LoggingContext: Dataclass holding logging context (span_id, user_id, ip, etc.)
@@ -18,12 +19,29 @@ ECS Field Mapping:
     See: https://www.elastic.co/docs/reference/ecs/ecs-field-reference
 """
 
+from __future__ import annotations
+
 import contextlib
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Any
 
 from cid.locals import get_cid
+
+
+def _validate_labels(labels: dict) -> dict:
+    """Ensure labels contains only flat values (str, int, float, bool).
+
+    Non-flat values are coerced to strings to prevent ECS violations.
+    ECS labels must be keyword-type values for Elasticsearch indexing.
+    """
+    clean = {}
+    for key, value in labels.items():
+        if isinstance(value, (str, int, float, bool)):
+            clean[key] = value
+        else:
+            clean[key] = str(value)
+    return clean
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -63,7 +81,7 @@ class LoggingContext:
     ip: str | None = None
     session_id: str | None = None
 
-    # Payment Domain (custom namespace)    
+    # Payment Domain (custom namespace)
     orn: str | None = None
     pg_code: str | None = None
     reference_number: str | None = None
@@ -152,7 +170,7 @@ class LoggingContext:
 
         # Labels for low-cardinality keyword filtering
         if self.labels:
-            result["labels"] = self.labels
+            result["labels"] = _validate_labels(self.labels)
 
         # Merge extra into root
         if self.extra:
@@ -200,7 +218,7 @@ def reset_logging_context(token: Token) -> None:
         _logging_context.reset(token)
 
 
-class logging_context:  # noqa: N801 - lowercase for context manager consistency with stdlib (e.g., contextlib.suppress)
+class logging_context:
     """
     Context manager for setting logging context within a scope.
 
@@ -221,7 +239,7 @@ class logging_context:  # noqa: N801 - lowercase for context manager consistency
 
             # Inner context (e.g., payment gateway call)
             with logging_context(pg_code="knet"):
-                logger.info("Calling gateway")  # payment.session_id=abc123, pg_code=knet
+                logger.info("Calling gateway")  # session_id=abc123, pg_code=knet
 
             # Back to outer context
             logger.info("Continuing")  # payment.session_id=abc123

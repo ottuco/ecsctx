@@ -12,9 +12,9 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import User as _DefaultUser
 from structlog.contextvars import get_contextvars
 
-from logctx.context import get_trace_id
-from logctx.pii import configure_pii_from_env
-from logctx.processors import _detect_service, _inject_logging_context
+from ecsctx.context import get_trace_id
+from ecsctx.pii import configure_pii_from_env
+from ecsctx.processors import _detect_service, _inject_logging_context
 
 
 def _auto_configure_pii():

@@ -1,4 +1,4 @@
-from logctx.contrib.celery.log_context import (
+from ecsctx.contrib.celery.log_context import (
     LOG_CONTEXT_KEY,
     capture_log_context,
     install_celery_hooks,

@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from logctx.pii import (
+from ecsctx.pii import (
     PIIAccessDeniedError,
     PIINotConfiguredError,
     _reset,

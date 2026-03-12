@@ -5,7 +5,7 @@ AES-256-GCM encryption for reversible PII protection.
 
 Usage::
 
-    from logctx.pii import configure_pii, tokenize, protect, reveal
+    from ecsctx.pii import configure_pii, tokenize, protect, reveal
 
     # Auto-configure from env vars (PII_PROVIDER, PII_ACCESS, PII_ENV)
     configure_pii_from_env()
@@ -25,10 +25,10 @@ from __future__ import annotations
 
 import os
 
-from logctx.pii.crypto import aes_protect, aes_reveal, hmac_tokenize, parse_penc_kid
-from logctx.pii.keyset import FileKeysetProvider
-from logctx.pii.normalize import normalize_value
-from logctx.pii.provider import KeysetProvider
+from ecsctx.pii.crypto import aes_protect, aes_reveal, hmac_tokenize, parse_penc_kid
+from ecsctx.pii.keyset import FileKeysetProvider
+from ecsctx.pii.normalize import normalize_value
+from ecsctx.pii.provider import KeysetProvider
 
 _provider: KeysetProvider | None = None
 _auto_configure_attempted: bool = False
@@ -125,7 +125,7 @@ def configure_pii_from_env() -> None:
             env=pii_env,
         )
     elif provider_type == "vault":
-        from logctx.pii.vault import VaultKeysetProvider  # noqa: PLC0415 - Conditional import; vault deps are optional and only loaded when PII_PROVIDER=vault
+        from ecsctx.pii.vault import VaultKeysetProvider  # noqa: PLC0415 - Conditional import; vault deps are optional and only loaded when PII_PROVIDER=vault
 
         _provider = VaultKeysetProvider(
             vault_addr=os.environ["PII_VAULT_ADDR"],

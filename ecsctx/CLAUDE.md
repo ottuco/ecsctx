@@ -1,4 +1,4 @@
-# /logctx
+# /ecsctx
 
 Core structured logging module with ECS field mapping and PII masking.
 

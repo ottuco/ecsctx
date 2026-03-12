@@ -1,5 +1,5 @@
 """
-logctx - Context-aware structured logging with ECS compliance and distributed tracing.
+ecsctx - Context-aware structured logging with ECS compliance and distributed tracing.
 
 This package provides framework-agnostic logging utilities:
 - Automatic context injection (request_id, user_id, ip, trace_id)
@@ -7,10 +7,10 @@ This package provides framework-agnostic logging utilities:
 - PII masking via tokenization
 - W3C Trace Context support for distributed tracing
 
-For Django integration, use logctx.contrib.django.
+For Django integration, use ecsctx.contrib.django.
 """
 
-from logctx.context import (
+from ecsctx.context import (
     LoggingContext,
     bind_logging_context,
     build_traceparent,
@@ -19,9 +19,9 @@ from logctx.context import (
     logging_context,
     reset_logging_context,
 )
-from logctx.ecs_validator import ecs_validator
-from logctx.formatters import ECSFormatter
-from logctx.pii import (
+from ecsctx.ecs_validator import ecs_validator
+from ecsctx.formatters import ECSFormatter
+from ecsctx.pii import (
     PIIAccessDeniedError,
     configure_pii,
     configure_pii_from_env,
@@ -29,8 +29,8 @@ from logctx.pii import (
     reveal,
     tokenize,
 )
-from logctx.pii import is_configured as pii_configured
-from logctx.processors import (
+from ecsctx.pii import is_configured as pii_configured
+from ecsctx.processors import (
     contextvars_injector,
     mask_sensitive_data,
     namespace_ecs_fields,

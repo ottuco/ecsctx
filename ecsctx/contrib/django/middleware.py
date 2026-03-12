@@ -10,12 +10,12 @@ Note: trace_id is handled by CidMiddleware + structlog processor.
 
 import uuid
 
-from django.utils.deprecation import MiddlewareMixin
-from ipware import get_client_ip
 import sentry_sdk
 import structlog
+from django.utils.deprecation import MiddlewareMixin
+from ipware import get_client_ip
 
-from logctx import bind_logging_context, get_trace_id, reset_logging_context
+from ecsctx import bind_logging_context, get_trace_id, reset_logging_context
 
 logger = structlog.get_logger(__name__)
 
@@ -46,10 +46,10 @@ class LoggingContextMiddleware(MiddlewareMixin):
             sentry_sdk.set_tag("trace_id", trace_id)
 
     def process_view(self, request, view_func, view_args, view_kwargs):
-        """Bind user object to context if authenticated for automatic serialization."""
+        """Bind user_id to context if authenticated."""
         if hasattr(request, "user") and request.user.is_authenticated:
             user_obj = request.user
-            
+
             # Rebind context with user object
             token = getattr(request, "_logging_context_token", None)
             if token:
@@ -58,7 +58,7 @@ class LoggingContextMiddleware(MiddlewareMixin):
                 request._logging_context_token = bind_logging_context(
                     span_id=request._span_id,
                     ip=str(ip) if ip else None,
-                    user=user_obj,
+                    user_id=user_obj.pk,
                 )
 
     def process_response(self, request, response):
@@ -71,7 +71,8 @@ class LoggingContextMiddleware(MiddlewareMixin):
     def process_exception(self, request, exception):
         """Log unhandled exceptions and reset context."""
         logger.exception(
-            f"unhandled_exception {exception}",
+            "unhandled_exception",
+            error={"message": str(exception), "type": type(exception).__name__},
             http={
                 "request": {"method": request.method},
                 "response": {"status_code": 500},

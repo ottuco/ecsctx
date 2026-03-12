@@ -2,7 +2,7 @@
 Framework-agnostic structlog processors for ECS-compliant logging.
 
 All configuration is passed via environment variables or processor factory parameters.
-For Django integration, use logctx.contrib.django.processors which reads from settings.
+For Django integration, use ecsctx.contrib.django.processors which reads from settings.
 """
 
 import contextlib
@@ -13,8 +13,8 @@ import sys
 
 from structlog.contextvars import get_contextvars
 
-from logctx.context import get_logging_context, get_trace_id
-from logctx.pii import tokenize as _pii_tokenize
+from ecsctx.context import get_logging_context, get_trace_id
+from ecsctx.pii import tokenize as _pii_tokenize
 
 
 def _get_app_version() -> str:
@@ -30,34 +30,29 @@ def _detect_service():
     service_type = os.environ.get("SERVICE_TYPE")
     if service_type:
         if service_type == "rq":
-            # Deferred: optional dependency, absent in non-rq deployments
-            import rq  # noqa: PLC0415
+            import rq  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
 
             return "rq", rq.VERSION
         if service_type == "rqscheduler":
-            # Deferred: optional dependency, absent in non-rq deployments
-            import rq_scheduler  # noqa: PLC0415
+            import rq_scheduler  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
 
             return "rqscheduler", ".".join(map(str, rq_scheduler.VERSION))
         return service_type, _get_app_version()
 
     # Auto-detect from command line
     if any("rqworker" in arg for arg in sys.argv):
-        # Deferred: optional dependency, absent in non-rq deployments
-        import rq  # noqa: PLC0415
+        import rq  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
 
         return "rq", rq.VERSION
     if any("rqscheduler" in arg for arg in sys.argv):
-        # Deferred: optional dependency, absent in non-rq deployments
-        import rq_scheduler  # noqa: PLC0415
+        import rq_scheduler  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
 
         return "rqscheduler", ".".join(map(str, rq_scheduler.VERSION))
     return "app", _get_app_version()
 
 
 # ECS-compliant root allowlist for log events.
-# Keys in this set stay at root level; non-allowlisted scalars/lists go into 'extra'.
-# Non-allowlisted dicts stay at root (deliberate namespaces like customer={}).
+# Keys in this set stay at root level; all non-allowlisted keys go into 'extra'.
 ROOT_ALLOWLIST = frozenset({
     # ECS field-set objects (must be dicts)
     "http",  # ECS: http.request, http.response
@@ -88,6 +83,11 @@ ROOT_ALLOWLIST = frozenset({
     "headers",
     # Custom scalar
     "view",
+    # Target namespace for non-allowlisted keys
+    "extra",
+    # Staging key for ECS event field — renamed to "event" in namespace_ecs_fields
+    # after structlog has consumed the message (structlog uses "event" as message key)
+    "ecs_event",
 })
 
 # Deprecated alias for backward compatibility
@@ -95,11 +95,11 @@ PRIMARY_KEYS = ROOT_ALLOWLIST
 
 
 def reshape_log_event(event_dict) -> dict:
-    """Reshape log event: allowlisted keys and dicts stay at root, bare scalars/lists go into extra.
+    """Reshape log event: allowlisted keys stay at root, everything else goes into extra.
 
     - Keys in ROOT_ALLOWLIST always stay at root.
-    - Non-allowlisted dict values stay at root (deliberate namespaces).
-    - Non-allowlisted scalars/lists are wrapped into ``extra``.
+    - Non-allowlisted keys (scalars, lists, and dicts) are wrapped into
+      ``extra``.
     """
     if not isinstance(event_dict, dict):
         return event_dict
@@ -109,9 +109,6 @@ def reshape_log_event(event_dict) -> dict:
 
     for key, value in event_dict.items():
         if key in ROOT_ALLOWLIST:
-            reshaped[key] = value
-        elif isinstance(value, dict):
-            # Deliberate namespaced dict stays at root
             reshaped[key] = value
         else:
             extra[key] = value
@@ -150,8 +147,12 @@ def namespace_ecs_fields(_logger, _method_name, event_dict):
     """
     Handle ECS field normalization and reshaping.
 
-    1. Removes flat 'level' key since StructlogFormatter sets log.level from method name.
-    2. Reshapes event: allowlisted/dict keys stay at root, bare scalars go into 'extra'.
+    1. Removes flat 'level' key since StructlogFormatter sets log.level from
+       method name.
+    2. Reshapes event: allowlisted keys stay at root, everything else into
+       'extra'.
+    3. Renames 'ecs_event' staging key to 'event' (avoids structlog's 'event'
+       message key).
 
     Note: ecs.version is handled by ECSFormatter - setting it here doesn't work
     because ecs-logging's normalize_dict converts dotted keys to nested objects,
@@ -162,8 +163,14 @@ def namespace_ecs_fields(_logger, _method_name, event_dict):
     # This prevents duplication: log.level: ["info", "info"]
     event_dict.pop("level", None)
 
-    # Reshape: move non-allowlisted scalars into extra
+    # Reshape: move non-allowlisted keys into extra
     event_dict = reshape_log_event(event_dict)
+
+    # Rename staging key to final ECS field name.
+    # 'ecs_event' is used in log calls to avoid colliding with structlog's
+    # internal 'event' key (which holds the message string).
+    if "ecs_event" in event_dict:
+        event_dict["event"] = event_dict.pop("ecs_event")
 
     return event_dict
 
@@ -332,9 +339,7 @@ def _scrub_string_content(text: str) -> str:
     text = EMAIL_PATTERN.sub(lambda m: _tokenize(m.group(), "email"), text)
     # Only scrub phones that look like phones (length check is in regex)
     # But be careful with IDs.
-    text = PHONE_PATTERN.sub(lambda m: _tokenize(m.group(), "phone"), text)
-
-    return text
+    return PHONE_PATTERN.sub(lambda m: _tokenize(m.group(), "phone"), text)
 
 
 def _scrub_sensitive_keys(json_text: str) -> str:

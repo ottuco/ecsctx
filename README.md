@@ -1,4 +1,4 @@
-# logctx
+# ecsctx
 
 Context-aware structured logging with [ECS](https://www.elastic.co/docs/reference/ecs/ecs-field-reference) compliance and [W3C Trace Context](https://www.w3.org/TR/trace-context/) distributed tracing.
 
@@ -11,30 +11,31 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
 1. [What is ECS & Why It Matters](#1-what-is-ecs--why-it-matters)
 2. [The Observability Pipeline](#2-the-observability-pipeline)
 3. [Architecture: Request Flow](#3-architecture-request-flow)
-4. [Quick Start (Django)](#4-quick-start-django)
-5. [Quick Start (FastAPI)](#5-quick-start-fastapi)
-6. [Full Django Configuration](#6-full-django-configuration)
-7. [Context Binding — The Core Concept](#7-context-binding--the-core-concept)
-8. [Service Namespace Pattern](#8-service-namespace-pattern)
-9. [Celery Integration](#9-celery-integration)
-10. [RQ Integration](#10-rq-integration)
-11. [Distributed Tracing (W3C Trace Context)](#11-distributed-tracing-w3c-trace-context)
-12. [PII Masking & Tokenization](#12-pii-masking--tokenization)
-13. [ECS Reserved Fields — The #1 Source of Bugs](#13-ecs-reserved-fields--the-1-source-of-bugs)
-14. [Good vs Bad Practices (Hall of Mistake)](#14-good-vs-bad-practices-hall-of-Mistake)
-15. [Log Levels — Decision Tree](#15-log-levels--decision-tree)
-16. [Dry Run: Verifying Your Setup](#16-dry-run-verifying-your-setup)
-17. [Vector Configuration](#17-vector-configuration)
-18. [Environment Variables Reference](#18-environment-variables-reference)
-19. [API Reference](#19-api-reference)
-20. [Log Output Example](#20-log-output-example)
-21. [Package Structure](#21-package-structure)
+4. [Core Rules (Field Placement Reference)](#4-core-rules-field-placement-reference)
+5. [Quick Start (Django)](#5-quick-start-django)
+6. [Quick Start (FastAPI)](#6-quick-start-fastapi)
+7. [Full Django Configuration](#7-full-django-configuration)
+8. [Context Binding — The Core Concept](#8-context-binding--the-core-concept)
+9. [Service Namespace Pattern](#9-service-namespace-pattern)
+10. [Celery Integration](#10-celery-integration)
+11. [RQ Integration](#11-rq-integration)
+12. [Distributed Tracing (W3C Trace Context)](#12-distributed-tracing-w3c-trace-context)
+13. [PII Masking & Tokenization](#13-pii-masking--tokenization)
+14. [ECS Reserved Fields — The #1 Source of Bugs](#14-ecs-reserved-fields--the-1-source-of-bugs)
+15. [Good vs Bad Practices (Hall of Mistake)](#15-good-vs-bad-practices-hall-of-mistake)
+16. [Log Levels — Decision Tree](#16-log-levels--decision-tree)
+17. [Dry Run: Verifying Your Setup](#17-dry-run-verifying-your-setup)
+18. [Vector Configuration](#18-vector-configuration)
+19. [Environment Variables Reference](#19-environment-variables-reference)
+20. [API Reference](#20-api-reference)
+21. [Log Output Example](#21-log-output-example)
+22. [Package Structure](#22-package-structure)
 
 ---
 
 ## 1. What is ECS & Why It Matters
 
-**ECS (Elastic Common Schema)** is a standard field naming convention for Elasticsearch. Instead of every team inventing their own field names (`user_name` vs `username` vs `user.name`), ECS defines a shared vocabulary: `user.id`, `client.ip`, `trace.id`, `error.message`, etc. logctx outputs ECS 1.12.0 compliant JSON.
+**ECS (Elastic Common Schema)** is a standard field naming convention for Elasticsearch. Instead of every team inventing their own field names (`user_name` vs `username` vs `user.name`), ECS defines a shared vocabulary: `user.id`, `client.ip`, `trace.id`, `error.message`, etc. ecsctx outputs ECS 1.12.0 compliant JSON.
 
 **Why you should care:** Elasticsearch creates index mappings from the first document it sees. If one service sends `error` as a string and another sends `error` as an object (`{"message": "..."}"`), Elasticsearch gets a **mapping conflict** — it can't store both in the same index. Mapping conflicts silently drop fields. Your logs look fine locally but are missing data in Kibana.
 
@@ -50,7 +51,7 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
 ┌─────────────────────────────────────────────────────────────┐
 │                    Your Application                          │
 │                                                              │
-│   structlog → logctx processors → ECS JSON → stdout         │
+│   structlog → ecsctx processors → ECS JSON → stdout         │
 │   (context injection, PII masking, ECS validation)          │
 └──────────────────────┬──────────────────────────────────────┘
                        │  stdout (JSON lines)
@@ -94,7 +95,7 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
                       ↓
 4. Auth middleware authenticates user
                       ↓
-5. LoggingContextMiddleware.process_view() re-binds with user object
+5. LoggingContextMiddleware.process_view() re-binds with user_id for authenticated requests
                       ↓
 6. Your middleware/views bind domain context (merchant_id, session_id, etc.)
                       ↓
@@ -117,7 +118,7 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
 5. structlog.processors.CallsiteParameterAdder # func_name, lineno, pathname
 6. contextvars_injector                        # ← Injects LoggingContext + trace + service
 7. namespace_ecs_fields                        # ← Reshape fields + clean up flat 'level' key
-8. mask_sensitive_data                         # ← PII tokenization (HMAC/AES-GCM)
+8. mask_sensitive_data                         # ← PII tokenization (HMAC-SHA-256)
 9. ecs_validator                               # ← Warn on ECS field violations
 10. ECSFormatter                               # ← Format to ECS 1.12.0 JSON
 ```
@@ -152,21 +153,45 @@ server {
 
 ---
 
-## 4. Quick Start (Django)
+## 4. Core Rules (Field Placement Reference)
+
+This is the single source of truth for where fields end up in the final log output. The `namespace_ecs_fields` processor enforces these rules.
+
+| Category | Keys | Placement | Notes |
+|----------|------|-----------|-------|
+| **ECS field-sets** | `http`, `url`, `event`, `span`, `user`, `user_agent`, `client`, `trace`, `service`, `error`, `log` | Root (nested objects) | Must be dicts, never flat strings |
+| **Custom namespaces** | `payment`, `project` | Root (nested objects) | `payment.orn`, `project.name` |
+| **Sanctioned flat scalars** | `merchant_id`, `session_id`, `view` | Root | Kept flat at root level |
+| **Labels** | `labels` | Root (flat dict) | Values should be `str`/`int`/`float`/`bool`; non-scalars are coerced to strings |
+| **Payload containers** | `payload`, `headers` | Root | Used in PII masking path |
+| **structlog internals** | `message`, `timestamp` | Root | Set by structlog processors |
+| **ECS event staging** | `ecs_event` | Root → renamed to `event` | Use `ecs_event` in log calls to avoid structlog's `event` message key conflict |
+| **Everything else** | Any non-allowlisted key | `extra.*` | Auto-wrapped by `namespace_ecs_fields` |
+
+**PII handling** (see [section 13](#13-pii-masking--tokenization) for full details):
+- **Automatic log masking**: `mask_sensitive_data` processor applies HMAC-SHA-256 tokenization (`ptok:v1:...`) and key-based redaction
+- **Explicit encryption API**: `protect()` encrypts (AES-256-GCM), `reveal()` decrypts, `tokenize()` produces deterministic HMAC tokens
+
+---
+
+## 5. Quick Start (Django)
 
 ### 1. Install
 
 ```bash
-pip install logctx[django]               # With Django support
-pip install logctx[django,celery]        # With Django + Celery
-pip install logctx[django,rq]            # With Django + RQ
-pip install logctx[django,auditlog]      # With Django + auditlog integration
+pip install ecsctx                       # Core only (framework-agnostic, e.g., FastAPI)
+pip install ecsctx[django]               # With Django support
+pip install ecsctx[django,celery]        # With Django + Celery
+pip install ecsctx[django,rq]            # With Django + RQ
+pip install ecsctx[django,auditlog]      # With Django + auditlog integration
 ```
+
+Requires Python >= 3.10.
 
 ### 2. Configure settings.py
 
 ```python
-from logctx.contrib.django import get_logging_config, setup_logging, CELERY_LOGGERS
+from ecsctx.contrib.django import get_logging_config, setup_logging, CELERY_LOGGERS
 
 # Logging — that's it!
 LOGGING = get_logging_config(
@@ -182,7 +207,7 @@ MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "cid.middleware.CidMiddleware",              # ← Early: reads traceparent
     # ... security, session, auth middleware ...
-    "logctx.contrib.django.LoggingContextMiddleware",  # ← AFTER auth middleware
+    "ecsctx.contrib.django.LoggingContextMiddleware",  # ← AFTER auth middleware
     # ... your app middleware (can bind_logging_context here too) ...
 ]
 
@@ -211,13 +236,13 @@ def my_view(request):
 
 ---
 
-## 5. Quick Start (FastAPI)
+## 6. Quick Start (FastAPI)
 
 For non-Django projects, use the core processors directly:
 
 ```python
 import structlog
-from logctx import (
+from ecsctx import (
     ECSFormatter,
     ecs_validator,
     contextvars_injector,
@@ -245,7 +270,7 @@ structlog.configure(
 For FastAPI, you'll need to manage `LoggingContext` yourself (no middleware auto-injection):
 
 ```python
-from logctx import bind_logging_context, logging_context, LoggingContext
+from ecsctx import bind_logging_context, logging_context, LoggingContext
 import uuid
 
 # Option 1: FastAPI middleware
@@ -272,14 +297,14 @@ async def create_payment():
 
 ---
 
-## 6. Full Django Configuration
+## 7. Full Django Configuration
 
 ### get_logging_config()
 
 Returns a complete Django `LOGGING` dict with structlog integration, ECS formatting, and all processors wired up.
 
 ```python
-from logctx.contrib.django import get_logging_config
+from ecsctx.contrib.django import get_logging_config
 
 LOGGING = get_logging_config(
     root_level="INFO",       # Root logger level (default: INFO)
@@ -292,7 +317,7 @@ LOGGING = get_logging_config(
 ### Logger Presets
 
 ```python
-from logctx.contrib.django import (
+from ecsctx.contrib.django import (
     RQ_LOGGERS,           # RQ at WARNING level
     RQ_LOGGERS_DEBUG,     # RQ at INFO level (development)
     CELERY_LOGGERS,       # Celery at WARNING level
@@ -325,7 +350,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
 
     # 3. LoggingContextMiddleware — AFTER auth (needs request.user)
-    "logctx.contrib.django.LoggingContextMiddleware",
+    "ecsctx.contrib.django.LoggingContextMiddleware",
 
     # 4. Your app middleware — CAN use bind_logging_context() here
     "utils.middleware.TenantMiddleware",  # e.g., bind merchant_id
@@ -334,15 +359,17 @@ MIDDLEWARE = [
 
 **Why this order?**
 - `CidMiddleware` must run first to extract `trace.id` from the traceparent header
-- Auth middleware must run before `LoggingContextMiddleware` because `process_view()` reads `request.user.is_authenticated` to bind the user object
+- Auth middleware must run before `LoggingContextMiddleware` because `process_view()` reads `request.user.is_authenticated` to bind `user_id`
 - Your app middleware runs after and can add domain context (merchant_id, tenant info)
+
+> **Note:** The middleware binds `user_id` (integer) only. To log full User details (username, email), pass the User object directly in log kwargs: `logger.info("event", user=request.user)` — the Django-aware processor will serialize it to ECS format.
 
 ### @api_logging Decorator
 
 For Public DRF/Django views, automatically logs inbound requests and outbound responses:
 
 ```python
-from logctx.contrib.django.decorators import api_logging
+from ecsctx.contrib.django.decorators import api_logging
 
 @api_logging
 class PaymentViewSet(ViewSet):
@@ -354,7 +381,7 @@ class PaymentViewSet(ViewSet):
 
 ---
 
-## 7. Context Binding — The Core Concept
+## 8. Context Binding — The Core Concept
 
 Context binding is the mechanism that attaches structured metadata to every log statement within a request's journey. **It can happen at any layer** — middleware, views, serializers, tasks, utility functions — wherever important debug information becomes available.
 
@@ -397,7 +424,7 @@ def process_webhook(self, enterprise_id, store_id):
 ### Two Binding Mechanisms
 
 ```python
-from logctx import bind_logging_context, logging_context
+from ecsctx import bind_logging_context, logging_context
 
 # 1. Direct bind (most common) — middleware handles cleanup at request end
 bind_logging_context(session_id="abc123", extra={"merchant_id": "acme"})
@@ -410,12 +437,13 @@ log.info("outer_event")        # session_id gone
 
 ### The `extra` Parameter
 
-`extra={}` contents from `LoggingContext` get **merged to root** before the processor chain runs. The `namespace_ecs_fields` processor then reshapes the event: allowlisted fields and dicts stay at root, while bare non-allowlisted scalars/lists are wrapped into an `extra` object in the final output.
+`extra={}` contents from `LoggingContext` get **merged to root** before the processor chain runs. The `namespace_ecs_fields` processor then reshapes the event: allowlisted keys stay at root, while all non-allowlisted keys (scalars, lists, and dicts) are wrapped into an `extra` object in the final output.
+
+See the [Core Rules](#4-core-rules-field-placement-reference) table for the complete allowlist.
 
 ```python
-bind_logging_context(extra={"merchant_id": "acme", "myapp": {"store_id": "s1"}})
+bind_logging_context(extra={"merchant_id": "acme"})
 # "merchant_id" stays at root (allowlisted flat ID)
-# "myapp" stays at root (dict = deliberate namespace)
 ```
 
 ### Deep Merge Behavior
@@ -460,7 +488,7 @@ log.info("payment_created")
 
 ---
 
-## 8. Service Namespace Pattern
+## 9. Service Namespace Pattern
 
 Each service (keyloop, amadeus, shopify, opera) has its own domain-specific IDs (`store_id`, `enterprise_id`, `shop`, `reference`). To avoid cross-service field collisions in Elasticsearch, **namespace service-specific fields under the app name**.
 
@@ -479,11 +507,10 @@ bind_logging_context(extra={
 
 ### What Goes Where
 
+See the [Core Rules](#4-core-rules-field-placement-reference) table for the complete root allowlist. Service-specific fields should be namespaced under the app name to avoid ES mapping conflicts:
+
 | Location | Fields | Why |
 |----------|--------|-----|
-| **Root level (flat)** | `merchant_id`, `session_id` | Sanctioned cross-service flat IDs |
-| **Root level (labels)** | `labels.env`, `labels.region` | Low-cardinality filterable keywords via ECS `labels` |
-| **Payment namespace** | `payment.pg_code`, `payment.orn`, `payment.reference` | Payment domain fields |
 | **Service namespace** | `enterprise_id`, `store_id` (keyloop), `shop`, `reference` (shopify) | Avoids ES mapping conflicts between services |
 
 ### In Log Kwargs (Dynamic Key)
@@ -500,7 +527,7 @@ log.info("event_started", **{
 
 ---
 
-## 9. Celery Integration
+## 10. Celery Integration
 
 Signal-based context propagation — no decorators needed on individual tasks.
 
@@ -508,7 +535,7 @@ Signal-based context propagation — no decorators needed on individual tasks.
 
 ```python
 # In your celery app config or a utils/celery.py module
-from logctx.contrib.celery import install_celery_hooks
+from ecsctx.contrib.celery import install_celery_hooks
 
 install_celery_hooks()
 ```
@@ -567,14 +594,14 @@ def process_payment_inquiry(self, merchant_id, session_id):
 
 ---
 
-## 10. RQ Integration
+## 11. RQ Integration
 
 Decorator-based context propagation for RQ background jobs.
 
 ### Setup
 
 ```python
-from logctx.contrib.rq import with_log_context
+from ecsctx.contrib.rq import with_log_context
 
 @with_log_context
 def my_background_task(user_id, amount):
@@ -586,7 +613,7 @@ def my_background_task(user_id, amount):
 If you have a custom job enqueue wrapper:
 
 ```python
-from logctx.contrib.rq import capture_log_context, LOG_CONTEXT_KEY
+from ecsctx.contrib.rq import capture_log_context, LOG_CONTEXT_KEY
 
 class RQHandler:
     @classmethod
@@ -608,9 +635,9 @@ class RQHandler:
 
 ---
 
-## 11. Distributed Tracing (W3C Trace Context)
+## 12. Distributed Tracing (W3C Trace Context)
 
-logctx implements W3C Trace Context for correlating logs across service boundaries.
+ecsctx implements W3C Trace Context for correlating logs across service boundaries.
 
 ### Traceparent Format
 
@@ -637,7 +664,7 @@ CID_HEADER = "HTTP_TRACEPARENT"
 When making HTTP calls to other services, propagate the traceparent:
 
 ```python
-from logctx import build_traceparent
+from ecsctx import build_traceparent
 
 def call_external_api(url, payload):
     headers = {}
@@ -653,9 +680,9 @@ This ensures the receiving service can correlate its logs with yours under the s
 
 ---
 
-## 12. PII Masking & Tokenization
+## 13. PII Masking & Tokenization
 
-logctx automatically detects and protects sensitive data in logs. The `mask_sensitive_data` processor uses regex-based scrubbing on JSON-serialized payloads to find and tokenize PII.
+ecsctx automatically detects and protects sensitive data in logs. The `mask_sensitive_data` processor uses regex-based scrubbing on JSON-serialized payloads to find and tokenize PII.
 
 **Log processor path** (automatic via `mask_sensitive_data`):
 - When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`) for fraud correlation. Same input always produces the same token.
@@ -748,7 +775,7 @@ PII_VAULT_TIMEOUT=10                                 # HTTP timeout for Vault ca
 
 ---
 
-## 13. ECS Reserved Fields — The #1 Source of Bugs
+## 14. ECS Reserved Fields — The #1 Source of Bugs
 
 ECS reserves certain field names as **objects with specific sub-fields**. Passing them as flat strings/ints causes Elasticsearch mapping conflicts — fields get silently dropped.
 
@@ -761,7 +788,7 @@ ECS reserves certain field names as **objects with specific sub-fields**. Passin
 | `http` | `http={"request": {"method": "POST"}, "response": {"status_code": 200}}` | `method="POST"` | ECS expects nested `http.request.*` |
 | `user` | `user={"name": "john"}` | `user="john"` | ECS expects `user.name`, `user.id` |
 | `host` | `host={"name": "web-1"}` | `host="web-1"` | ECS expects `host.name`, `host.ip` |
-| `event` | `event={"action": "login"}` | `event="login"` | ECS expects `event.action`, `event.category` |
+| `event` | `ecs_event={"action": "login"}` | `event="login"` | structlog uses `event` as message key; use `ecs_event` staging (renamed to `event` in output) |
 | `source` | `source={"ip": "1.2.3.4"}` | `source="1.2.3.4"` | ECS expects `source.ip`, `source.address` |
 | `server` | `server={"address": "api.example.com"}` | `server="api.example.com"` | ECS expects `server.address` |
 
@@ -800,17 +827,7 @@ except requests.HTTPError as e:
 
 ### Custom Fields and the Root Allowlist
 
-Only ECS reserved names need the dict treatment. However, the `namespace_ecs_fields` processor enforces a **root allowlist** — bare scalar/list kwargs that are not in the allowlist get automatically wrapped into an `extra` object:
-
-| Category | Fields | Behavior |
-|---|---|---|
-| ECS field-sets | `http`, `url`, `event`, `span`, `user`, `user_agent`, `client`, `trace`, `service`, `error`, `log` | Stay at root (must be dicts) |
-| Custom namespaces | `payment`, `project` | Stay at root (dicts) |
-| Sanctioned flat IDs | `merchant_id`, `session_id` | Stay at root (scalars) |
-| Labels | `labels` | Stays at root (flat dict of keyword values) |
-| Payload containers | `payload`, `headers` | Stay at root (for PII masking) |
-| Non-allowlisted dicts | Any dict kwarg (e.g., `myapp={"store_id": "s1"}`) | Stays at root (deliberate namespace) |
-| Non-allowlisted scalars | Any bare scalar kwarg | Wrapped into `extra` |
+Only ECS reserved names need the dict treatment. The `namespace_ecs_fields` processor enforces a **root allowlist** — all non-allowlisted keys (scalars, lists, and dicts) get automatically wrapped into an `extra` object. See the [Core Rules](#4-core-rules-field-placement-reference) table for the complete allowlist.
 
 ```python
 # "merchant_id" stays at root (allowlisted)
@@ -838,7 +855,7 @@ The `ecs_validator` processor will **warn** (not block) if ECS reserved fields a
 
 ---
 
-## 14. Good vs Bad Practices (Hall of Mistake)
+## 15. Good vs Bad Practices (Hall of Mistake)
 
 Common mistakes and how to avoid them.
 
@@ -962,7 +979,7 @@ bind_logging_context(extra={
 # Output: {"my_service": {"store_id": "s1", "enterprise_id": "e1", ...}}
 ```
 
-**Rule of thumb:** Only `merchant_id` and `session_id` are sanctioned flat custom root fields. Payment domain fields (`pg_code`, `orn`, `reference_number`) live under `payment.*`. Use `labels` for low-cardinality filterable metadata. Fields specific to one integration go under a service namespace.
+See the [Core Rules](#4-core-rules-field-placement-reference) table for the complete field placement reference.
 
 ---
 
@@ -1000,7 +1017,7 @@ def process_webhook(self, enterprise_id, store_id):
 
 ---
 
-## 15. Log Levels — Decision Tree
+## 16. Log Levels — Decision Tree
 
 This isn't just style — it directly affects Sentry alert volume and on-call fatigue.
 
@@ -1028,7 +1045,7 @@ Is this a system failure that needs human attention?
 
 ---
 
-## 16. Dry Run: Verifying Your Setup
+## 17. Dry Run: Verifying Your Setup
 
 Before deploying, verify the full pipeline locally.
 
@@ -1073,7 +1090,7 @@ Check these fields in your JSON output:
 | `client.ip` present? | IP address string | Check `django-ipware` is installed |
 | `service.name` present? | `"app"`, `"rq"`, or `"celery"` | Check `SERVICE_TYPE` env var or auto-detection |
 | `ecs.version` = `"1.12.0"`? | Exactly `"1.12.0"` | Check `ECSFormatter` is in processor chain |
-| No flat `error`, `user`, `client` strings? | Always dicts | Read [ECS Reserved Fields](#13-ecs-reserved-fields--the-1-source-of-bugs) |
+| No flat `error`, `user`, `client` strings? | Always dicts | Read [ECS Reserved Fields](#14-ecs-reserved-fields--the-1-source-of-bugs) |
 
 ### Step 3: Verify PII Masking
 
@@ -1137,7 +1154,7 @@ docker compose logs vector
 
 ---
 
-## 17. Vector Configuration
+## 18. Vector Configuration
 
 ### vector.toml Template
 
@@ -1149,7 +1166,7 @@ include_labels = ["collect_logs=true"]
 exclude_containers = ["vector", "nginx", "certbot", "redis", "postgres", "db"]
 auto_partial_merge = true
 
-# Parse JSON output from structlog/logctx
+# Parse JSON output from structlog/ecsctx
 [transforms.parse_container_logs]
 type = "remap"
 inputs = ["docker_logs"]
@@ -1266,7 +1283,7 @@ If you use a `common-logs` ingest pipeline, it can enforce ECS field types so ma
 
 ---
 
-## 18. Environment Variables Reference
+## 19. Environment Variables Reference
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
@@ -1306,12 +1323,12 @@ ES_API_KEY=your-api-key-here
 
 ---
 
-## 19. API Reference
+## 20. API Reference
 
-### Core (`logctx`)
+### Core (`ecsctx`)
 
 ```python
-from logctx import (
+from ecsctx import (
     # Context management
     LoggingContext,          # Dataclass holding logging context
     get_logging_context,    # Get current context from contextvar
@@ -1328,7 +1345,7 @@ from logctx import (
 
     # Processors
     contextvars_injector,   # Injects context into log events
-    mask_sensitive_data,    # PII tokenization (HMAC/AES-GCM)
+    mask_sensitive_data,    # PII tokenization (HMAC-SHA-256)
     namespace_ecs_fields,   # Reshape fields + clean up flat ECS fields
     ecs_validator,          # Warn on ECS field violations
 
@@ -1341,10 +1358,10 @@ from logctx import (
 )
 ```
 
-### Django (`logctx.contrib.django`)
+### Django (`ecsctx.contrib.django`)
 
 ```python
-from logctx.contrib.django import (
+from ecsctx.contrib.django import (
     # Middleware
     LoggingContextMiddleware,
 
@@ -1360,26 +1377,26 @@ from logctx.contrib.django import (
     CELERY_LOGGERS_DEBUG,   # Celery at INFO
 
     # Processors
-    contextvars_injector,   # Django-aware version (serializes User objects)
+    contextvars_injector,   # Django-aware version (serializes User objects passed in log kwargs)
 )
 
 # Decorators
-from logctx.contrib.django.decorators import api_logging
+from ecsctx.contrib.django.decorators import api_logging
 
 # Auditlog (import explicitly to avoid circular imports)
-from logctx.contrib.django.context_binder import LogContextBinder
+from ecsctx.contrib.django.context_binder import LogContextBinder
 ```
 
-### Celery (`logctx.contrib.celery`)
+### Celery (`ecsctx.contrib.celery`)
 
 ```python
-from logctx.contrib.celery import install_celery_hooks
+from ecsctx.contrib.celery import install_celery_hooks
 ```
 
-### RQ (`logctx.contrib.rq`)
+### RQ (`ecsctx.contrib.rq`)
 
 ```python
-from logctx.contrib.rq import (
+from ecsctx.contrib.rq import (
     with_log_context,       # Decorator for RQ job functions
     capture_log_context,    # Capture context for manual enqueue
     LOG_CONTEXT_KEY,        # Key used in kwargs for context data
@@ -1398,13 +1415,13 @@ class LoggingContext:
     orn: str | None              # → payment.orn
     pg_code: str | None          # → payment.pg_code
     reference_number: str | None # → payment.reference
-    extra: dict                  # → merged to root (deep merge)
-    labels: dict                 # → labels (flat dict of keyword values)
+    extra: dict                  # → merged to root, then reshaped by namespace_ecs_fields
+    labels: dict                 # → labels (flat values only: str/int/float/bool)
 ```
 
 ---
 
-## 20. Log Output Example
+## 21. Log Output Example
 
 ```json
 {
@@ -1420,9 +1437,7 @@ class LoggingContext:
     "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
   },
   "user": {
-    "id": 42,
-    "username": "merchant_admin",
-    "email": "ptok:v1:..."
+    "id": 42
   },
   "client": {
     "ip": "192.168.1.1"
@@ -1444,13 +1459,13 @@ class LoggingContext:
     "env": "production",
     "region": "us-east-1"
   },
-  "keyloop": {
-    "enterprise_id": "ent-789",
-    "store_id": "store-001"
-  },
   "extra": {
     "amount": 100,
-    "currency": "KWD"
+    "currency": "KWD",
+    "keyloop": {
+      "enterprise_id": "ent-789",
+      "store_id": "store-001"
+    }
   }
 }
 ```
@@ -1458,19 +1473,17 @@ class LoggingContext:
 **Field annotations:**
 - `trace.id` — from W3C traceparent, links across services
 - `span.id` — unique per request/task boundary
-- `user.email` — PII tokenized (HMAC-SHA-256)
 - `payment.*` — mapped from `LoggingContext` fields (`pg_code`, `orn`, `reference`)
 - `session_id` — flat root field (sanctioned custom ID)
 - `labels.*` — low-cardinality keyword metadata for Elasticsearch filtering
-- `keyloop.*` — service-namespaced fields (avoids ES collisions)
-- `extra.*` — non-allowlisted bare scalar kwargs, auto-wrapped by `namespace_ecs_fields`
+- `extra.*` — non-allowlisted keys auto-wrapped by `namespace_ecs_fields`, including service-namespaced fields (`keyloop.*`) and bare scalar kwargs
 
 ---
 
-## 21. Package Structure
+## 22. Package Structure
 
 ```
-logctx/
+ecsctx/
 ├── __init__.py                # All public exports
 ├── context.py                 # LoggingContext, bind/reset/get, trace functions
 ├── processors.py              # contextvars_injector, mask_sensitive_data
@@ -1498,20 +1511,6 @@ logctx/
         ├── __init__.py        # RQ exports
         └── log_context.py     # @with_log_context, capture_log_context
 ```
-
-## Installation Options
-
-```bash
-pip install logctx                       # Core only (framework-agnostic, e.g., FastAPI)
-pip install logctx[django]               # Django
-pip install logctx[django,celery]        # Django + Celery
-pip install logctx[django,rq]            # Django + RQ
-pip install logctx[django,auditlog]      # Django + auditlog
-```
-
-Requires Python >= 3.10.
-
----
 
 ## License
 

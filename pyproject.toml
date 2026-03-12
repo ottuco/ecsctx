@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "logctx"
+name = "ecsctx"
 version = "0.4.0"
 description = "Context-aware structured logging with ECS compliance and distributed tracing"
 readme = "README.md"
@@ -21,11 +21,6 @@ classifiers = [
     "Intended Audience :: Developers",
 ]
 
-[project.urls]
-Homepage = "https://github.com/ottuco/logctx"
-Repository = "https://github.com/ottuco/logctx"
-Issues = "https://github.com/ottuco/logctx/issues"
-
 # Core dependencies (framework-agnostic)
 dependencies = [
     "structlog>=24.1.0",
@@ -33,6 +28,11 @@ dependencies = [
     "cryptography>=41.0.0",
     "django-cid>=3.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ottuco/ecsctx"
+Repository = "https://github.com/ottuco/ecsctx"
+Issues = "https://github.com/ottuco/ecsctx/issues"
 
 [project.optional-dependencies]
 django = [
@@ -54,7 +54,7 @@ test = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["logctx"]
+packages = ["ecsctx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

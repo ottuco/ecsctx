@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from logctx.pii import PIIAccessDeniedError
-from logctx.pii.keyset import FileKeysetProvider, Keyset, parse_keyset
+from ecsctx.pii import PIIAccessDeniedError
+from ecsctx.pii.keyset import FileKeysetProvider, Keyset, parse_keyset
 from tests.conftest import make_keyset_json
 
 

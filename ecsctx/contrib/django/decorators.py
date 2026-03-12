@@ -54,7 +54,7 @@ def api_logging(view_cls):
             # Log INBOUND
             log_kwargs = {
                 "view": view_cls.__name__,
-                "event": {
+                "ecs_event": {
                     "kind": "event",
                     "category": ["web"],
                     "type": ["access"],
@@ -73,7 +73,7 @@ def api_logging(view_cls):
             if user_agent:
                 log_kwargs["user_agent"] = {"original": user_agent}
 
-            logger.info(f"INBOUND {request.method} {request.path}", **log_kwargs)
+            logger.info("INBOUND %s %s", request.method, request.path, **log_kwargs)
             return super().initial(request, *args, **kwargs)
 
         def dispatch(self, request, *args, **kwargs):
@@ -87,7 +87,7 @@ def api_logging(view_cls):
                 response = super().dispatch(request, *args, **kwargs)
             except Exception as e:
                 exc = e
-                raise e
+                raise
             finally:
                 # This block runs regardless of whether the view succeeded or crashed
                 exception_type = exc.__class__.__name__ if exc else None
@@ -98,7 +98,11 @@ def api_logging(view_cls):
 
         def _log_outbound(self, request, response, status_code, exception_type=None):
             # Extract response details safely
-            response_headers = dict(response.items()) if response and hasattr(response, "items") else {}
+            response_headers = (
+                dict(response.items())
+                if response and hasattr(response, "items")
+                else {}
+            )
 
             response_body = None
             if response and isinstance(response, Response) and hasattr(response, "data"):
@@ -106,11 +110,15 @@ def api_logging(view_cls):
                 # Exclude specific keys to protect PII or avoid huge blobs
                 ignore_keys = getattr(self, "logging_ignore_response_keys", None)
                 if ignore_keys and isinstance(response_body, dict):
-                    response_body = {k: v for k, v in response_body.items() if k not in ignore_keys}
+                    response_body = {
+                        k: v
+                        for k, v in response_body.items()
+                        if k not in ignore_keys
+                    }
 
             log_payload = {
                 "view": view_cls.__name__,
-                "event": {
+                "ecs_event": {
                     "kind": "event",
                     "category": ["web"],
                     "type": ["access"],
@@ -134,7 +142,13 @@ def api_logging(view_cls):
             if status_code >= 500:
                 log_level = logger.error
 
-            log_level(f"OUTBOUND {request.method} {request.path} ({status_code})", **log_payload)
+            log_level(
+                "OUTBOUND %s %s (%s)",
+                request.method,
+                request.path,
+                status_code,
+                **log_payload,
+            )
 
     LoggedView.__name__ = view_cls.__name__
     LoggedView.__module__ = view_cls.__module__

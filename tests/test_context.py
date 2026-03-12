@@ -1,6 +1,6 @@
 """Tests for LoggingContext field shape and labels support."""
 
-from logctx.context import LoggingContext
+from ecsctx.context import LoggingContext
 
 
 class TestFieldShape:
@@ -50,6 +50,21 @@ class TestLabels:
         result = inner.to_dict()
         assert result["labels"]["env"] == "prod"
 
+    def test_labels_coerces_nested_dicts_to_string(self):
+        ctx = LoggingContext(labels={"nested": {"a": 1}})
+        result = ctx.to_dict()
+        assert isinstance(result["labels"]["nested"], str)
+
+    def test_labels_coerces_lists_to_string(self):
+        ctx = LoggingContext(labels={"tags": ["a", "b"]})
+        result = ctx.to_dict()
+        assert isinstance(result["labels"]["tags"], str)
+
+    def test_labels_allows_flat_values(self):
+        ctx = LoggingContext(labels={"env": "prod", "count": 5, "active": True})
+        result = ctx.to_dict()
+        assert result["labels"] == {"env": "prod", "count": 5, "active": True}
+
 
 class TestECSMapping:
     def test_span_id_nested(self):
@@ -84,7 +99,11 @@ class TestECSMapping:
         assert result["user"] == {"id": 1}
         assert result["client"] == {"ip": "1.2.3.4"}
         assert result["session_id"] == "sess"
-        assert result["payment"] == {"orn": "orn1", "pg_code": "knet", "reference": "ref1"}
+        assert result["payment"] == {
+            "orn": "orn1",
+            "pg_code": "knet",
+            "reference": "ref1",
+        }
         assert result["labels"] == {"env": "test"}
         # pg_code must NOT be flat
         assert "pg_code" not in result
