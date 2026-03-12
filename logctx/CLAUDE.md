@@ -14,6 +14,8 @@ Core structured logging module with ECS field mapping and PII masking.
 
 ## Submodules
 - `contrib/django/` - Django-specific middleware and lazy-loading processors
+- `contrib/rq/` - RQ job context propagation (decorator-based: `@with_log_context`)
+- `contrib/celery/` - Celery task context propagation (signal-based: `install_celery_hooks()`)
 
 ## Footguns ⚠️
 - `_tokenize()` is LRU-cached (2048) - same input always produces same encrypted output within process
