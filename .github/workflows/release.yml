@@ -48,6 +48,48 @@ jobs:
           sed -i "s/version = \"${{ steps.version.outputs.current }}\"/version = \"${{ steps.version.outputs.new }}\"/" pyproject.toml
           sed -i "s/__version__ = \"${{ steps.version.outputs.current }}\"/__version__ = \"${{ steps.version.outputs.new }}\"/" ecsctx/__init__.py
 
+      - name: Generate CHANGELOG entry
+        run: |
+          NEW_VERSION="v${{ steps.version.outputs.new }}"
+          DATE=$(date +%Y-%m-%d)
+
+          # Find previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${PREV_TAG}..HEAD"
+          fi
+
+          # Collect commits grouped by type
+          FEATURES=$(git log "$RANGE" --pretty=format:"- %s (%h)" --grep="^feat" 2>/dev/null || true)
+          FIXES=$(git log "$RANGE" --pretty=format:"- %s (%h)" --grep="^fix" 2>/dev/null || true)
+          OTHER=$(git log "$RANGE" --pretty=format:"- %s (%h)" --invert-grep --grep="^feat" --grep="^fix" --grep="^release:" --all-match 2>/dev/null || true)
+
+          # Build entry
+          ENTRY="## ${NEW_VERSION} (${DATE})"$'\n'
+          [ -n "$FEATURES" ] && ENTRY+=$'\n'"### Features"$'\n'"${FEATURES}"$'\n'
+          [ -n "$FIXES" ] && ENTRY+=$'\n'"### Fixes"$'\n'"${FIXES}"$'\n'
+          [ -n "$OTHER" ] && ENTRY+=$'\n'"### Other"$'\n'"${OTHER}"$'\n'
+
+          # Prepend to CHANGELOG.md
+          if [ -f CHANGELOG.md ]; then
+            # Insert after the first line (header)
+            {
+              head -n 1 CHANGELOG.md
+              echo ""
+              echo "$ENTRY"
+              tail -n +2 CHANGELOG.md
+            } > CHANGELOG.tmp
+            mv CHANGELOG.tmp CHANGELOG.md
+          else
+            {
+              echo "# Changelog"
+              echo ""
+              echo "$ENTRY"
+            } > CHANGELOG.md
+          fi
+
       - name: Build
         run: |
           pip install build
@@ -62,7 +104,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml ecsctx/__init__.py
+          git add pyproject.toml ecsctx/__init__.py CHANGELOG.md
           git commit -m "release: v${{ steps.version.outputs.new }}"
           git tag "v${{ steps.version.outputs.new }}"
           git push origin main --tags
