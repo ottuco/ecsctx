@@ -141,6 +141,7 @@ def configure_pii_from_env() -> None:
             env=pii_env,
             access_mode=access_mode,
             refresh_seconds=float(os.environ.get("PII_REFRESH_SECONDS", "300")),
+            timeout=float(os.environ.get("PII_VAULT_TIMEOUT", "10")),
         )
     else:
         raise PIINotConfiguredError(f"Unknown PII_PROVIDER: {provider_type!r}")

@@ -12,11 +12,11 @@ Core structured logging module with ECS field mapping and PII masking.
 - `get_trace_id()` parses W3C traceparent format: extracts 32-char trace-id from `{version}-{trace-id}-{parent-id}-{flags}`
 - `PRIMARY_KEYS` in processors.py defines which fields stay at root vs get pushed to `extra`
 - PII masking is regex-based on JSON-serialized strings, not recursive dict walking (performance optimization)
-- PII tokenization uses HMAC-SHA-256 with keyset files mounted at `/var/run/ottu/pii/`. Configure via `PII_TOKEN_KEYSET_PATH` env var.
+- PII tokenization supports two providers (`PII_PROVIDER=file|vault`). File provider reads mounted keysets; Vault provider authenticates via AppRole and fetches from KV v2. Access mode (`PII_ACCESS=tokenize|full`) enforces least privilege. Auto-configures lazily from env vars.
 - When PII is not configured, `_tokenize()` returns `[PII_REDACTED]` — never raw PII in logs.
 
 ## Submodules
-- `pii/` - Keyset-based PII module: `crypto.py` (HMAC + AES-GCM), `keyset.py` (FileKeysetProvider with hot-reload), `normalize.py` (email/phone normalization)
+- `pii/` - Keyset-based PII module: `provider.py` (KeysetProvider ABC), `keyset.py` (FileKeysetProvider with hot-reload), `vault.py` (VaultKeysetProvider with AppRole auth), `crypto.py` (HMAC + AES-GCM), `normalize.py` (email/phone normalization)
 - `contrib/django/` - Django-specific middleware and lazy-loading processors
 - `contrib/rq/` - RQ job context propagation (decorator-based: `@with_log_context`)
 - `contrib/celery/` - Celery task context propagation (signal-based: `install_celery_hooks()`)

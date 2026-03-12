@@ -47,7 +47,7 @@ def _mock_urlopen(responses):
     """
     call_count = 0
 
-    def urlopen(request, context=None):
+    def urlopen(request, timeout=None, context=None):
         nonlocal call_count
         idx = min(call_count, len(responses) - 1)
         call_count += 1

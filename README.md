@@ -692,20 +692,41 @@ installation_name, event_name, customer_id, id, pk
 
 ### Configuration
 
-PII keyset files are mounted by the infrastructure (Vault → ESO → K8s Secret). Set environment variables to point to them:
+PII supports two keyset providers: **file** (for Kubernetes with mounted secrets) and **vault** (for hosts that authenticate directly via AppRole).
+
+All services auto-configure lazily from env vars on first PII operation. No explicit startup call is needed.
+
+**Common env vars (all providers):**
 
 ```bash
-# REQUIRED — path to the HMAC token keyset file
-PII_TOKEN_KEYSET_PATH=/var/run/ottu/pii/token-keyset.json
-
-# OPTIONAL — path to the AES-GCM reveal keyset file (for services that need decrypt)
-PII_REVEAL_KEYSET_PATH=/var/run/ottu/pii/reveal-keyset.json
-
-# Environment name for domain separation (tokens differ across envs)
-PII_ENV=dev
+PII_PROVIDER=file          # "file" or "vault"
+PII_ACCESS=tokenize        # "tokenize" (HMAC only) or "full" (HMAC + AES encrypt/decrypt)
+PII_ENV=prod               # Environment name for domain separation (tokens differ across envs)
 ```
 
-Django services auto-configure from these env vars on first log call. Non-Django services call `configure_pii()` at startup.
+**File provider** — keysets are mounted by infrastructure (Vault → ESO → K8s Secret):
+
+```bash
+PII_PROVIDER=file
+PII_TOKEN_KEYSET_PATH=/var/run/ottu/pii/token-keyset.json
+PII_REVEAL_KEYSET_PATH=/var/run/ottu/pii/reveal-keyset.json   # only if PII_ACCESS=full
+```
+
+**Vault provider** — authenticates via AppRole and fetches keysets from KV v2:
+
+```bash
+PII_PROVIDER=vault
+PII_VAULT_ADDR=https://vault.example.com
+PII_VAULT_ROLE_ID_PATH=/etc/ottu/pii/vault-role-id
+PII_VAULT_SECRET_ID_PATH=/etc/ottu/pii/vault-secret-id
+PII_VAULT_TOKEN_KEYSET_PATH=secret/data/platform/pii/token-keyset
+PII_VAULT_REVEAL_KEYSET_PATH=secret/data/platform/pii/reveal-keyset  # only if PII_ACCESS=full
+PII_VAULT_CACERT_PATH=/etc/ottu/pii/vault-ca.crt   # optional, for private CA
+PII_REFRESH_SECONDS=300                              # keyset refresh interval
+PII_VAULT_TIMEOUT=10                                 # HTTP timeout for Vault calls
+```
+
+`PII_ACCESS=tokenize` enforces least privilege: only the token keyset is loaded, and `protect()`/`reveal()` raise `PIIAccessDeniedError`.
 
 ### How It Works
 
@@ -1229,9 +1250,19 @@ The `common-logs` ingest pipeline on o11y enforces ECS field types, so malformed
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `PII_TOKEN_KEYSET_PATH` | Path to HMAC token keyset file | — | **Yes (production)** |
-| `PII_REVEAL_KEYSET_PATH` | Path to AES-GCM reveal keyset file | — | Only for services needing decrypt |
+| `PII_PROVIDER` | Keyset provider: `file` or `vault` | — | **Yes (production)** |
+| `PII_ACCESS` | Access mode: `tokenize` (HMAC only) or `full` (HMAC + AES) | `"tokenize"` | Recommended |
 | `PII_ENV` | Environment name for token domain separation | `"unknown"` | Recommended |
+| `PII_TOKEN_KEYSET_PATH` | Path to HMAC token keyset file (file provider) | — | **Yes** for `file` |
+| `PII_REVEAL_KEYSET_PATH` | Path to AES-GCM reveal keyset file (file provider) | — | Only if `PII_ACCESS=full` |
+| `PII_VAULT_ADDR` | Vault server URL (vault provider) | — | **Yes** for `vault` |
+| `PII_VAULT_ROLE_ID_PATH` | File containing AppRole role_id (vault provider) | — | **Yes** for `vault` |
+| `PII_VAULT_SECRET_ID_PATH` | File containing AppRole secret_id (vault provider) | — | **Yes** for `vault` |
+| `PII_VAULT_TOKEN_KEYSET_PATH` | Vault KV path for token keyset (vault provider) | — | **Yes** for `vault` |
+| `PII_VAULT_REVEAL_KEYSET_PATH` | Vault KV path for reveal keyset (vault provider) | — | Only if `PII_ACCESS=full` |
+| `PII_VAULT_CACERT_PATH` | CA cert for Vault TLS (vault provider) | System CA | No |
+| `PII_REFRESH_SECONDS` | Keyset refresh interval in seconds (vault provider) | `300` | No |
+| `PII_VAULT_TIMEOUT` | HTTP timeout for Vault requests in seconds | `10` | No |
 | `APP_VERSION` | Application version in `service.version` | `"0.0.0"` | No |
 | `SERVICE_TYPE` | Service type: `app`, `rq`, `celery` | Auto-detected from argv | No |
 | `PROJECT_NAME` | Project name in `project.name` + Vector data stream | `"connect"` | **Yes** |
@@ -1242,6 +1273,8 @@ The `common-logs` ingest pipeline on o11y enforces ECS field types, so malformed
 ### .env Example
 
 ```bash
+PII_PROVIDER=file
+PII_ACCESS=tokenize
 PII_TOKEN_KEYSET_PATH=/var/run/ottu/pii/token-keyset.json
 PII_ENV=prod
 APP_VERSION=1.2.3

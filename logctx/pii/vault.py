@@ -37,6 +37,7 @@ class VaultKeysetProvider:
         env: Environment name for HMAC/AAD context.
         access_mode: "tokenize" or "full".
         refresh_seconds: How often to re-fetch keysets from Vault.
+        timeout: HTTP request timeout in seconds for Vault calls.
     """
 
     def __init__(
@@ -51,6 +52,7 @@ class VaultKeysetProvider:
         env: str,
         access_mode: str = "tokenize",
         refresh_seconds: float = 300.0,
+        timeout: float = 10.0,
     ) -> None:
         self._vault_addr = vault_addr.rstrip("/")
         self._role_id_path = role_id_path
@@ -60,6 +62,7 @@ class VaultKeysetProvider:
         self._env = env
         self._access_mode = access_mode
         self._refresh_seconds = refresh_seconds
+        self._timeout = timeout
 
         # SSL context
         self._ssl_context: ssl.SSLContext | None = None
@@ -109,7 +112,9 @@ class VaultKeysetProvider:
         if token:
             req.add_header("X-Vault-Token", token)
 
-        response = urllib.request.urlopen(req, context=self._ssl_context)
+        response = urllib.request.urlopen(
+            req, timeout=self._timeout, context=self._ssl_context
+        )
         return json.loads(response.read().decode())
 
     def _authenticate(self) -> None:
