@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.2 (2026-03-13)
+
+### Features
+- feat: add Django test project and fix lazy User import (ecd7fb9)
+
+
 ## v0.4.1 (2026-03-12)
 
 ### Features
