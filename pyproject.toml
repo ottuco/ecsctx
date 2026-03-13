@@ -38,6 +38,7 @@ Issues = "https://github.com/ottuco/ecsctx/issues"
 django = [
     "django>=4.0",
     "django-ipware>=5.0.0",
+    "djangorestframework>=3.14.0",
     "sentry-sdk>=1.0.0",
 ]
 auditlog = [
@@ -49,8 +50,11 @@ rq = [
 celery = [
     "celery>=5.6.2",
 ]
+
+[dependency-groups]
 test = [
     "pytest>=7.0",
+    "pytest-django>=4.5.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -58,3 +62,4 @@ packages = ["ecsctx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+DJANGO_SETTINGS_MODULE = "tests.django_settings"

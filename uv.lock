@@ -357,12 +357,82 @@ wheels = [
 ]
 
 [[package]]
+name = "djangorestframework"
+version = "3.16.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django", version = "5.2.10", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "django", version = "6.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8a/95/5376fe618646fde6899b3cdc85fd959716bb67542e273a76a80d9f326f27/djangorestframework-3.16.1.tar.gz", hash = "sha256:166809528b1aced0a17dc66c24492af18049f2c9420dbd0be29422029cfc3ff7", size = 1089735 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b0/ce/bf8b9d3f415be4ac5588545b5fcdbbb841977db1c1d923f7568eeabe1689/djangorestframework-3.16.1-py3-none-any.whl", hash = "sha256:33a59f47fb9c85ede792cbf88bde71893bcda0667bc573f784649521f1102cec", size = 1080442 },
+]
+
+[[package]]
 name = "ecs-logging"
 version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/40/9d/49b6b8ecd9b42ee61691ceea6b8757391f371f11df87315bf64240c04d2b/ecs_logging-2.2.0.tar.gz", hash = "sha256:1dc9e216f614129db0e6a2f9f926da4e4cf8edf8de16d1045a20aa8e950291d3", size = 7769 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/26/b4/cdc7961ef5979080766c806b6da014352cbbc4ef6194785e6886988bf48e/ecs_logging-2.2.0-py3-none-any.whl", hash = "sha256:f6e22d267770b06f797076f49b5fcc9d97108b22f452f5f9ed4b5367b1e61b5b", size = 10443 },
+]
+
+[[package]]
+name = "ecsctx"
+version = "0.4.0"
+source = { editable = "." }
+dependencies = [
+    { name = "cryptography" },
+    { name = "django-cid" },
+    { name = "ecs-logging" },
+    { name = "structlog" },
+]
+
+[package.optional-dependencies]
+auditlog = [
+    { name = "django-auditlog" },
+]
+celery = [
+    { name = "celery" },
+]
+django = [
+    { name = "django", version = "5.2.10", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "django", version = "6.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "django-ipware" },
+    { name = "djangorestframework" },
+    { name = "sentry-sdk" },
+]
+rq = [
+    { name = "rq" },
+]
+
+[package.dev-dependencies]
+test = [
+    { name = "pytest" },
+    { name = "pytest-django" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "celery", marker = "extra == 'celery'", specifier = ">=5.6.2" },
+    { name = "cryptography", specifier = ">=41.0.0" },
+    { name = "django", marker = "extra == 'django'", specifier = ">=4.0" },
+    { name = "django-auditlog", marker = "extra == 'auditlog'", specifier = ">=3.0" },
+    { name = "django-cid", specifier = ">=3.0" },
+    { name = "django-ipware", marker = "extra == 'django'", specifier = ">=5.0.0" },
+    { name = "djangorestframework", marker = "extra == 'django'", specifier = ">=3.14.0" },
+    { name = "ecs-logging", specifier = ">=2.1.0" },
+    { name = "rq", marker = "extra == 'rq'", specifier = "==1.16.2" },
+    { name = "sentry-sdk", marker = "extra == 'django'", specifier = ">=1.0.0" },
+    { name = "structlog", specifier = ">=24.1.0" },
+]
+provides-extras = ["django", "auditlog", "rq", "celery"]
+
+[package.metadata.requires-dev]
+test = [
+    { name = "pytest", specifier = ">=7.0" },
+    { name = "pytest-django", specifier = ">=4.5.0" },
 ]
 
 [[package]]
@@ -400,53 +470,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/b6/a5/607e533ed6c83ae1a
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/0f/834427d8c03ff1d7e867d3db3d176470c64871753252b21b4f4897d1fa45/kombu-5.6.2-py3-none-any.whl", hash = "sha256:efcfc559da324d41d61ca311b0c64965ea35b4c55cc04ee36e55386145dace93", size = 214219 },
 ]
-
-[[package]]
-name = "logctx"
-version = "0.4.0"
-source = { editable = "." }
-dependencies = [
-    { name = "cryptography" },
-    { name = "django-cid" },
-    { name = "ecs-logging" },
-    { name = "structlog" },
-]
-
-[package.optional-dependencies]
-auditlog = [
-    { name = "django-auditlog" },
-]
-celery = [
-    { name = "celery" },
-]
-django = [
-    { name = "django", version = "5.2.10", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "django", version = "6.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "django-ipware" },
-    { name = "sentry-sdk" },
-]
-rq = [
-    { name = "rq" },
-]
-test = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "celery", marker = "extra == 'celery'", specifier = ">=5.6.2" },
-    { name = "cryptography", specifier = ">=41.0.0" },
-    { name = "django", marker = "extra == 'django'", specifier = ">=4.0" },
-    { name = "django-auditlog", marker = "extra == 'auditlog'", specifier = ">=3.0" },
-    { name = "django-cid", specifier = ">=3.0" },
-    { name = "django-ipware", marker = "extra == 'django'", specifier = ">=5.0.0" },
-    { name = "ecs-logging", specifier = ">=2.1.0" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=7.0" },
-    { name = "rq", marker = "extra == 'rq'", specifier = "==1.16.2" },
-    { name = "sentry-sdk", marker = "extra == 'django'", specifier = ">=1.0.0" },
-    { name = "structlog", specifier = ">=24.1.0" },
-]
-provides-extras = ["django", "auditlog", "rq", "celery", "test"]
 
 [[package]]
 name = "packaging"
@@ -512,6 +535,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d1/db/7ef3487e0fb0049ddb5ce41d3a49c235bf9ad299b6a25d5780a89f19230f/pytest-9.0.2.tar.gz", hash = "sha256:75186651a92bd89611d1d9fc20f0b4345fd827c41ccd5c299a868a05d70edf11", size = 1568901 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3b/ab/b3226f0bd7cdcf710fbede2b3548584366da3b19b5021e74f5bde2a8fa3f/pytest-9.0.2-py3-none-any.whl", hash = "sha256:711ffd45bf766d5264d487b917733b453d917afd2b0ad65223959f59089f875b", size = 374801 },
+]
+
+[[package]]
+name = "pytest-django"
+version = "4.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/13/2b/db9a193df89e5660137f5428063bcc2ced7ad790003b26974adf5c5ceb3b/pytest_django-4.12.0.tar.gz", hash = "sha256:df94ec819a83c8979c8f6de13d9cdfbe76e8c21d39473cfe2b40c9fc9be3c758", size = 91156 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/83/a5/41d091f697c09609e7ef1d5d61925494e0454ebf51de7de05f0f0a728f1d/pytest_django-4.12.0-py3-none-any.whl", hash = "sha256:3ff300c49f8350ba2953b90297d23bf5f589db69545f56f1ec5f8cff5da83e85", size = 26123 },
 ]
 
 [[package]]

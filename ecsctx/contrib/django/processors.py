@@ -8,8 +8,6 @@ using bind_logging_context(extra={"merchant_id": "..."})
 import contextlib
 import os
 
-from django.contrib.auth import get_user_model
-from django.contrib.auth.models import User as _DefaultUser
 from structlog.contextvars import get_contextvars
 
 from ecsctx.context import get_trace_id
@@ -25,9 +23,12 @@ def _auto_configure_pii():
 def _get_django_user_model():
     """Get the Django User model from settings."""
     try:
+        from django.contrib.auth import get_user_model
+
         return get_user_model()
     except Exception:
-        # Fallback to default User model if get_user_model fails
+        from django.contrib.auth.models import User as _DefaultUser
+
         return _DefaultUser
 
 
