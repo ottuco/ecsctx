@@ -108,7 +108,7 @@ def reshape_log_event(event_dict) -> dict:
     extra = {}
 
     for key, value in event_dict.items():
-        if key in ROOT_ALLOWLIST:
+        if key in ROOT_ALLOWLIST or key.startswith("_"):
             reshaped[key] = value
         else:
             extra[key] = value
