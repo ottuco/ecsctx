@@ -98,6 +98,8 @@ def reshape_log_event(event_dict) -> dict:
     """Reshape log event: allowlisted keys stay at root, everything else goes into extra.
 
     - Keys in ROOT_ALLOWLIST always stay at root.
+    - Keys starting with ``_`` are preserved (structlog internal keys like
+      ``_record``, ``_from_structlog``).
     - Non-allowlisted keys (scalars, lists, and dicts) are wrapped into
       ``extra``.
     """
@@ -108,7 +110,7 @@ def reshape_log_event(event_dict) -> dict:
     extra = {}
 
     for key, value in event_dict.items():
-        if key in ROOT_ALLOWLIST:
+        if key in ROOT_ALLOWLIST or key.startswith("_"):
             reshaped[key] = value
         else:
             extra[key] = value

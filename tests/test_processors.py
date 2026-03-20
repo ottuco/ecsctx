@@ -114,6 +114,21 @@ class TestReshapeLogEvent:
         assert result["ecs_event"] == {"kind": "event"}
         assert "extra" not in result
 
+    def test_structlog_internal_keys_preserved(self):
+        """Keys starting with _ (structlog internals like _record) stay at root."""
+        record = object()  # simulate a logging.LogRecord
+        event = {
+            "message": "hello",
+            "_record": record,
+            "_from_structlog": False,
+            "some_random_key": "val",
+        }
+        result = reshape_log_event(event)
+        assert result["_record"] is record
+        assert result["_from_structlog"] is False
+        assert "some_random_key" not in result
+        assert result["extra"] == {"some_random_key": "val"}
+
 
 class TestNamespaceEcsFields:
     def test_ecs_event_renamed_to_event(self):

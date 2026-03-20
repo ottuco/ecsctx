@@ -159,6 +159,13 @@ def get_logging_config(
                     ecs_validator,
                     ECSFormatter(),
                 ],
+                # foreign_pre_chain runs for stdlib log messages before the
+                # main processors list.  namespace_ecs_fields, mask_sensitive_data,
+                # and ecs_validator already run in processors for ALL messages
+                # (structlog + stdlib), so including them here would cause
+                # double-processing and — critically — reshape_log_event would
+                # strip structlog internal keys (_record) before
+                # remove_processors_meta can consume them.
                 "foreign_pre_chain": [
                     structlog.contextvars.merge_contextvars,
                     structlog.processors.TimeStamper(fmt="iso"),
@@ -172,9 +179,6 @@ def get_logging_config(
                         ]
                     ),
                     contextvars_injector,
-                    namespace_ecs_fields,
-                    mask_sensitive_data,
-                    ecs_validator,
                 ],
             },
         },
