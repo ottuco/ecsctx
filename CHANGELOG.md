@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.3 (2026-03-20)
+
+### Fixes
+- fix(processors): preserve structlog internal keys in reshape_log_event (7810539)
+
+### Other
+- chore: stop tracking .claude/settings.local.json (ed9bc72)
+
+
 ## v0.4.2 (2026-03-13)
 
 ### Features
