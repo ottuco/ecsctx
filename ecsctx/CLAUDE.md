@@ -4,7 +4,7 @@ Core structured logging module with ECS field mapping and PII masking.
 
 ## Entry Points
 - `context.py` - `LoggingContext`, `logging_context` context manager, `get_trace_id()`
-- `processors.py` - `contextvars_injector`, `mask_sensitive_data`
+- `processors.py` - `contextvars_injector`, `mask_sensitive_data`, `namespace_ecs_fields`
 - `pii/` - PII tokenization (HMAC-SHA-256) and encryption (AES-256-GCM) via keyset files
 
 ## Critical Context

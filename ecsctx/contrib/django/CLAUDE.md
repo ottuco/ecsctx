@@ -1,6 +1,6 @@
 # /ecsctx/contrib/django
 
-Django middleware and processors with lazy settings loading to avoid circular imports.
+Django middleware and processors; the processor lazily imports the User model and auto-configures PII from env to avoid circular imports during bootstrap.
 
 ## Entry Points
 - `middleware.py` - `LoggingContextMiddleware` (binds span_id, user_id, ip)

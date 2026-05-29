@@ -700,7 +700,7 @@ Keys are delivered via mounted keyset files or fetched from Vault.
 | **Emails** | Regex: `user@domain.com` patterns | `"ptok:v1:KeND..."` |
 | **Phone numbers** | Regex: 10-15 digits with +/spaces/dashes | `"ptok:v1:x8Fp..."` |
 | **Names** | Keys containing: `name`, `customer`, `payer`, `billing`, `shipping`, `cardholder`, `email`, `phone`, `mobile`, `contact`, `recipient`, `beneficiary`, `address`, `udf` | `"ptok:v1:..."` |
-| **Auth headers** | `authorization`, `api-key`, `x-api-key` keys | `"Bearer ****<last4>"` (masked, not tokenized) |
+| **Auth headers** | `authorization`, `api-key`, `x-api-key` keys | `"Bearer <first4>****<last4>"` (masked, not tokenized; `"Bearer ****"` when the secret is ≤8 chars) |
 
 ### Whitelist (NOT Masked)
 
@@ -1486,7 +1486,7 @@ class LoggingContext:
 ecsctx/
 ├── __init__.py                # All public exports
 ├── context.py                 # LoggingContext, bind/reset/get, trace functions
-├── processors.py              # contextvars_injector, mask_sensitive_data
+├── processors.py              # contextvars_injector, mask_sensitive_data, namespace_ecs_fields
 ├── formatters.py              # ECSFormatter (v1.12.0)
 ├── ecs_validator.py           # ECS field validation (warn on violations)
 ├── pii/

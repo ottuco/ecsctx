@@ -26,7 +26,7 @@
 - feat : README.md file got updated. (2377b4a)
 - feat(django): add Django middleware and processors with lazy settings loading (657f0f2)
 - feat(django): add plug-and-play LOGGING configuration (99df5cf)
-- feat: initial logctx package (4d18526)
+- feat: initial ecsctx package (4d18526)
 
 ### Fixes
 - fix: enhance logging context reset handling to suppress RuntimeError (d33984b)
@@ -35,9 +35,9 @@
 
 ### Other
 - ci: add changelog generation to release workflow (996e000)
-- refactor: rename logctx to ecsctx and update imports across the codebase (b95f626)
-- refactor: rename logctx to ecsctx and update imports across the codebase (6b96482)
-- Merge branch 'main' of github.com:ottuco/logctx (6b8f2de)
+- refactor: rename package to ecsctx and update imports across the codebase (b95f626)
+- refactor: rename package to ecsctx and update imports across the codebase (6b96482)
+- Merge branch 'main' of github.com:ottuco/ecsctx (6b8f2de)
 - Merge pull request #4 from ottuco/149309 (6167126)
 - Fix: deep merge extra dict in LoggingContext.evolve() to preserve nested keys (63b72c5)
 - Add: Celery context propagation utilities for logging context management (57f22de)
