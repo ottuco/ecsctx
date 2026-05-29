@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.1 (2026-05-29)
+
+### Fixes
+- fix(django): honor ECSCTX_MASK_EXEMPT_PATHS at log time, not only in setup_logging() (769a89e)
+
+
 ## v0.5.0 (2026-05-29)
 
 ### Features
