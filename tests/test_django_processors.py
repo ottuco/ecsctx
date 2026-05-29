@@ -2,13 +2,17 @@
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.test import override_settings
 
+from ecsctx.contrib.django.logging import _configure_masking_from_settings
 from ecsctx.contrib.django.processors import (
     _get_django_user_model,
     _is_django_user,
     _serialize_django_user,
     contextvars_injector,
 )
+from ecsctx.pii import configure_pii
+from ecsctx.processors import _safe_dump_and_mask, masking_is_configured
 
 User = get_user_model()
 
@@ -87,3 +91,20 @@ class TestLazyImport:
         # Re-import should not fail — if auth models were imported at module
         # level, this would raise AppRegistryNotReady in some configurations.
         importlib.reload(mod)
+
+
+class TestMaskingSettingsBridge:
+    @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["payment_methods[*].name"])
+    def test_setting_bridges_to_masking(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        _configure_masking_from_settings()
+        assert masking_is_configured()
+        out = _safe_dump_and_mask(
+            {"payment_methods": [{"name": "KNET"}], "customer": {"name": "John"}}
+        )
+        assert out["payment_methods"][0]["name"] == "KNET"
+        assert out["customer"]["name"].startswith("ptok:v1:")
+
+    def test_absent_setting_is_noop(self):
+        _configure_masking_from_settings()
+        assert not masking_is_configured()

@@ -11,7 +11,7 @@ Core structured logging module with ECS field mapping and PII masking.
 - `logging_context` supports nesting - inner contexts merge with outer, auto-restored on exit
 - `get_trace_id()` parses W3C traceparent format: extracts 32-char trace-id from `{version}-{trace-id}-{parent-id}-{flags}`
 - `PRIMARY_KEYS` in processors.py defines which fields stay at root vs get pushed to `extra`
-- PII masking is regex-based on JSON-serialized strings, not recursive dict walking (performance optimization)
+- PII masking walks the structure recursively (path-aware): sensitive string values are tokenized unless their JSON path is exempted via `configure_masking()`, Django `ECSCTX_MASK_EXEMPT_PATHS`, or env `PII_MASK_EXEMPT_PATHS` (matched relative to the masked container, e.g. `payment_methods[*].name`; a prefix exempts the whole subtree). Emails/phones are still scrubbed on every string leaf.
 - PII tokenization supports two providers (`PII_PROVIDER=file|vault`). File provider reads mounted keysets; Vault provider authenticates via AppRole and fetches from KV v2. Access mode (`PII_ACCESS=tokenize|full`) enforces least privilege. Auto-configures lazily from env vars.
 - When PII is not configured, `_tokenize()` returns `[PII_REDACTED]` — never raw PII in logs.
 

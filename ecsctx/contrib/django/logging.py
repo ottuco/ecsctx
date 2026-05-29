@@ -234,6 +234,23 @@ def configure_structlog():
     )
 
 
+def _configure_masking_from_settings() -> None:
+    """Bridge the Django ``ECSCTX_MASK_EXEMPT_PATHS`` setting into the core
+    masking config. No-op if Django settings are unavailable or the setting is
+    absent (the core then falls back to the PII_MASK_EXEMPT_PATHS env var).
+    """
+    try:
+        from django.conf import settings
+
+        exempt = getattr(settings, "ECSCTX_MASK_EXEMPT_PATHS", None)
+    except Exception:
+        return
+    if exempt is not None:
+        from ecsctx.processors import configure_masking
+
+        configure_masking(exempt_paths=list(exempt))
+
+
 def setup_logging(capture_warnings: bool = True):
     """
     Complete logging setup helper.
@@ -245,6 +262,7 @@ def setup_logging(capture_warnings: bool = True):
     Args:
         capture_warnings: Route Python warnings through logging (default: True)
     """
+    _configure_masking_from_settings()
     configure_structlog()
     if capture_warnings:
         logging.captureWarnings(True)

@@ -7,6 +7,7 @@ import os
 import pytest
 
 from ecsctx.pii import _reset as _reset_pii
+from ecsctx.processors import _reset_masking
 
 
 def _make_key_b64(length: int = 32) -> str:
@@ -70,3 +71,10 @@ def _reset_pii_module():
     """Reset PII module state between tests."""
     yield
     _reset_pii()
+
+
+@pytest.fixture(autouse=True)
+def _reset_masking_module():
+    """Reset masking exemption config between tests."""
+    yield
+    _reset_masking()

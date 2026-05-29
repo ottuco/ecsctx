@@ -682,7 +682,7 @@ This ensures the receiving service can correlate its logs with yours under the s
 
 ## 13. PII Masking & Tokenization
 
-ecsctx automatically detects and protects sensitive data in logs. The `mask_sensitive_data` processor uses regex-based scrubbing on JSON-serialized payloads to find and tokenize PII.
+ecsctx automatically detects and protects sensitive data in logs. The `mask_sensitive_data` processor walks payload structures recursively (path-aware) to find and tokenize PII, and scans every string value for email/phone patterns.
 
 **Log processor path** (automatic via `mask_sensitive_data`):
 - When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`) for fraud correlation. Same input always produces the same token.
@@ -712,6 +712,38 @@ app_name, project_name, class_name, method_name, view_name, username,
 site_name, domain_name, bank_name, display_name, install_name,
 installation_name, event_name, customer_id, id, pk
 ```
+
+### Path exemptions
+
+Some non-PII fields share a name with a sensitive key — e.g. a payment catalog's `payment_methods[*].name` ("KNET") would otherwise be tokenized. The whitelist above is key-name based and global; for finer control, exempt specific **JSON paths** from key-based tokenization. (Email/phone scrubbing still runs on exempted paths, so a real email never slips through.)
+
+Configure exemptions in any of three ways (precedence: explicit call > Django setting > env var):
+
+```python
+# 1. Django settings.py — a list of paths
+ECSCTX_MASK_EXEMPT_PATHS = ["payment_methods[*].name", "audit"]
+
+# 2. Framework-agnostic env var — comma-separated
+#    PII_MASK_EXEMPT_PATHS="payment_methods[*].name,audit"
+
+# 3. Programmatic, at startup
+from ecsctx import configure_masking
+configure_masking(exempt_paths=["payment_methods[*].name", "audit"])
+```
+
+**Path syntax** (matched relative to the masked container, e.g. inside `payload`):
+
+| Segment | Meaning |
+|---------|---------|
+| `key`   | a dict key |
+| `[*]`   | any array element |
+| `*`     | any single dict key (wildcard) |
+
+Matching is a **prefix match**, so a pattern also exempts everything nested below it:
+
+- `payment_methods[*].name` — exempts just that field in every array element
+- `payment_methods` — exempts the entire `payment_methods` subtree
+- `order.customer.name`, `items[*].tags[*].name` — arbitrary nesting works
 
 ### Configuration
 
@@ -753,12 +785,12 @@ PII_VAULT_TIMEOUT=10                                 # HTTP timeout for Vault ca
 
 ### How It Works
 
-1. Log event dict is serialized to JSON string
-2. Sensitive keys are found and their values tokenized (HMAC-SHA-256)
-3. String content is scanned for email/phone patterns and tokenized
-4. Auth header values are masked (truncated, not encrypted)
-5. JSON is parsed back to dict
-6. Input is normalized before tokenization (emails lowercased, phones to E.164)
+1. Each masked container (`payload`, `args`, `kwargs`, request/response bodies) is normalized via a JSON round-trip (`default=str` handles UUIDs, Decimals, model instances)
+2. The structure is walked recursively, tracking each value's JSON path
+3. A sensitive-key string value is tokenized (HMAC-SHA-256) — unless its key is whitelisted or its path is exempted (see [Path exemptions](#path-exemptions))
+4. Every string value is also scanned for email/phone patterns and tokenized (defense in depth, even on exempted paths)
+5. Auth header values are masked (truncated, not encrypted)
+6. Values are normalized before tokenization (emails lowercased, phones to E.164)
 
 ### Example Output
 

@@ -266,17 +266,38 @@ PHONE_PATTERN = re.compile(
     r"\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4,6}\b"
 )
 
-# Pattern to find keys that suggest PII (Names, Contact Info) in a JSON string
-# Capture Group 1: The Key (with quotes)
-# Capture Group 2: The Value (with quotes)
-# Looks for keys containing: name, payer, billing, shipping, customer, cardholder,
-# email, phone, mobile, tel
-# We use a broad pattern to catch variations like "Pyr_Name", "delivery_tel",
-# "billing_email", "udf3"
-SENSITIVE_KEY_PATTERN = re.compile(
-    r'("[\w-]*(?:name|payer|billing|shipping|customer|cardholder|email|phone|mobile|tel|contact|recipient|beneficiary|address|udf)[\w-]*")\s*:\s*("[^"]*")',
-    re.IGNORECASE,
+# Substrings that mark a dict key as sensitive (case-insensitive). A string
+# value under such a key is tokenized unless the key is in SAFE_NAME_KEYS or its
+# JSON path is exempted. Single source of truth for key sensitivity. Broad on
+# purpose to catch variations like "Pyr_Name", "delivery_tel", "billing_email",
+# "udf3".
+SENSITIVE_KEYWORDS = (
+    "name",
+    "payer",
+    "billing",
+    "shipping",
+    "customer",
+    "cardholder",
+    "email",
+    "phone",
+    "mobile",
+    "tel",
+    "contact",
+    "recipient",
+    "beneficiary",
+    "address",
+    "udf",
 )
+
+
+def _key_is_sensitive(key) -> bool:
+    """True if a dict key suggests PII (and is not whitelisted)."""
+    if not isinstance(key, str):
+        return False
+    low = key.lower()
+    if low in SAFE_NAME_KEYS:
+        return False
+    return any(kw in low for kw in SENSITIVE_KEYWORDS)
 
 # Token prefixes for idempotency checks
 _TOKEN_PREFIXES = ("ptok:", '"ptok:')
@@ -342,48 +363,152 @@ def _scrub_string_content(text: str) -> str:
     return PHONE_PATTERN.sub(lambda m: _tokenize(m.group(), "phone"), text)
 
 
-def _scrub_sensitive_keys(json_text: str) -> str:
+# --- Path-aware mask exemptions (mirrors the PII singleton config pattern) ---
+# Exemption paths let a consuming service mark specific JSON paths as non-PII so
+# their string values are NOT key-tokenized. Email/phone scrubbing still runs on
+# every string leaf regardless (defense in depth). Paths are matched relative to
+# the masked container root (payload/args/kwargs/http body).
+#
+# Path syntax: dict step "key", array step "[*]", single dict-key wildcard "*".
+# Matching is a PREFIX match, so a pattern also exempts the whole subtree below it
+# ("payment_methods" exempts everything under it; "payment_methods[*].name" only
+# that leaf).
+_exempt_patterns: tuple | None = None
+_mask_auto_configure_attempted: bool = False
+
+
+def _compile_path(pattern: str) -> tuple:
+    """Parse an exemption pattern into a tuple of segments.
+
+    "payment_methods[*].name" -> ("payment_methods", "[*]", "name")
+    "customer.name"           -> ("customer", "name")
+    "a.*.b"                   -> ("a", "*", "b")
     """
-    Scrub values of keys that look sensitive (likeNames) in a JSON string.
-    Checks against SAFE_NAME_KEYS whitelist.
+    return tuple(re.findall(r"\[\*\]|[^.\[\]]+", pattern))
+
+
+def configure_masking(*, exempt_paths: list[str] | None = None) -> None:
+    """Configure path exemptions for PII masking (highest precedence)."""
+    global _exempt_patterns, _mask_auto_configure_attempted
+    paths = exempt_paths or []
+    _exempt_patterns = tuple(_compile_path(p) for p in paths if p)
+    _mask_auto_configure_attempted = True
+
+
+def configure_masking_from_env() -> None:
+    """Load exemptions from the PII_MASK_EXEMPT_PATHS env var (CSV). Idempotent."""
+    global _exempt_patterns, _mask_auto_configure_attempted
+    if _mask_auto_configure_attempted or _exempt_patterns is not None:
+        return
+    _mask_auto_configure_attempted = True
+    raw = os.environ.get("PII_MASK_EXEMPT_PATHS", "")
+    paths = [p.strip() for p in raw.split(",") if p.strip()]
+    _exempt_patterns = tuple(_compile_path(p) for p in paths)
+
+
+def masking_is_configured() -> bool:
+    """True if mask exemptions have been explicitly set or env-loaded."""
+    return _exempt_patterns is not None
+
+
+def _get_exempt_patterns() -> tuple:
+    if _exempt_patterns is None:
+        configure_masking_from_env()
+    return _exempt_patterns or ()
+
+
+def _reset_masking() -> None:
+    """Reset masking config. For testing only."""
+    global _exempt_patterns, _mask_auto_configure_attempted
+    _exempt_patterns = None
+    _mask_auto_configure_attempted = False
+
+
+def _path_matches(path: tuple, pattern: tuple) -> bool:
+    """Prefix match: True if `pattern` matches the leading segments of `path`.
+
+    "[*]" matches an array step only; "*" matches exactly one dict-key step
+    (never an array step); a literal matches an equal dict key.
     """
+    if len(pattern) > len(path):
+        return False
+    for pat_seg, path_seg in zip(pattern, path):
+        if pat_seg == "[*]":
+            if path_seg != "[*]":
+                return False
+        elif pat_seg == "*":
+            if path_seg == "[*]":
+                return False
+        elif pat_seg != path_seg:
+            return False
+    return True
 
-    def replace_sensitive(match):
-        full_key_quoted = match.group(1)  # "customer_name"
-        key_raw = full_key_quoted.strip('"')
-        value_quoted = match.group(2)  # "John Doe"
 
-        # Check if key is safe
-        if key_raw.lower() in SAFE_NAME_KEYS:
-            return match.group(0)  # Return unchanged
+def _path_is_exempt(path: tuple, patterns: tuple) -> bool:
+    return any(_path_matches(path, p) for p in patterns)
 
-        # Tokenize the value
-        return f"{full_key_quoted}: {_tokenize(value_quoted)}"
 
-    return SENSITIVE_KEY_PATTERN.sub(replace_sensitive, json_text)
+def _mask_leaf(value: str, key, path: tuple, exempt: tuple) -> str:
+    """Mask a single string leaf that has a known dict key."""
+    # Idempotency: already tokenized/redacted -> leave alone.
+    if value.startswith(_TOKEN_PREFIXES):
+        return value
+    if _key_is_sensitive(key) and not _path_is_exempt(path, exempt):
+        return _tokenize(value, "generic")
+    # Non-sensitive or exempted key: still catch emails/phones in the value.
+    return _scrub_string_content(value)
+
+
+def _mask_structure(node, path: tuple, exempt: tuple):
+    """Recursively mask a JSON-normalized structure, tracking the path.
+
+    - dict: recurse per key (path += (key,))
+    - list: recurse per element (path += ("[*]",))
+    - str leaf with a key: tokenize if sensitive and not exempt, else scrub
+    - other scalars (int/float/bool/None): unchanged
+    """
+    if isinstance(node, dict):
+        for k, v in node.items():
+            child_path = path + (k,)
+            if isinstance(v, str):
+                node[k] = _mask_leaf(v, k, child_path, exempt)
+            else:
+                node[k] = _mask_structure(v, child_path, exempt)
+        return node
+    if isinstance(node, list):
+        arr_path = path + ("[*]",)
+        for i, v in enumerate(node):
+            if isinstance(v, str):
+                # Array elements have no key -> email/phone scrub only.
+                node[i] = _scrub_string_content(v)
+            else:
+                node[i] = _mask_structure(v, arr_path, exempt)
+        return node
+    return node
 
 
 def _safe_dump_and_mask(data):
-    """
-    1. Dump data to JSON string (handling non-serializable types via default=str)
-    2. Scrub PII from string (Values & Keys)
-    3. Load back to dict/list if possible to preserve structure for logs
+    """Normalize via a JSON round-trip (default=str handles UUID/Decimal/models),
+    then recursively mask with path-aware exemptions. Email/phone scrubbing runs
+    on every string leaf as defense in depth.
     """
     try:
-        # Dump to string
-        # default=str handles UUIDs, Decimals, Model instances, etc. safely
-        dumped = json.dumps(data, default=str)
-
-        # Apply scrubbing
-        scrubbed = _scrub_sensitive_keys(dumped)  # Handle "Name" keys first
-        scrubbed = _scrub_string_content(scrubbed)  # Handle Emails/Phones anywhere
-
-        # Try to restore structure
-        return json.loads(scrubbed)
+        normalized = json.loads(json.dumps(data, default=str))
     except Exception:
-        # If any step fails (shouldn't strictly happen with default=str),
-        # or if loading back fails, return the string representation (safest fallback)
-        # We ensure at least the regexes ran if dumped succeeded.
+        # Normalization failed (very unlikely with default=str) -> string scrub.
+        try:
+            return _scrub_string_content(str(data))
+        except Exception:
+            return "LOG_MASKING_ERROR"
+
+    exempt = _get_exempt_patterns()
+    try:
+        if isinstance(normalized, (dict, list)):
+            return _mask_structure(normalized, (), exempt)
+        if isinstance(normalized, str):
+            return _scrub_string_content(normalized)
+        return normalized
+    except Exception:
         try:
             return _scrub_string_content(str(data))
         except Exception:
@@ -394,9 +519,12 @@ def mask_sensitive_data(_logger, _method_name, event_dict):
     """
     Structlog processor for surgical masking and tokenization.
 
-    OPTIMIZED VERSION: Uses string-based regex replacement instead of recursive walking.
+    Path-aware: each scrubbed container is JSON-normalized and recursively
+    walked, tokenizing sensitive string values unless their JSON path is
+    exempted (see configure_masking). Emails/phones are scrubbed on every
+    string leaf regardless.
     - Headers: mask Authorization/Api-Key values
-    - Payload/Http: Serialize -> Regex Mask -> Deserialize
+    - Payload/Http bodies: normalize -> recursive path-aware mask
     """
     # Mask top-level headers
     if "headers" in event_dict and isinstance(event_dict["headers"], dict):
