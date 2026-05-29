@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.0 (2026-05-29)
+
+### Features
+- feat(processors): path-aware PII masking with per-service path exemptions (62189d8)
+
+### Other
+- chore: stop tracking .serena/ and refresh uv.lock (ab61a63)
+- docs: correct stale PII/crypto, Django, and naming claims in Markdown (ff3539c)
+
+
 ## v0.4.3 (2026-03-20)
 
 ### Fixes
