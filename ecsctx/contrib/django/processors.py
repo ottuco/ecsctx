@@ -20,6 +20,50 @@ def _auto_configure_pii():
     configure_pii_from_env()
 
 
+_mask_settings_attempted = False
+
+
+def _auto_configure_masking() -> None:
+    """Bridge the Django ``ECSCTX_MASK_EXEMPT_PATHS`` setting into the core
+    masking config, lazily on first use.
+
+    Runs at log time (when Django settings are fully loaded), so the setting is
+    honored regardless of how logging was wired (setup_logging,
+    get_logging_config, or manual). Retries until settings are accessible.
+    Precedence is preserved: an explicit configure_masking() call wins, then
+    this setting, then the PII_MASK_EXEMPT_PATHS env var.
+    """
+    global _mask_settings_attempted
+    if _mask_settings_attempted:
+        return
+
+    from ecsctx.processors import configure_masking, masking_is_configured
+
+    # An explicit configure_masking() (or a prior load) already won.
+    if masking_is_configured():
+        _mask_settings_attempted = True
+        return
+
+    try:
+        from django.conf import settings
+
+        exempt = getattr(settings, "ECSCTX_MASK_EXEMPT_PATHS", None)
+    except Exception:
+        # Settings not ready yet (e.g. during settings.py import) — leave the
+        # flag unset so we retry on the next call (at real log time).
+        return
+
+    _mask_settings_attempted = True
+    if exempt is not None:
+        configure_masking(exempt_paths=list(exempt))
+
+
+def _reset_masking_settings_flag() -> None:
+    """Reset the settings-bridge guard. For testing only."""
+    global _mask_settings_attempted
+    _mask_settings_attempted = False
+
+
 def _get_django_user_model():
     """Get the Django User model from settings."""
     try:
@@ -78,8 +122,9 @@ def contextvars_injector(_logger, _method_name, event_dict):
     6. Django User object serialization (NEW)
     """
 
-    # 0. Auto-configure PII from env vars on first call
+    # 0. Auto-configure PII + masking exemptions on first call
     _auto_configure_pii()
+    _auto_configure_masking()
 
     # 1. Inject from LoggingContext (decorators set this)
     event_dict = _inject_logging_context(event_dict)

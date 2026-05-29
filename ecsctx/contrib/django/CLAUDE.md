@@ -1,6 +1,6 @@
 # /ecsctx/contrib/django
 
-Django middleware and processors; the processor lazily imports the User model and auto-configures PII from env to avoid circular imports during bootstrap.
+Django middleware and processors; the `contextvars_injector` lazily imports the User model and, on first call, auto-configures PII (from env) and mask exemptions (from the `ECSCTX_MASK_EXEMPT_PATHS` setting) — avoiding circular imports during bootstrap. The settings bridge runs at log time (settings fully loaded), so it works regardless of whether `setup_logging()` was called.
 
 ## Entry Points
 - `middleware.py` - `LoggingContextMiddleware` (binds span_id, user_id, ip)
