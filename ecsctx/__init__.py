@@ -38,7 +38,7 @@ from ecsctx.processors import (
     namespace_ecs_fields,
 )
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"
 
 __all__ = [
     # Context

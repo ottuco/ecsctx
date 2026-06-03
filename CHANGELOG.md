@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.3 (2026-06-03)
+
+### Fixes
+- fix(django): don't read settings in setup_logging (settings.py re-entrancy) (#11) (97e42cf)
+
+
 ## v0.5.2 (2026-06-03)
 
 ### Features
