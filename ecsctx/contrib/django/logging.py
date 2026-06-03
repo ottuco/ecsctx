@@ -39,10 +39,7 @@ from ecsctx import (
     mask_sensitive_data,
     namespace_ecs_fields,
 )
-from ecsctx.contrib.django.processors import (
-    _auto_configure_masking,
-    contextvars_injector,
-)
+from ecsctx.contrib.django.processors import contextvars_injector
 
 # =============================================================================
 # LOGGER PRESETS
@@ -248,7 +245,13 @@ def setup_logging(capture_warnings: bool = True):
     Args:
         capture_warnings: Route Python warnings through logging (default: True)
     """
-    _auto_configure_masking()
+    # NB: do NOT bridge ECSCTX_MASK_EXEMPT_PATHS from Django settings here.
+    # setup_logging() is documented to be called from settings.py, i.e. while the
+    # settings module is still importing. Reading django.conf.settings at that
+    # point forces an early settings._setup(), which caches a *partial* settings
+    # object (everything defined after the setup_logging() call is lost) and
+    # breaks the whole app. The exemptions are bridged lazily at log time instead
+    # (contextvars_injector -> _auto_configure_masking), when settings are ready.
     configure_structlog()
     if capture_warnings:
         logging.captureWarnings(True)
