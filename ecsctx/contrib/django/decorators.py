@@ -5,6 +5,25 @@ from rest_framework.response import Response
 logger = structlog.get_logger(__name__)
 
 
+def _log_user(user):
+    """ECS ``user.*`` fields for an authenticated user, or ``None``.
+
+    Emits ``user.id`` (stable identifier — int pk or SSO uuid) and ``user.name``
+    (the username — ``user.name`` is the ECS field for it, see
+    https://www.elastic.co/docs/reference/ecs/ecs-user). The root ``user`` block is
+    not touched by ``mask_sensitive_data`` (which only scrubs headers/body/payload
+    containers), so these values are logged as-is.
+    """
+    if not (user and getattr(user, "is_authenticated", False)):
+        return None
+
+    fields = {"id": str(user.pk)}
+    name = user.get_username()
+    if name:
+        fields["name"] = name
+    return fields
+
+
 def api_logging(view_cls):
     """
     Log INBOUND request and OUTBOUND response for DRF views.
@@ -73,6 +92,16 @@ def api_logging(view_cls):
             if user_agent:
                 log_kwargs["user_agent"] = {"original": user_agent}
 
+            # `request.user` triggers DRF's lazy authentication, which can raise
+            # (AuthenticationFailed) before super().initial() handles it — guard so
+            # logging never alters request handling.
+            try:
+                user = request.user
+            except Exception:
+                user = None
+            if fields := _log_user(user):
+                log_kwargs["user"] = fields
+
             logger.info("INBOUND %s %s", request.method, request.path, **log_kwargs)
             return super().initial(request, *args, **kwargs)
 
@@ -137,6 +166,13 @@ def api_logging(view_cls):
 
             if exception_type:
                 log_payload["error"] = {"type": exception_type}
+
+            # Use the DRF request (self.request), whose `.user` is set by
+            # authentication during dispatch — the raw Django `request.user` is not
+            # updated for token/JWT auth.
+            user = getattr(getattr(self, "request", None), "user", None)
+            if fields := _log_user(user):
+                log_payload["user"] = fields
 
             log_level = logger.info if status_code < 400 else logger.warning
             if status_code >= 500:
