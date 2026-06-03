@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.2 (2026-06-03)
+
+### Features
+- feat(django): log ECS user.id + user.name in api_logging (#10) (b8ab412)
+
+
 ## v0.5.1 (2026-05-29)
 
 ### Fixes
