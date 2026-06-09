@@ -138,14 +138,20 @@ class TestReshapeLogEvent:
 
 
 class TestNamespaceEcsFields:
-    def test_ecs_event_renamed_to_event(self):
+    def test_ecs_event_emitted_as_dotted_keys_preserving_message(self):
+        # The message (structlog's "event") must be preserved; ECS event fields
+        # are emitted as dotted keys so ecs-logging de-dots them into event.*
+        # AFTER popping "event" -> "message". (Previously this clobbered the
+        # message with the ecs_event dict.)
         event_dict = {
             "event": "test message",
             "ecs_event": {"kind": "event", "category": ["web"]},
             "level": "info",
         }
         result = namespace_ecs_fields(None, None, event_dict)
-        assert result["event"] == {"kind": "event", "category": ["web"]}
+        assert result["event"] == "test message"
+        assert result["event.kind"] == "event"
+        assert result["event.category"] == ["web"]
         assert "ecs_event" not in result
         assert "level" not in result
 

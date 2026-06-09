@@ -108,7 +108,7 @@ def reshape_log_event(event_dict) -> dict:
     extra = {}
 
     for key, value in event_dict.items():
-        if key in ROOT_ALLOWLIST or key.startswith("_"):
+        if key in ROOT_ALLOWLIST or key.startswith("_") or key.startswith("event."):
             reshaped[key] = value
         else:
             extra[key] = value
@@ -166,11 +166,19 @@ def namespace_ecs_fields(_logger, _method_name, event_dict):
     # Reshape: move non-allowlisted keys into extra
     event_dict = reshape_log_event(event_dict)
 
-    # Rename staging key to final ECS field name.
-    # 'ecs_event' is used in log calls to avoid colliding with structlog's
-    # internal 'event' key (which holds the message string).
+    # Emit ECS event fields as DOTTED keys so the human-readable message survives.
+    # structlog stores the message under "event"; ecs-logging's StructlogFormatter
+    # pops "event" -> "message" *before* de-dotting remaining keys, so "event.*"
+    # de-dots into the ECS event object while the message is preserved.
+    # (Previously this overwrote event_dict["event"] with the ecs_event dict,
+    # clobbering the message -> message rendered as the dict repr, event.* lost.)
     if "ecs_event" in event_dict:
-        event_dict["event"] = event_dict.pop("ecs_event")
+        ecs_event = event_dict.pop("ecs_event")
+        if isinstance(ecs_event, dict):
+            for sub_key, sub_value in ecs_event.items():
+                event_dict[f"event.{sub_key}"] = sub_value
+        else:
+            event_dict["event.original"] = ecs_event
 
     return event_dict
 
