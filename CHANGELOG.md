@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.5.4 (2026-06-10)
+
+### Fixes
+- Merge pull request #12 from ottuco/133722-logging-correlation-fix (6bd921e)
+- fix(processors): preserve log message, emit ECS event as dotted keys (b8e3372)
+
+### Other
+- Merge pull request #13 from ottuco/add-claude-github-actions-1781087512781 (b8621f8)
+- "Claude PR Assistant workflow" (ec235f4)
+- refactor(pii): make safe_tokenize public (was _tokenize) (b1eca74)
+- chore: refresh uv.lock (stale ecsctx 0.4.2 -> 0.5.3) (2232186)
+- refactor(context_binder): generic overridable base; no forced domain fields or auditlog (40f28b5)
+
+
 ## v0.5.3 (2026-06-03)
 
 ### Fixes

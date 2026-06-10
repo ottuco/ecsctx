@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ecsctx"
-version = "0.5.3"
+version = "0.5.4"
 description = "Context-aware structured logging with ECS compliance and distributed tracing"
 readme = "README.md"
 license = "MIT"
