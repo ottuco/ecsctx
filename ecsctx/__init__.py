@@ -36,6 +36,7 @@ from ecsctx.processors import (
     contextvars_injector,
     mask_sensitive_data,
     namespace_ecs_fields,
+    safe_tokenize,
 )
 
 __version__ = "0.5.3"
@@ -59,6 +60,7 @@ __all__ = [
     # Masking config
     "configure_masking",
     "configure_masking_from_env",
+    "safe_tokenize",
     # PII
     "configure_pii",
     "configure_pii_from_env",
