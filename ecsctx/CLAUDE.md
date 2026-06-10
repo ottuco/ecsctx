@@ -13,7 +13,7 @@ Core structured logging module with ECS field mapping and PII masking.
 - `PRIMARY_KEYS` in processors.py defines which fields stay at root vs get pushed to `extra`
 - PII masking walks the structure recursively (path-aware): sensitive string values are tokenized unless their JSON path is exempted via `configure_masking()`, Django `ECSCTX_MASK_EXEMPT_PATHS`, or env `PII_MASK_EXEMPT_PATHS` (matched relative to the masked container, e.g. `payment_methods[*].name`; a prefix exempts the whole subtree). Emails/phones are still scrubbed on every string leaf.
 - PII tokenization supports two providers (`PII_PROVIDER=file|vault`). File provider reads mounted keysets; Vault provider authenticates via AppRole and fetches from KV v2. Access mode (`PII_ACCESS=tokenize|full`) enforces least privilege. Auto-configures lazily from env vars.
-- When PII is not configured, `_tokenize()` returns `[PII_REDACTED]` — never raw PII in logs.
+- When PII is not configured, `safe_tokenize()` (public; the log-safe wrapper over `pii.tokenize`) returns `[PII_REDACTED]` — never raw PII in logs.
 
 ## Submodules
 - `pii/` - Keyset-based PII module: `provider.py` (KeysetProvider ABC), `keyset.py` (FileKeysetProvider with hot-reload), `vault.py` (VaultKeysetProvider with AppRole auth), `crypto.py` (HMAC + AES-GCM), `normalize.py` (email/phone normalization)

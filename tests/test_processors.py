@@ -5,7 +5,7 @@ from ecsctx.processors import (
     _compile_path,
     _path_is_exempt,
     _safe_dump_and_mask,
-    _tokenize,
+    safe_tokenize,
     configure_masking,
     masking_is_configured,
     namespace_ecs_fields,
@@ -16,34 +16,34 @@ from ecsctx.processors import (
 class TestTokenizeInProcessor:
     def test_redacted_when_unconfigured(self):
         assert not is_configured()
-        result = _tokenize("user@example.com", "email")
+        result = safe_tokenize("user@example.com", "email")
         assert result == "[PII_REDACTED]"
 
     def test_returns_token_when_configured(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        result = _tokenize("user@example.com", "email")
+        result = safe_tokenize("user@example.com", "email")
         assert result.startswith("ptok:v1:")
 
     def test_idempotent_already_tokenized(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        token = _tokenize("user@example.com", "email")
+        token = safe_tokenize("user@example.com", "email")
         # Tokenizing an already-tokenized value returns it unchanged
-        result = _tokenize(token, "email")
+        result = safe_tokenize(token, "email")
         assert result == token
 
     def test_redacted_when_quoted(self):
-        result = _tokenize('"user@example.com"', "email")
+        result = safe_tokenize('"user@example.com"', "email")
         assert result == '"[PII_REDACTED]"'
 
     def test_empty_value_passthrough(self):
-        assert _tokenize("", "email") == ""
+        assert safe_tokenize("", "email") == ""
 
     def test_processor_auto_configures_from_env(self, token_keyset_path, monkeypatch):
-        """_tokenize() triggers env auto-config without explicit configure_pii() call."""
+        """safe_tokenize() triggers env auto-config without explicit configure_pii() call."""
         monkeypatch.setenv("PII_PROVIDER", "file")
         monkeypatch.setenv("PII_TOKEN_KEYSET_PATH", token_keyset_path)
         monkeypatch.setenv("PII_ENV", "test")
-        result = _tokenize("user@example.com", "email")
+        result = safe_tokenize("user@example.com", "email")
         assert result.startswith("ptok:v1:")
 
 
@@ -206,13 +206,13 @@ class TestPathExempt:
 
 
 class TestMaskWalker:
-    def test_exempted_leaf_not_tokenized(self, token_keyset_path):
+    def test_exempted_leaf_notsafe_tokenized(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=["payment_methods[*].name"])
         out = _safe_dump_and_mask({"payment_methods": [{"name": "VISA-John"}]})
         assert out["payment_methods"][0]["name"] == "VISA-John"
 
-    def test_same_key_non_exempt_tokenized(self, token_keyset_path):
+    def test_same_key_non_exemptsafe_tokenized(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=["payment_methods[*].name"])
         out = _safe_dump_and_mask({"customer": {"name": "John Doe"}})

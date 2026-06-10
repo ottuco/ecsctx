@@ -312,7 +312,7 @@ _TOKEN_PREFIXES = ("ptok:", '"ptok:')
 _REDACTED = "[PII_REDACTED]"
 
 
-def _tokenize(value: str, field_type: str = "generic") -> str:
+def safe_tokenize(value: str, field_type: str = "generic") -> str:
     """Tokenize a value using HMAC-SHA-256 via the PII module.
 
     If PII is not configured, returns [PII_REDACTED] to prevent
@@ -365,10 +365,10 @@ def _scrub_string_content(text: str) -> str:
     Scrub PII from a string using regex.
     Handles Emails, Phones, Credit Cards.
     """
-    text = EMAIL_PATTERN.sub(lambda m: _tokenize(m.group(), "email"), text)
+    text = EMAIL_PATTERN.sub(lambda m: safe_tokenize(m.group(), "email"), text)
     # Only scrub phones that look like phones (length check is in regex)
     # But be careful with IDs.
-    return PHONE_PATTERN.sub(lambda m: _tokenize(m.group(), "phone"), text)
+    return PHONE_PATTERN.sub(lambda m: safe_tokenize(m.group(), "phone"), text)
 
 
 # --- Path-aware mask exemptions (mirrors the PII singleton config pattern) ---
@@ -462,7 +462,7 @@ def _mask_leaf(value: str, key, path: tuple, exempt: tuple) -> str:
     if value.startswith(_TOKEN_PREFIXES):
         return value
     if _key_is_sensitive(key) and not _path_is_exempt(path, exempt):
-        return _tokenize(value, "generic")
+        return safe_tokenize(value, "generic")
     # Non-sensitive or exempted key: still catch emails/phones in the value.
     return _scrub_string_content(value)
 
