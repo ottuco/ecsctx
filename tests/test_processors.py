@@ -7,7 +7,9 @@ from ecsctx.processors import (
     _safe_dump_and_mask,
     safe_tokenize,
     configure_masking,
+    configure_root_fields,
     masking_is_configured,
+    root_fields_are_configured,
     namespace_ecs_fields,
     reshape_log_event,
 )
@@ -320,3 +322,42 @@ class TestMaskConfigEnv:
         out = _safe_dump_and_mask({"customer": {"name": "John"}})
         assert out["customer"]["name"].startswith("ptok:v1:")
         assert masking_is_configured()
+
+
+class TestRootFieldsConfig:
+    def test_default_non_allowlisted_goes_to_extra(self):
+        result = reshape_log_event({"message": "hi", "customer": {"id": "c1"}})
+        assert "customer" not in result
+        assert result["extra"] == {"customer": {"id": "c1"}}
+
+    def test_configured_field_stays_at_root(self):
+        configure_root_fields(extra_fields=["customer"])
+        result = reshape_log_event({"message": "hi", "customer": {"id": "c1"}})
+        assert result["customer"] == {"id": "c1"}
+        assert "extra" not in result
+
+    def test_builtin_allowlist_unaffected_by_config(self):
+        configure_root_fields(extra_fields=["customer"])
+        result = reshape_log_event({"message": "hi", "session_id": "s1", "other": 1})
+        assert result["session_id"] == "s1"
+        assert result["extra"] == {"other": 1}
+
+    def test_env_var_config(self, monkeypatch):
+        monkeypatch.setenv("ECSCTX_ROOT_FIELDS", "customer, booking")
+        result = reshape_log_event({
+            "message": "hi",
+            "customer": {"id": "c1"},
+            "booking": {"ref": "b1"},
+            "other": 1,
+        })
+        assert result["customer"] == {"id": "c1"}
+        assert result["booking"] == {"ref": "b1"}
+        assert result["extra"] == {"other": 1}
+
+    def test_explicit_beats_env(self, monkeypatch):
+        monkeypatch.setenv("ECSCTX_ROOT_FIELDS", "customer")
+        configure_root_fields(extra_fields=[])
+        result = reshape_log_event({"message": "hi", "customer": {"id": "c1"}})
+        assert "customer" not in result
+        assert result["extra"] == {"customer": {"id": "c1"}}
+        assert root_fields_are_configured()

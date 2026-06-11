@@ -166,7 +166,28 @@ This is the single source of truth for where fields end up in the final log outp
 | **Payload containers** | `payload`, `headers` | Root | Used in PII masking path |
 | **structlog internals** | `message`, `timestamp` | Root | Set by structlog processors |
 | **ECS event staging** | `ecs_event` | Root → renamed to `event` | Use `ecs_event` in log calls to avoid structlog's `event` message key conflict |
+| **Service-configured root fields** | Keys named in `configure_root_fields()` / `ECSCTX_ROOT_FIELDS` | Root | Service-chosen additions to the allowlist (see below) |
 | **Everything else** | Any non-allowlisted key | `extra.*` | Auto-wrapped by `namespace_ecs_fields` |
+
+### Configurable root fields
+
+A consuming service can promote additional keys to root (instead of `extra.*`) without
+ecsctx hardcoding its domain schema. Configure in any of three ways (precedence:
+explicit call > Django setting > env var):
+
+```python
+# 1. Django settings.py — a list of keys
+ECSCTX_ROOT_FIELDS = ["customer", "booking"]
+
+# 2. Framework-agnostic env var — comma-separated
+#    ECSCTX_ROOT_FIELDS="customer,booking"
+
+# 3. Programmatic, at startup
+from ecsctx import configure_root_fields
+configure_root_fields(extra_fields=["customer", "booking"])
+```
+
+The built-in `ROOT_ALLOWLIST` is never reduced — configured fields only extend it.
 
 **PII handling** (see [section 13](#13-pii-masking--tokenization) for full details):
 - **Automatic log masking**: `mask_sensitive_data` processor applies HMAC-SHA-256 tokenization (`ptok:v1:...`) and key-based redaction
@@ -1333,6 +1354,7 @@ If you use a `common-logs` ingest pipeline, it can enforce ECS field types so ma
 | `PII_REFRESH_SECONDS` | Keyset refresh interval in seconds (vault provider) | `300` | No |
 | `PII_VAULT_TIMEOUT` | HTTP timeout for Vault requests in seconds | `10` | No |
 | `APP_VERSION` | Application version in `service.version` | `"0.0.0"` | No |
+| `ECSCTX_ROOT_FIELDS` | Extra root-level log fields (CSV), extends `ROOT_ALLOWLIST` | — | No |
 | `SERVICE_TYPE` | Service type: `app`, `rq`, `celery` | Auto-detected from argv | No |
 | `PROJECT_NAME` | Project name in `project.name` + Vector data stream | `"connect"` | **Yes** |
 | `ENVIRONMENT` | Environment name for Vector data stream namespace | - | **Yes** |
