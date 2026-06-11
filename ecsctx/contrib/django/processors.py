@@ -64,6 +64,47 @@ def _reset_masking_settings_flag() -> None:
     _mask_settings_attempted = False
 
 
+_root_fields_settings_attempted = False
+
+
+def _auto_configure_root_fields() -> None:
+    """Bridge the Django ``ECSCTX_ROOT_FIELDS`` setting into the core
+    root-fields config, lazily on first use.
+
+    Same shape as _auto_configure_masking: runs at log time (settings fully
+    loaded), retries until settings are accessible, and preserves precedence —
+    an explicit configure_root_fields() call wins, then this setting, then the
+    ECSCTX_ROOT_FIELDS env var.
+    """
+    global _root_fields_settings_attempted
+    if _root_fields_settings_attempted:
+        return
+
+    from ecsctx.processors import configure_root_fields, root_fields_are_configured
+
+    if root_fields_are_configured():
+        _root_fields_settings_attempted = True
+        return
+
+    try:
+        from django.conf import settings
+
+        extra_fields = getattr(settings, "ECSCTX_ROOT_FIELDS", None)
+    except Exception:
+        # Settings not ready yet — retry on the next call (at real log time).
+        return
+
+    _root_fields_settings_attempted = True
+    if extra_fields is not None:
+        configure_root_fields(extra_fields=list(extra_fields))
+
+
+def _reset_root_fields_settings_flag() -> None:
+    """Reset the settings-bridge guard. For testing only."""
+    global _root_fields_settings_attempted
+    _root_fields_settings_attempted = False
+
+
 def _get_django_user_model():
     """Get the Django User model from settings."""
     try:
@@ -122,9 +163,10 @@ def contextvars_injector(_logger, _method_name, event_dict):
     6. Django User object serialization (NEW)
     """
 
-    # 0. Auto-configure PII + masking exemptions on first call
+    # 0. Auto-configure PII + masking exemptions + root fields on first call
     _auto_configure_pii()
     _auto_configure_masking()
+    _auto_configure_root_fields()
 
     # 1. Inject from LoggingContext (decorators set this)
     event_dict = _inject_logging_context(event_dict)

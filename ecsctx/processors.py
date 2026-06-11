@@ -94,21 +94,67 @@ ROOT_ALLOWLIST = frozenset({
 PRIMARY_KEYS = ROOT_ALLOWLIST
 
 
+# --- Configurable root fields (mirrors the masking-exemption config pattern) ---
+# A consuming service can promote additional keys to root (instead of `extra.*`)
+# without ecsctx hardcoding its domain schema. Precedence: an explicit
+# configure_root_fields() call wins, then the Django ECSCTX_ROOT_FIELDS setting
+# (bridged lazily in contrib.django), then the ECSCTX_ROOT_FIELDS env var (CSV).
+_custom_root_fields: frozenset | None = None
+_root_fields_auto_configure_attempted: bool = False
+
+
+def configure_root_fields(*, extra_fields: list[str] | None = None) -> None:
+    """Extend ROOT_ALLOWLIST with service-chosen root keys (highest precedence)."""
+    global _custom_root_fields, _root_fields_auto_configure_attempted
+    _custom_root_fields = frozenset(f for f in (extra_fields or []) if f)
+    _root_fields_auto_configure_attempted = True
+
+
+def configure_root_fields_from_env() -> None:
+    """Load extra root fields from the ECSCTX_ROOT_FIELDS env var (CSV). Idempotent."""
+    global _custom_root_fields, _root_fields_auto_configure_attempted
+    if _root_fields_auto_configure_attempted or _custom_root_fields is not None:
+        return
+    _root_fields_auto_configure_attempted = True
+    raw = os.environ.get("ECSCTX_ROOT_FIELDS", "")
+    _custom_root_fields = frozenset(p.strip() for p in raw.split(",") if p.strip())
+
+
+def root_fields_are_configured() -> bool:
+    """True if extra root fields have been explicitly set or env-loaded."""
+    return _custom_root_fields is not None
+
+
+def _get_root_allowlist() -> frozenset:
+    if _custom_root_fields is None:
+        configure_root_fields_from_env()
+    return ROOT_ALLOWLIST | (_custom_root_fields or frozenset())
+
+
+def _reset_root_fields() -> None:
+    """Reset root-fields config. For testing only."""
+    global _custom_root_fields, _root_fields_auto_configure_attempted
+    _custom_root_fields = None
+    _root_fields_auto_configure_attempted = False
+
+
 def reshape_log_event(event_dict) -> dict:
     """Reshape log event: allowlisted keys stay at root, everything else goes into extra.
 
-    - Keys in ROOT_ALLOWLIST always stay at root.
+    - Keys in ROOT_ALLOWLIST (plus any configure_root_fields() additions)
+      always stay at root.
     - Non-allowlisted keys (scalars, lists, and dicts) are wrapped into
       ``extra``.
     """
     if not isinstance(event_dict, dict):
         return event_dict
 
+    allowlist = _get_root_allowlist()
     reshaped = {}
     extra = {}
 
     for key, value in event_dict.items():
-        if key in ROOT_ALLOWLIST or key.startswith("_") or key.startswith("event."):
+        if key in allowlist or key.startswith("_") or key.startswith("event."):
             reshaped[key] = value
         else:
             extra[key] = value

@@ -33,6 +33,8 @@ from ecsctx.pii import is_configured as pii_configured
 from ecsctx.processors import (
     configure_masking,
     configure_masking_from_env,
+    configure_root_fields,
+    configure_root_fields_from_env,
     contextvars_injector,
     mask_sensitive_data,
     namespace_ecs_fields,
@@ -61,6 +63,9 @@ __all__ = [
     "configure_masking",
     "configure_masking_from_env",
     "safe_tokenize",
+    # Root-fields config
+    "configure_root_fields",
+    "configure_root_fields_from_env",
     # PII
     "configure_pii",
     "configure_pii_from_env",

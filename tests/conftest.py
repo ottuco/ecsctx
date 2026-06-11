@@ -7,7 +7,7 @@ import os
 import pytest
 
 from ecsctx.pii import _reset as _reset_pii
-from ecsctx.processors import _reset_masking
+from ecsctx.processors import _reset_masking, _reset_root_fields
 
 
 def _make_key_b64(length: int = 32) -> str:
@@ -78,3 +78,10 @@ def _reset_masking_module():
     """Reset masking exemption config between tests."""
     yield
     _reset_masking()
+
+
+@pytest.fixture(autouse=True)
+def _reset_root_fields_module():
+    """Reset configurable root-fields state between tests."""
+    yield
+    _reset_root_fields()

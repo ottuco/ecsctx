@@ -8,14 +8,21 @@ from django.test import override_settings
 
 from ecsctx.contrib.django.processors import (
     _auto_configure_masking,
+    _auto_configure_root_fields,
     _get_django_user_model,
     _is_django_user,
     _reset_masking_settings_flag,
+    _reset_root_fields_settings_flag,
     _serialize_django_user,
     contextvars_injector,
 )
 from ecsctx.pii import configure_pii
-from ecsctx.processors import _safe_dump_and_mask, masking_is_configured
+from ecsctx.processors import (
+    _safe_dump_and_mask,
+    masking_is_configured,
+    reshape_log_event,
+    root_fields_are_configured,
+)
 
 User = get_user_model()
 
@@ -159,3 +166,62 @@ class TestMaskingSettingsBridge:
         assert masking_is_configured()
         out = _safe_dump_and_mask({"payment_methods": [{"name": "KNET"}]})
         assert out["payment_methods"][0]["name"] == "KNET"
+
+
+class TestRootFieldsSettingsBridge:
+    @pytest.fixture(autouse=True)
+    def _reset_flag(self):
+        _reset_root_fields_settings_flag()
+        yield
+        _reset_root_fields_settings_flag()
+
+    @override_settings(ECSCTX_ROOT_FIELDS=["customer"])
+    def test_setting_applied_via_auto_configure(self):
+        _auto_configure_root_fields()
+        assert root_fields_are_configured()
+        result = reshape_log_event({"message": "hi", "customer": {"id": "c1"}})
+        assert result["customer"] == {"id": "c1"}
+        assert "extra" not in result
+
+    @override_settings(ECSCTX_ROOT_FIELDS=["customer"])
+    def test_setting_applied_via_processor_first_call(self):
+        # A real log record through the Django contextvars_injector must
+        # trigger the settings bridge — no setup_logging() required.
+        contextvars_injector(None, None, {"event": "hello"})
+        assert root_fields_are_configured()
+        result = reshape_log_event({"message": "hi", "customer": {"id": "c1"}})
+        assert result["customer"] == {"id": "c1"}
+
+    def test_absent_setting_is_noop(self):
+        _auto_configure_root_fields()
+        assert not root_fields_are_configured()
+        result = reshape_log_event({"message": "hi", "customer": {"id": "c1"}})
+        assert result["extra"] == {"customer": {"id": "c1"}}
+
+    @override_settings(ECSCTX_ROOT_FIELDS=["customer"])
+    def test_explicit_configure_beats_setting(self):
+        from ecsctx.processors import configure_root_fields
+
+        configure_root_fields(extra_fields=[])  # explicit empty wins
+        _auto_configure_root_fields()
+        result = reshape_log_event({"message": "hi", "customer": {"id": "c1"}})
+        assert "customer" not in result
+        assert result["extra"] == {"customer": {"id": "c1"}}
+
+    def test_retries_when_settings_not_ready(self):
+        """Bridge must not burn its one-shot flag if settings access raises
+        (e.g. during settings.py import) — it retries at real log time."""
+
+        class _NotReady:
+            def __getattr__(self, name):
+                raise RuntimeError("Requested setting, but settings are not configured.")
+
+        with patch("django.conf.settings", _NotReady()):
+            _auto_configure_root_fields()
+        assert not root_fields_are_configured()
+
+        with override_settings(ECSCTX_ROOT_FIELDS=["customer"]):
+            _auto_configure_root_fields()
+        assert root_fields_are_configured()
+        result = reshape_log_event({"message": "hi", "customer": {"id": "c1"}})
+        assert result["customer"] == {"id": "c1"}
