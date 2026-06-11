@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.5.5 (2026-06-11)
+
+### Features
+- Merge pull request #14 from ottuco/feat/configurable-root-fields (8c4024e)
+- feat(processors): configurable root fields via ECSCTX_ROOT_FIELDS (1f84e42)
+
+
 ## v0.5.4 (2026-06-10)
 
 ### Fixes
