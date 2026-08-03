@@ -189,6 +189,52 @@ def _inject_logging_context(event_dict: dict) -> dict:
     return event_dict
 
 
+def callsite_ecs_fields(_logger, _method_name, event_dict):
+    """
+    Map structlog attribution keys into the ECS ``log`` container.
+
+    ``add_logger_name`` and ``CallsiteParameterAdder`` emit flat ``logger``,
+    ``func_name``, ``pathname`` and ``lineno`` keys. Left flat, they are not
+    ECS and ``namespace_ecs_fields`` would bury them in ``extra.*`` (four
+    dynamically-mapped fields). Reshape them to ``log.logger`` and
+    ``log.origin.{function,file.name,file.line}`` — the fields the o11y
+    ``common-logs`` pipeline was built around in the logstash era.
+
+    An explicit caller-provided ``log.origin`` (e.g. ``@log_io`` records the
+    decoration site) wins over the frame-derived one: the wrapper's frame is
+    noise compared to the decorated method's location.
+    """
+    name = event_dict.pop("logger", None)
+    func = event_dict.pop("func_name", None)
+    path = event_dict.pop("pathname", None)
+    line = event_dict.pop("lineno", None)
+
+    log = event_dict.get("log")
+    if not isinstance(log, dict):
+        log = {}
+
+    if name is not None and "logger" not in log:
+        log["logger"] = name
+
+    if "origin" not in log:
+        origin = {}
+        if func is not None:
+            origin["function"] = func
+        file_part = {}
+        if path is not None:
+            file_part["name"] = path
+        if line is not None:
+            file_part["line"] = line
+        if file_part:
+            origin["file"] = file_part
+        if origin:
+            log["origin"] = origin
+
+    if log:
+        event_dict["log"] = log
+    return event_dict
+
+
 def namespace_ecs_fields(_logger, _method_name, event_dict):
     """
     Handle ECS field normalization and reshaping.

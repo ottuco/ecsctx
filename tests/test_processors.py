@@ -2,6 +2,7 @@
 
 from ecsctx.pii import configure_pii, is_configured
 from ecsctx.processors import (
+    callsite_ecs_fields,
     _compile_path,
     _path_is_exempt,
     _safe_dump_and_mask,
@@ -361,3 +362,59 @@ class TestRootFieldsConfig:
         assert "customer" not in result
         assert result["extra"] == {"customer": {"id": "c1"}}
         assert root_fields_are_configured()
+
+
+class TestCallsiteEcsFields:
+    def _event(self, **extra):
+        event = {
+            "message": "hi",
+            "logger": "core.gateway.knet.KnetClient",
+            "func_name": "connect",
+            "pathname": "/app/core/gateway/knet/client.py",
+            "lineno": 42,
+        }
+        event.update(extra)
+        return event
+
+    def test_reshapes_flat_keys_into_log_container(self):
+        result = callsite_ecs_fields(None, "info", self._event())
+        assert result["log"] == {
+            "logger": "core.gateway.knet.KnetClient",
+            "origin": {
+                "function": "connect",
+                "file": {"name": "/app/core/gateway/knet/client.py", "line": 42},
+            },
+        }
+        for flat in ("logger", "func_name", "pathname", "lineno"):
+            assert flat not in result
+
+    def test_caller_provided_origin_wins_over_frame(self):
+        result = callsite_ecs_fields(
+            None,
+            "info",
+            self._event(log={"origin": {"function": "decorated_site"}}),
+        )
+        assert result["log"]["origin"] == {"function": "decorated_site"}
+        assert result["log"]["logger"] == "core.gateway.knet.KnetClient"
+
+    def test_caller_provided_logger_wins(self):
+        result = callsite_ecs_fields(
+            None, "info", self._event(log={"logger": "explicit"})
+        )
+        assert result["log"]["logger"] == "explicit"
+
+    def test_partial_callsite_keys(self):
+        result = callsite_ecs_fields(
+            None, "info", {"message": "hi", "logger": "a.b", "lineno": 7}
+        )
+        assert result["log"] == {"logger": "a.b", "origin": {"file": {"line": 7}}}
+
+    def test_no_callsite_keys_is_a_noop(self):
+        result = callsite_ecs_fields(None, "info", {"message": "hi"})
+        assert result == {"message": "hi"}
+
+    def test_non_dict_log_value_is_replaced(self):
+        result = callsite_ecs_fields(
+            None, "info", {"message": "hi", "logger": "a.b", "log": "oops"}
+        )
+        assert result["log"]["logger"] == "a.b"
