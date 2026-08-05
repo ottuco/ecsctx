@@ -3,6 +3,7 @@
 from ecsctx.pii import configure_pii, is_configured
 from ecsctx.processors import (
     callsite_ecs_fields,
+    error_ecs_fields,
     _compile_path,
     _path_is_exempt,
     _safe_dump_and_mask,
@@ -418,3 +419,54 @@ class TestCallsiteEcsFields:
             None, "info", {"message": "hi", "logger": "a.b", "log": "oops"}
         )
         assert result["log"]["logger"] == "a.b"
+
+
+class TestErrorEcsFields:
+    def _exc_info(self):
+        try:
+            raise FileNotFoundError(2, "No such file or directory")
+        except FileNotFoundError:
+            import sys
+
+            return sys.exc_info()
+
+    def test_derives_error_from_exc_info_tuple(self):
+        result = error_ecs_fields(None, "error", {"exc_info": self._exc_info()})
+        assert result["error"] == {
+            "type": "FileNotFoundError",
+            "message": "[Errno 2] No such file or directory",
+        }
+        # exc_info stays for ExceptionRenderer to render the stack trace
+        assert "exc_info" in result
+
+    def test_explicit_error_dict_wins(self):
+        result = error_ecs_fields(
+            None,
+            "error",
+            {"exc_info": self._exc_info(), "error": {"message": "custom", "type": "X"}},
+        )
+        assert result["error"] == {"message": "custom", "type": "X"}
+
+    def test_bare_exception_instance(self):
+        result = error_ecs_fields(None, "error", {"exc_info": ValueError("boom")})
+        assert result["error"] == {"type": "ValueError", "message": "boom"}
+
+    def test_noop_without_exc_info(self):
+        assert error_ecs_fields(None, "info", {"event": "x"}) == {"event": "x"}
+
+
+class TestExceptionPassthroughInReshape:
+    def test_exc_info_not_swept_into_extra(self):
+        from ecsctx.processors import reshape_log_event
+
+        ei = (ValueError, ValueError("boom"), None)
+        result = reshape_log_event({"exc_info": ei, "custom_key": 1})
+        assert result["exc_info"] is ei
+        assert result["extra"] == {"custom_key": 1}
+        assert "exc_info" not in result["extra"]
+
+    def test_exception_and_stack_info_stay_at_root(self):
+        from ecsctx.processors import reshape_log_event
+
+        result = reshape_log_event({"exception": "Traceback...", "stack_info": "s"})
+        assert result == {"exception": "Traceback...", "stack_info": "s"}

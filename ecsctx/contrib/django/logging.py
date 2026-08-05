@@ -36,6 +36,7 @@ import structlog
 from ecsctx import (
     ECSFormatter,
     callsite_ecs_fields,
+    error_ecs_fields,
     ecs_validator,
     mask_sensitive_data,
     namespace_ecs_fields,
@@ -173,6 +174,7 @@ def get_logging_config(
                         ]
                     ),
                     callsite_ecs_fields,
+                    error_ecs_fields,
                     contextvars_injector,
                     namespace_ecs_fields,
                     mask_sensitive_data,
@@ -233,6 +235,7 @@ def configure_structlog():
                 ]
             ),
             callsite_ecs_fields,
+            error_ecs_fields,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.ExceptionRenderer(),

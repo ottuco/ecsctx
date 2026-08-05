@@ -38,6 +38,7 @@ from ecsctx.processors import (
     contextvars_injector,
     mask_sensitive_data,
     callsite_ecs_fields,
+    error_ecs_fields,
     namespace_ecs_fields,
     safe_tokenize,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "contextvars_injector",
     "mask_sensitive_data",
     "callsite_ecs_fields",
+    "error_ecs_fields",
     "namespace_ecs_fields",
     "ecs_validator",
     # Masking config

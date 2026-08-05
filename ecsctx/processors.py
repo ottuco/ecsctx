@@ -138,6 +138,13 @@ def _reset_root_fields() -> None:
     _root_fields_auto_configure_attempted = False
 
 
+# structlog internals that later processors consume: ExceptionRenderer reads
+# exc_info/stack_info, StructlogFormatter maps exception -> error.stack_trace.
+# Sweeping them into extra (pre-0.5.6 behavior) stringified the exc_info tuple
+# into a junk extra.exc_info field and lost the stack trace entirely.
+_EXCEPTION_PASSTHROUGH_KEYS = frozenset({"exc_info", "stack_info", "exception", "stack"})
+
+
 def reshape_log_event(event_dict) -> dict:
     """Reshape log event: allowlisted keys stay at root, everything else goes into extra.
 
@@ -154,7 +161,12 @@ def reshape_log_event(event_dict) -> dict:
     extra = {}
 
     for key, value in event_dict.items():
-        if key in allowlist or key.startswith("_") or key.startswith("event."):
+        if (
+            key in allowlist
+            or key in _EXCEPTION_PASSTHROUGH_KEYS
+            or key.startswith("_")
+            or key.startswith("event.")
+        ):
             reshaped[key] = value
         else:
             extra[key] = value
@@ -186,6 +198,36 @@ def _inject_logging_context(event_dict: dict) -> dict:
             if key not in event_dict and value is not None:
                 event_dict[key] = value
 
+    return event_dict
+
+
+def error_ecs_fields(_logger, _method_name, event_dict):
+    """
+    Derive ECS ``error.type`` / ``error.message`` from a pending ``exc_info``.
+
+    Runs BEFORE ExceptionRenderer consumes ``exc_info``. An explicit caller
+    ``error={...}`` (the connect logging-rules shape) wins — values are only
+    setdefault'ed. The stack trace itself is NOT handled here: ExceptionRenderer
+    renders ``exc_info`` -> ``exception`` and StructlogFormatter maps that to
+    ``error.stack_trace``.
+    """
+    exc = None
+    ei = event_dict.get("exc_info")
+    if isinstance(ei, BaseException):
+        exc = ei
+    elif isinstance(ei, tuple) and len(ei) == 3 and isinstance(ei[1], BaseException):
+        exc = ei[1]
+    elif ei is True:
+        exc = sys.exc_info()[1]
+    if exc is None:
+        return event_dict
+
+    error = event_dict.get("error")
+    if not isinstance(error, dict):
+        error = {}
+    error.setdefault("type", type(exc).__name__)
+    error.setdefault("message", str(exc))
+    event_dict["error"] = error
     return event_dict
 
 
