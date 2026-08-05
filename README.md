@@ -116,12 +116,23 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
 3. structlog.stdlib.add_logger_name            # Logger name (module path)
 4. structlog.stdlib.PositionalArgumentsFormatter()
 5. structlog.processors.CallsiteParameterAdder # func_name, lineno, pathname
-6. contextvars_injector                        # ← Injects LoggingContext + trace + service
-7. namespace_ecs_fields                        # ← Reshape fields + clean up flat 'level' key
-8. mask_sensitive_data                         # ← PII tokenization (HMAC-SHA-256)
-9. ecs_validator                               # ← Warn on ECS field violations
-10. ECSFormatter                               # ← Format to ECS 1.12.0 JSON
+6. callsite_ecs_fields                         # ← logger/func_name/pathname/lineno -> log.logger + log.origin.*
+7. contextvars_injector                        # ← Injects LoggingContext + trace + service
+8. namespace_ecs_fields                        # ← Reshape fields + clean up flat 'level' key
+9. mask_sensitive_data                         # ← PII tokenization (HMAC-SHA-256)
+10. ecs_validator                              # ← Warn on ECS field violations
+11. ECSFormatter                               # ← Format to ECS 1.12.0 JSON
 ```
+
+Since 0.5.6, `configure_structlog()` (the native chain — every plain
+`structlog.get_logger(__name__)` call) runs `add_logger_name`,
+`CallsiteParameterAdder` and `callsite_ecs_fields` too, so **every** log line
+carries `log.logger` and `log.origin.{function,file.name,file.line}` — parity
+with the pre-structlog stdlib loggers. An explicit caller-provided
+`log={"origin": ...}` (e.g. a decorator recording its decoration site) wins
+over the frame-derived values. Note: `logger`, `func_name`, `pathname` and
+`lineno` are now consumed keys — a bare kwarg with one of those names is
+reshaped into `log.*` instead of landing in `extra.*`.
 
 ### Injection Priority
 
@@ -265,6 +276,7 @@ For non-Django projects, use the core processors directly:
 import structlog
 from ecsctx import (
     ECSFormatter,
+    callsite_ecs_fields,
     ecs_validator,
     contextvars_injector,
     mask_sensitive_data,
@@ -277,6 +289,14 @@ structlog.configure(
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
+        structlog.processors.CallsiteParameterAdder(
+            parameters=[
+                structlog.processors.CallsiteParameter.FUNC_NAME,
+                structlog.processors.CallsiteParameter.LINENO,
+                structlog.processors.CallsiteParameter.PATHNAME,
+            ]
+        ),
+        callsite_ecs_fields,  # logger/callsite -> log.logger + log.origin.*
         contextvars_injector,
         namespace_ecs_fields,
         mask_sensitive_data,
