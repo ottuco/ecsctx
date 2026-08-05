@@ -277,6 +277,7 @@ import structlog
 from ecsctx import (
     ECSFormatter,
     callsite_ecs_fields,
+    error_ecs_fields,
     ecs_validator,
     contextvars_injector,
     mask_sensitive_data,
@@ -297,6 +298,7 @@ structlog.configure(
             ]
         ),
         callsite_ecs_fields,  # logger/callsite -> log.logger + log.origin.*
+        error_ecs_fields,     # exc_info -> error.{type,message,stack_trace}
         contextvars_injector,
         namespace_ecs_fields,
         mask_sensitive_data,

@@ -430,43 +430,94 @@ class TestErrorEcsFields:
 
             return sys.exc_info()
 
-    def test_derives_error_from_exc_info_tuple(self):
+    def test_consumes_exc_info_into_full_error_object(self):
         result = error_ecs_fields(None, "error", {"exc_info": self._exc_info()})
-        assert result["error"] == {
-            "type": "FileNotFoundError",
-            "message": "[Errno 2] No such file or directory",
-        }
-        # exc_info stays for ExceptionRenderer to render the stack trace
-        assert "exc_info" in result
+        assert result["error"]["type"] == "FileNotFoundError"
+        assert result["error"]["message"] == "[Errno 2] No such file or directory"
+        assert result["error"]["stack_trace"].startswith("Traceback")
+        assert "FileNotFoundError" in result["error"]["stack_trace"]
+        # the raw tuple must never survive to a formatter
+        assert "exc_info" not in result
 
-    def test_explicit_error_dict_wins(self):
+    def test_explicit_error_values_win(self):
         result = error_ecs_fields(
             None,
             "error",
             {"exc_info": self._exc_info(), "error": {"message": "custom", "type": "X"}},
         )
-        assert result["error"] == {"message": "custom", "type": "X"}
+        assert result["error"]["message"] == "custom"
+        assert result["error"]["type"] == "X"
+        # stack_trace is still derived — the caller didn't provide one
+        assert result["error"]["stack_trace"].startswith("Traceback")
+
+    def test_caller_error_dict_is_not_mutated(self):
+        shared = {"message": "custom"}
+        result = error_ecs_fields(None, "error", {"exc_info": self._exc_info(), "error": shared})
+        assert shared == {"message": "custom"}
+        assert result["error"] is not shared
+
+    def test_non_dict_error_value_is_replaced(self):
+        # error="..." already violates the ECS object rule; with exc_info present
+        # the derived object wins (explicitly asserted, not accidental).
+        result = error_ecs_fields(
+            None, "error", {"exc_info": self._exc_info(), "error": "some string"}
+        )
+        assert result["error"]["type"] == "FileNotFoundError"
 
     def test_bare_exception_instance(self):
         result = error_ecs_fields(None, "error", {"exc_info": ValueError("boom")})
-        assert result["error"] == {"type": "ValueError", "message": "boom"}
+        assert result["error"]["type"] == "ValueError"
+        assert result["error"]["message"] == "boom"
+        assert "exc_info" not in result
+
+    def test_exc_info_true_resolves_current_exception(self):
+        try:
+            raise KeyError("missing")
+        except KeyError:
+            result = error_ecs_fields(None, "error", {"exc_info": True})
+        assert result["error"]["type"] == "KeyError"
+        assert "exc_info" not in result
 
     def test_noop_without_exc_info(self):
         assert error_ecs_fields(None, "info", {"event": "x"}) == {"event": "x"}
 
 
-class TestExceptionPassthroughInReshape:
-    def test_exc_info_not_swept_into_extra(self):
+class TestExceptionKeysInReshape:
+    def test_rendered_exception_string_stays_at_root(self):
+        from ecsctx.processors import reshape_log_event
+
+        result = reshape_log_event({"exception": "Traceback...", "custom_key": 1})
+        assert result["exception"] == "Traceback..."
+        assert result["extra"] == {"custom_key": 1}
+
+    def test_stray_raw_exc_info_still_swept_to_extra(self):
+        # A pipeline without error_ecs_fields keeps the old (pre-0.5.6) sweep —
+        # a raw tuple never lands at the document root.
         from ecsctx.processors import reshape_log_event
 
         ei = (ValueError, ValueError("boom"), None)
-        result = reshape_log_event({"exc_info": ei, "custom_key": 1})
-        assert result["exc_info"] is ei
-        assert result["extra"] == {"custom_key": 1}
-        assert "exc_info" not in result["extra"]
+        result = reshape_log_event({"exc_info": ei})
+        assert "exc_info" not in result
+        assert result["extra"]["exc_info"] is ei
 
-    def test_exception_and_stack_info_stay_at_root(self):
-        from ecsctx.processors import reshape_log_event
 
-        result = reshape_log_event({"exception": "Traceback...", "stack_info": "s"})
-        assert result == {"exception": "Traceback...", "stack_info": "s"}
+class TestStandalonePipelineSafety:
+    def test_no_raw_exc_info_at_root_without_exception_renderer(self):
+        """The README quickstart-style manual pipeline (no ExceptionRenderer):
+        error_ecs_fields alone must produce a JSON-safe document."""
+        import json
+
+        event = {"event": "boom happened", "exc_info": None}
+        try:
+            raise RuntimeError("standalone")
+        except RuntimeError:
+            import sys
+
+            event["exc_info"] = sys.exc_info()
+        event = error_ecs_fields(None, "error", event)
+        event = namespace_ecs_fields(None, "error", event)
+        json.dumps(event)  # must not raise, no repr-garbage tuples anywhere
+        assert event["error"]["type"] == "RuntimeError"
+        assert event["error"]["stack_trace"].startswith("Traceback")
+        assert "exc_info" not in event
+        assert "exc_info" not in event.get("extra", {})

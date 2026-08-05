@@ -79,3 +79,40 @@ class TestAttributionEndToEnd:
         assert doc["log"]["logger"] == "some.stdlib.ForeignLogger"
         assert doc["log"]["origin"]["file"]["name"]
         assert "extra" not in doc
+
+
+class TestUnhandled500EndToEnd:
+    """The original #158750 report: a django.request record with exc_info must
+    ship a full ECS error object through the REAL config — not a stringified
+    extra.exc_info."""
+
+    def test_django_request_500_ships_error_object(self, capsys):
+        import json
+        import logging.config
+        import sys as _sys
+
+        import structlog
+
+        from ecsctx.contrib.django import get_logging_config, setup_logging
+
+        cfg = get_logging_config(use_cid_filter=False)
+        cfg["loggers"] = {}
+        logging.config.dictConfig(cfg)
+        setup_logging()
+        try:
+            try:
+                raise FileNotFoundError(2, "No such file or directory")
+            except FileNotFoundError:
+                logging.getLogger("django.request").error(
+                    "Internal Server Error: /api/checkout/", exc_info=_sys.exc_info()
+                )
+        finally:
+            structlog.reset_defaults()
+
+        lines = [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
+        doc = json.loads(lines[-1])
+        assert doc["error"]["type"] == "FileNotFoundError"
+        assert doc["error"]["message"] == "[Errno 2] No such file or directory"
+        assert doc["error"]["stack_trace"].startswith("Traceback")
+        assert doc["log"]["logger"] == "django.request"
+        assert "extra" not in doc

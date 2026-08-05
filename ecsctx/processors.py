@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import traceback
 
 from structlog.contextvars import get_contextvars
 
@@ -138,11 +139,11 @@ def _reset_root_fields() -> None:
     _root_fields_auto_configure_attempted = False
 
 
-# structlog internals that later processors consume: ExceptionRenderer reads
-# exc_info/stack_info, StructlogFormatter maps exception -> error.stack_trace.
-# Sweeping them into extra (pre-0.5.6 behavior) stringified the exc_info tuple
-# into a junk extra.exc_info field and lost the stack trace entirely.
-_EXCEPTION_PASSTHROUGH_KEYS = frozenset({"exc_info", "stack_info", "exception", "stack"})
+# "exception" is the rendered-traceback string an upstream ExceptionRenderer may
+# have produced; StructlogFormatter maps it to error.stack_trace. It must not be
+# swept into extra. Raw exc_info never reaches the reshape: error_ecs_fields
+# consumes it into the error object first.
+_EXCEPTION_PASSTHROUGH_KEYS = frozenset({"exception"})
 
 
 def reshape_log_event(event_dict) -> dict:
@@ -203,16 +204,23 @@ def _inject_logging_context(event_dict: dict) -> dict:
 
 def error_ecs_fields(_logger, _method_name, event_dict):
     """
-    Derive ECS ``error.type`` / ``error.message`` from a pending ``exc_info``.
+    Consume a pending ``exc_info`` into the ECS ``error`` object:
+    ``error.type``, ``error.message`` and ``error.stack_trace``.
 
-    Runs BEFORE ExceptionRenderer consumes ``exc_info``. An explicit caller
-    ``error={...}`` (the connect logging-rules shape) wins — values are only
-    setdefault'ed. The stack trace itself is NOT handled here: ExceptionRenderer
-    renders ``exc_info`` -> ``exception`` and StructlogFormatter maps that to
-    ``error.stack_trace``.
+    ``exc_info`` is POPPED — the raw ``(type, exc, traceback)`` tuple must
+    never reach a formatter (unrendered it JSON-dumps as a repr string, or
+    crashes serialization). Rendering here instead of relying on a downstream
+    ``ExceptionRenderer`` keeps custom pipelines safe: any chain that includes
+    this processor gets full ECS error fields with no ordering trap. A chain
+    that ALSO runs ExceptionRenderer afterwards is fine — it no-ops once
+    ``exc_info`` is gone.
+
+    An explicit caller ``error={...}`` (the connect logging-rules shape) wins —
+    values are only setdefault'ed, and the caller's dict is copied, never
+    mutated in place (callers may reuse a shared dict across log calls).
     """
-    exc = None
     ei = event_dict.get("exc_info")
+    exc = None
     if isinstance(ei, BaseException):
         exc = ei
     elif isinstance(ei, tuple) and len(ei) == 3 and isinstance(ei[1], BaseException):
@@ -222,11 +230,16 @@ def error_ecs_fields(_logger, _method_name, event_dict):
     if exc is None:
         return event_dict
 
+    event_dict.pop("exc_info", None)
     error = event_dict.get("error")
-    if not isinstance(error, dict):
-        error = {}
+    error = dict(error) if isinstance(error, dict) else {}
     error.setdefault("type", type(exc).__name__)
     error.setdefault("message", str(exc))
+    if "stack_trace" not in error:
+        with contextlib.suppress(Exception):
+            error["stack_trace"] = "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            ).rstrip("\n")
     event_dict["error"] = error
     return event_dict
 
