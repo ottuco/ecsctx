@@ -27,3 +27,55 @@ class TestSetupLoggingSettingsSafety:
         setup_logging(capture_warnings=False)
 
         assert "ECSCTX_MASK_EXEMPT_PATHS" not in seen
+
+
+class TestAttributionEndToEnd:
+    """Full get_logging_config() + configure_structlog() pipeline through the
+    real formatter — guards the chain ordering (callsite keys must be reshaped
+    into log.* before namespace_ecs_fields sweeps them into extra)."""
+
+    def _formatted(self, emit, capsys):
+        import logging.config
+
+        import structlog
+
+        from ecsctx.contrib.django import get_logging_config, setup_logging
+
+        cfg = get_logging_config(use_cid_filter=False)
+        cfg["loggers"] = {}
+        logging.config.dictConfig(cfg)
+        setup_logging()
+        try:
+            emit()
+        finally:
+            structlog.reset_defaults()
+        import json
+
+        lines = [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
+        return json.loads(lines[-1])
+
+    def test_native_call_carries_logger_and_origin(self, capsys):
+        import structlog
+
+        doc = self._formatted(
+            lambda: structlog.get_logger("core.gateway.knetv3.views.KnetV3ResponseView").info(
+                "attribution e2e"
+            ),
+            capsys,
+        )
+        assert doc["log"]["logger"] == "core.gateway.knetv3.views.KnetV3ResponseView"
+        assert doc["log"]["origin"]["function"]
+        assert doc["log"]["origin"]["file"]["name"].endswith(".py")
+        assert isinstance(doc["log"]["origin"]["file"]["line"], int)
+        assert "extra" not in doc
+
+    def test_foreign_record_carries_logger_and_origin(self, capsys):
+        import logging
+
+        doc = self._formatted(
+            lambda: logging.getLogger("some.stdlib.ForeignLogger").info("foreign e2e"),
+            capsys,
+        )
+        assert doc["log"]["logger"] == "some.stdlib.ForeignLogger"
+        assert doc["log"]["origin"]["file"]["name"]
+        assert "extra" not in doc
