@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.5.6 (2026-08-05)
+
+### Features
+- feat(processors): callsite_ecs_fields — log.logger + log.origin attribution (#158349) (c41f770)
+
+### Fixes
+- Merge pull request #21 from ottuco/bug/158762_log_level_exception (d4484bf)
+- fix(formatters): normalize log.level "exception" -> "error" (#158762) (86c859e)
+- fix(processors): consume exc_info fully in error_ecs_fields — safe for renderer-less pipelines (39ffdc2)
+- fix(processors): render unhandled exc_info as ECS error.*, not stringified extra.exc_info (#158750) (6f530ac)
+
+### Other
+- style(formatters): add missing trailing newline (7340def)
+- docs: add error_ecs_fields to the processor-chain order list (b563956)
+- Merge task/158349-native-log-attribution (review fixes) into bug/158750_exc_info_error_fields (0c30db7)
+- docs+test(attribution): address review — README chain/quickstart parity, import order, end-to-end tests (9a2eee5)
+- chore: refresh uv.lock (5d81156)
+
+
 ## v0.5.5 (2026-06-11)
 
 ### Features
