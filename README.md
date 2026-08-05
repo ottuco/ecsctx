@@ -117,11 +117,12 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
 4. structlog.stdlib.PositionalArgumentsFormatter()
 5. structlog.processors.CallsiteParameterAdder # func_name, lineno, pathname
 6. callsite_ecs_fields                         # ← logger/func_name/pathname/lineno -> log.logger + log.origin.*
-7. contextvars_injector                        # ← Injects LoggingContext + trace + service
-8. namespace_ecs_fields                        # ← Reshape fields + clean up flat 'level' key
-9. mask_sensitive_data                         # ← PII tokenization (HMAC-SHA-256)
-10. ecs_validator                              # ← Warn on ECS field violations
-11. ECSFormatter                               # ← Format to ECS 1.12.0 JSON
+7. error_ecs_fields                            # ← Consumes exc_info -> error.{type,message,stack_trace}
+8. contextvars_injector                        # ← Injects LoggingContext + trace + service
+9. namespace_ecs_fields                        # ← Reshape fields + clean up flat 'level' key
+10. mask_sensitive_data                        # ← PII tokenization (HMAC-SHA-256)
+11. ecs_validator                              # ← Warn on ECS field violations
+12. ECSFormatter                               # ← Format to ECS 1.12.0 JSON
 ```
 
 Since 0.5.6, `configure_structlog()` (the native chain — every plain
