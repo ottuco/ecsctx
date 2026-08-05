@@ -2,6 +2,8 @@
 
 from ecsctx.pii import configure_pii, is_configured
 from ecsctx.processors import (
+    callsite_ecs_fields,
+    error_ecs_fields,
     _compile_path,
     _path_is_exempt,
     _safe_dump_and_mask,
@@ -361,3 +363,161 @@ class TestRootFieldsConfig:
         assert "customer" not in result
         assert result["extra"] == {"customer": {"id": "c1"}}
         assert root_fields_are_configured()
+
+
+class TestCallsiteEcsFields:
+    def _event(self, **extra):
+        event = {
+            "message": "hi",
+            "logger": "core.gateway.knet.KnetClient",
+            "func_name": "connect",
+            "pathname": "/app/core/gateway/knet/client.py",
+            "lineno": 42,
+        }
+        event.update(extra)
+        return event
+
+    def test_reshapes_flat_keys_into_log_container(self):
+        result = callsite_ecs_fields(None, "info", self._event())
+        assert result["log"] == {
+            "logger": "core.gateway.knet.KnetClient",
+            "origin": {
+                "function": "connect",
+                "file": {"name": "/app/core/gateway/knet/client.py", "line": 42},
+            },
+        }
+        for flat in ("logger", "func_name", "pathname", "lineno"):
+            assert flat not in result
+
+    def test_caller_provided_origin_wins_over_frame(self):
+        result = callsite_ecs_fields(
+            None,
+            "info",
+            self._event(log={"origin": {"function": "decorated_site"}}),
+        )
+        assert result["log"]["origin"] == {"function": "decorated_site"}
+        assert result["log"]["logger"] == "core.gateway.knet.KnetClient"
+
+    def test_caller_provided_logger_wins(self):
+        result = callsite_ecs_fields(
+            None, "info", self._event(log={"logger": "explicit"})
+        )
+        assert result["log"]["logger"] == "explicit"
+
+    def test_partial_callsite_keys(self):
+        result = callsite_ecs_fields(
+            None, "info", {"message": "hi", "logger": "a.b", "lineno": 7}
+        )
+        assert result["log"] == {"logger": "a.b", "origin": {"file": {"line": 7}}}
+
+    def test_no_callsite_keys_is_a_noop(self):
+        result = callsite_ecs_fields(None, "info", {"message": "hi"})
+        assert result == {"message": "hi"}
+
+    def test_non_dict_log_value_is_replaced(self):
+        result = callsite_ecs_fields(
+            None, "info", {"message": "hi", "logger": "a.b", "log": "oops"}
+        )
+        assert result["log"]["logger"] == "a.b"
+
+
+class TestErrorEcsFields:
+    def _exc_info(self):
+        try:
+            raise FileNotFoundError(2, "No such file or directory")
+        except FileNotFoundError:
+            import sys
+
+            return sys.exc_info()
+
+    def test_consumes_exc_info_into_full_error_object(self):
+        result = error_ecs_fields(None, "error", {"exc_info": self._exc_info()})
+        assert result["error"]["type"] == "FileNotFoundError"
+        assert result["error"]["message"] == "[Errno 2] No such file or directory"
+        assert result["error"]["stack_trace"].startswith("Traceback")
+        assert "FileNotFoundError" in result["error"]["stack_trace"]
+        # the raw tuple must never survive to a formatter
+        assert "exc_info" not in result
+
+    def test_explicit_error_values_win(self):
+        result = error_ecs_fields(
+            None,
+            "error",
+            {"exc_info": self._exc_info(), "error": {"message": "custom", "type": "X"}},
+        )
+        assert result["error"]["message"] == "custom"
+        assert result["error"]["type"] == "X"
+        # stack_trace is still derived — the caller didn't provide one
+        assert result["error"]["stack_trace"].startswith("Traceback")
+
+    def test_caller_error_dict_is_not_mutated(self):
+        shared = {"message": "custom"}
+        result = error_ecs_fields(None, "error", {"exc_info": self._exc_info(), "error": shared})
+        assert shared == {"message": "custom"}
+        assert result["error"] is not shared
+
+    def test_non_dict_error_value_is_replaced(self):
+        # error="..." already violates the ECS object rule; with exc_info present
+        # the derived object wins (explicitly asserted, not accidental).
+        result = error_ecs_fields(
+            None, "error", {"exc_info": self._exc_info(), "error": "some string"}
+        )
+        assert result["error"]["type"] == "FileNotFoundError"
+
+    def test_bare_exception_instance(self):
+        result = error_ecs_fields(None, "error", {"exc_info": ValueError("boom")})
+        assert result["error"]["type"] == "ValueError"
+        assert result["error"]["message"] == "boom"
+        assert "exc_info" not in result
+
+    def test_exc_info_true_resolves_current_exception(self):
+        try:
+            raise KeyError("missing")
+        except KeyError:
+            result = error_ecs_fields(None, "error", {"exc_info": True})
+        assert result["error"]["type"] == "KeyError"
+        assert "exc_info" not in result
+
+    def test_noop_without_exc_info(self):
+        assert error_ecs_fields(None, "info", {"event": "x"}) == {"event": "x"}
+
+
+class TestExceptionKeysInReshape:
+    def test_rendered_exception_string_stays_at_root(self):
+        from ecsctx.processors import reshape_log_event
+
+        result = reshape_log_event({"exception": "Traceback...", "custom_key": 1})
+        assert result["exception"] == "Traceback..."
+        assert result["extra"] == {"custom_key": 1}
+
+    def test_stray_raw_exc_info_still_swept_to_extra(self):
+        # A pipeline without error_ecs_fields keeps the old (pre-0.5.6) sweep —
+        # a raw tuple never lands at the document root.
+        from ecsctx.processors import reshape_log_event
+
+        ei = (ValueError, ValueError("boom"), None)
+        result = reshape_log_event({"exc_info": ei})
+        assert "exc_info" not in result
+        assert result["extra"]["exc_info"] is ei
+
+
+class TestStandalonePipelineSafety:
+    def test_no_raw_exc_info_at_root_without_exception_renderer(self):
+        """The README quickstart-style manual pipeline (no ExceptionRenderer):
+        error_ecs_fields alone must produce a JSON-safe document."""
+        import json
+
+        event = {"event": "boom happened", "exc_info": None}
+        try:
+            raise RuntimeError("standalone")
+        except RuntimeError:
+            import sys
+
+            event["exc_info"] = sys.exc_info()
+        event = error_ecs_fields(None, "error", event)
+        event = namespace_ecs_fields(None, "error", event)
+        json.dumps(event)  # must not raise, no repr-garbage tuples anywhere
+        assert event["error"]["type"] == "RuntimeError"
+        assert event["error"]["stack_trace"].startswith("Traceback")
+        assert "exc_info" not in event
+        assert "exc_info" not in event.get("extra", {})

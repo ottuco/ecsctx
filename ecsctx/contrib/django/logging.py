@@ -35,6 +35,8 @@ import structlog
 
 from ecsctx import (
     ECSFormatter,
+    callsite_ecs_fields,
+    error_ecs_fields,
     ecs_validator,
     mask_sensitive_data,
     namespace_ecs_fields,
@@ -171,6 +173,8 @@ def get_logging_config(
                             structlog.processors.CallsiteParameter.PATHNAME,
                         ]
                     ),
+                    callsite_ecs_fields,
+                    error_ecs_fields,
                     contextvars_injector,
                     namespace_ecs_fields,
                     mask_sensitive_data,
@@ -221,7 +225,17 @@ def configure_structlog():
             structlog.contextvars.merge_contextvars,
             contextvars_injector,
             structlog.processors.add_log_level,
+            structlog.stdlib.add_logger_name,
             structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.CallsiteParameterAdder(
+                parameters=[
+                    structlog.processors.CallsiteParameter.FUNC_NAME,
+                    structlog.processors.CallsiteParameter.LINENO,
+                    structlog.processors.CallsiteParameter.PATHNAME,
+                ]
+            ),
+            callsite_ecs_fields,
+            error_ecs_fields,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.ExceptionRenderer(),

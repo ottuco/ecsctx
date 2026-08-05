@@ -27,3 +27,92 @@ class TestSetupLoggingSettingsSafety:
         setup_logging(capture_warnings=False)
 
         assert "ECSCTX_MASK_EXEMPT_PATHS" not in seen
+
+
+class TestAttributionEndToEnd:
+    """Full get_logging_config() + configure_structlog() pipeline through the
+    real formatter — guards the chain ordering (callsite keys must be reshaped
+    into log.* before namespace_ecs_fields sweeps them into extra)."""
+
+    def _formatted(self, emit, capsys):
+        import logging.config
+
+        import structlog
+
+        from ecsctx.contrib.django import get_logging_config, setup_logging
+
+        cfg = get_logging_config(use_cid_filter=False)
+        cfg["loggers"] = {}
+        logging.config.dictConfig(cfg)
+        setup_logging()
+        try:
+            emit()
+        finally:
+            structlog.reset_defaults()
+        import json
+
+        lines = [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
+        return json.loads(lines[-1])
+
+    def test_native_call_carries_logger_and_origin(self, capsys):
+        import structlog
+
+        doc = self._formatted(
+            lambda: structlog.get_logger("core.gateway.knetv3.views.KnetV3ResponseView").info(
+                "attribution e2e"
+            ),
+            capsys,
+        )
+        assert doc["log"]["logger"] == "core.gateway.knetv3.views.KnetV3ResponseView"
+        assert doc["log"]["origin"]["function"]
+        assert doc["log"]["origin"]["file"]["name"].endswith(".py")
+        assert isinstance(doc["log"]["origin"]["file"]["line"], int)
+        assert "extra" not in doc
+
+    def test_foreign_record_carries_logger_and_origin(self, capsys):
+        import logging
+
+        doc = self._formatted(
+            lambda: logging.getLogger("some.stdlib.ForeignLogger").info("foreign e2e"),
+            capsys,
+        )
+        assert doc["log"]["logger"] == "some.stdlib.ForeignLogger"
+        assert doc["log"]["origin"]["file"]["name"]
+        assert "extra" not in doc
+
+
+class TestUnhandled500EndToEnd:
+    """The original #158750 report: a django.request record with exc_info must
+    ship a full ECS error object through the REAL config — not a stringified
+    extra.exc_info."""
+
+    def test_django_request_500_ships_error_object(self, capsys):
+        import json
+        import logging.config
+        import sys as _sys
+
+        import structlog
+
+        from ecsctx.contrib.django import get_logging_config, setup_logging
+
+        cfg = get_logging_config(use_cid_filter=False)
+        cfg["loggers"] = {}
+        logging.config.dictConfig(cfg)
+        setup_logging()
+        try:
+            try:
+                raise FileNotFoundError(2, "No such file or directory")
+            except FileNotFoundError:
+                logging.getLogger("django.request").error(
+                    "Internal Server Error: /api/checkout/", exc_info=_sys.exc_info()
+                )
+        finally:
+            structlog.reset_defaults()
+
+        lines = [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
+        doc = json.loads(lines[-1])
+        assert doc["error"]["type"] == "FileNotFoundError"
+        assert doc["error"]["message"] == "[Errno 2] No such file or directory"
+        assert doc["error"]["stack_trace"].startswith("Traceback")
+        assert doc["log"]["logger"] == "django.request"
+        assert "extra" not in doc

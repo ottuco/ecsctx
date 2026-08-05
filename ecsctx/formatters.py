@@ -24,4 +24,13 @@ class ECSFormatter(StructlogFormatter):
         event_dict.pop("ecs", None)
         # Set only flat key (ECS standard)
         event_dict["ecs.version"] = self.ECS_VERSION
+        # structlog's logger.exception() reports its method name ("exception")
+        # as the level, which is not a valid ECS/syslog level and breaks
+        # log.level:error filters in Kibana. The level may sit nested or flat
+        # depending on where in the pipeline it was set.
+        log_obj = event_dict.get("log")
+        if isinstance(log_obj, dict) and log_obj.get("level") == "exception":
+            log_obj["level"] = "error"
+        if event_dict.get("log.level") == "exception":
+            event_dict["log.level"] = "error"
         return event_dict

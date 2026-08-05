@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import traceback
 
 from structlog.contextvars import get_contextvars
 
@@ -138,6 +139,13 @@ def _reset_root_fields() -> None:
     _root_fields_auto_configure_attempted = False
 
 
+# "exception" is the rendered-traceback string an upstream ExceptionRenderer may
+# have produced; StructlogFormatter maps it to error.stack_trace. It must not be
+# swept into extra. Raw exc_info never reaches the reshape: error_ecs_fields
+# consumes it into the error object first.
+_EXCEPTION_PASSTHROUGH_KEYS = frozenset({"exception"})
+
+
 def reshape_log_event(event_dict) -> dict:
     """Reshape log event: allowlisted keys stay at root, everything else goes into extra.
 
@@ -154,7 +162,12 @@ def reshape_log_event(event_dict) -> dict:
     extra = {}
 
     for key, value in event_dict.items():
-        if key in allowlist or key.startswith("_") or key.startswith("event."):
+        if (
+            key in allowlist
+            or key in _EXCEPTION_PASSTHROUGH_KEYS
+            or key.startswith("_")
+            or key.startswith("event.")
+        ):
             reshaped[key] = value
         else:
             extra[key] = value
@@ -186,6 +199,94 @@ def _inject_logging_context(event_dict: dict) -> dict:
             if key not in event_dict and value is not None:
                 event_dict[key] = value
 
+    return event_dict
+
+
+def error_ecs_fields(_logger, _method_name, event_dict):
+    """
+    Consume a pending ``exc_info`` into the ECS ``error`` object:
+    ``error.type``, ``error.message`` and ``error.stack_trace``.
+
+    ``exc_info`` is POPPED — the raw ``(type, exc, traceback)`` tuple must
+    never reach a formatter (unrendered it JSON-dumps as a repr string, or
+    crashes serialization). Rendering here instead of relying on a downstream
+    ``ExceptionRenderer`` keeps custom pipelines safe: any chain that includes
+    this processor gets full ECS error fields with no ordering trap. A chain
+    that ALSO runs ExceptionRenderer afterwards is fine — it no-ops once
+    ``exc_info`` is gone.
+
+    An explicit caller ``error={...}`` (the connect logging-rules shape) wins —
+    values are only setdefault'ed, and the caller's dict is copied, never
+    mutated in place (callers may reuse a shared dict across log calls).
+    """
+    ei = event_dict.get("exc_info")
+    exc = None
+    if isinstance(ei, BaseException):
+        exc = ei
+    elif isinstance(ei, tuple) and len(ei) == 3 and isinstance(ei[1], BaseException):
+        exc = ei[1]
+    elif ei is True:
+        exc = sys.exc_info()[1]
+    if exc is None:
+        return event_dict
+
+    event_dict.pop("exc_info", None)
+    error = event_dict.get("error")
+    error = dict(error) if isinstance(error, dict) else {}
+    error.setdefault("type", type(exc).__name__)
+    error.setdefault("message", str(exc))
+    if "stack_trace" not in error:
+        with contextlib.suppress(Exception):
+            error["stack_trace"] = "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            ).rstrip("\n")
+    event_dict["error"] = error
+    return event_dict
+
+
+def callsite_ecs_fields(_logger, _method_name, event_dict):
+    """
+    Map structlog attribution keys into the ECS ``log`` container.
+
+    ``add_logger_name`` and ``CallsiteParameterAdder`` emit flat ``logger``,
+    ``func_name``, ``pathname`` and ``lineno`` keys. Left flat, they are not
+    ECS and ``namespace_ecs_fields`` would bury them in ``extra.*`` (four
+    dynamically-mapped fields). Reshape them to ``log.logger`` and
+    ``log.origin.{function,file.name,file.line}`` — the fields the o11y
+    ``common-logs`` pipeline was built around in the logstash era.
+
+    An explicit caller-provided ``log.origin`` (e.g. ``@log_io`` records the
+    decoration site) wins over the frame-derived one: the wrapper's frame is
+    noise compared to the decorated method's location.
+    """
+    name = event_dict.pop("logger", None)
+    func = event_dict.pop("func_name", None)
+    path = event_dict.pop("pathname", None)
+    line = event_dict.pop("lineno", None)
+
+    log = event_dict.get("log")
+    if not isinstance(log, dict):
+        log = {}
+
+    if name is not None and "logger" not in log:
+        log["logger"] = name
+
+    if "origin" not in log:
+        origin = {}
+        if func is not None:
+            origin["function"] = func
+        file_part = {}
+        if path is not None:
+            file_part["name"] = path
+        if line is not None:
+            file_part["line"] = line
+        if file_part:
+            origin["file"] = file_part
+        if origin:
+            log["origin"] = origin
+
+    if log:
+        event_dict["log"] = log
     return event_dict
 
 
