@@ -30,6 +30,7 @@ Usage in settings.py:
 from __future__ import annotations
 
 import logging
+from typing import Protocol
 
 import structlog
 
@@ -213,42 +214,72 @@ def get_logging_config(
     return config
 
 
-def configure_structlog():
+class ChainIntegration(Protocol):
+    """
+    An object that installs itself into the native processor chain.
+
+    ecsctx core stays vendor-neutral: it only folds integrations over the
+    default chain. Each integration owns its placement rule and validation
+    (see ``ecsctx.contrib.sentry.SentryIntegration``).
+    """
+
+    def install(self, processors: list) -> list: ...
+
+
+def default_processors() -> list:
+    """The standard native-chain processors, in execution order."""
+    return [
+        structlog.contextvars.merge_contextvars,
+        contextvars_injector,
+        structlog.processors.add_log_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.CallsiteParameterAdder(
+            parameters=[
+                structlog.processors.CallsiteParameter.FUNC_NAME,
+                structlog.processors.CallsiteParameter.LINENO,
+                structlog.processors.CallsiteParameter.PATHNAME,
+            ]
+        ),
+        callsite_ecs_fields,
+        error_ecs_fields,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.ExceptionRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+    ]
+
+
+def configure_structlog(integrations: list[ChainIntegration] | None = None):
     """
     Configure structlog with standard processors.
 
     Call this in settings.py after LOGGING is set up:
         configure_structlog()
+
+    Args:
+        integrations: ChainIntegration objects, each applied to the default
+            chain via ``install(processors) -> list``. Default: none, chain
+            unchanged. Example:
+                configure_structlog(integrations=[SentryIntegration()])
     """
+    processors = default_processors()
+    for integration in integrations or ():
+        processors = integration.install(processors)
+
     structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            contextvars_injector,
-            structlog.processors.add_log_level,
-            structlog.stdlib.add_logger_name,
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.CallsiteParameterAdder(
-                parameters=[
-                    structlog.processors.CallsiteParameter.FUNC_NAME,
-                    structlog.processors.CallsiteParameter.LINENO,
-                    structlog.processors.CallsiteParameter.PATHNAME,
-                ]
-            ),
-            callsite_ecs_fields,
-            error_ecs_fields,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.ExceptionRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
-        ],
+        processors=processors,
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
 
 
-def setup_logging(capture_warnings: bool = True):
+def setup_logging(
+    capture_warnings: bool = True,
+    integrations: list[ChainIntegration] | None = None,
+):
     """
     Complete logging setup helper.
 
@@ -258,6 +289,7 @@ def setup_logging(capture_warnings: bool = True):
 
     Args:
         capture_warnings: Route Python warnings through logging (default: True)
+        integrations: See configure_structlog()
     """
     # NB: do NOT bridge ECSCTX_MASK_EXEMPT_PATHS from Django settings here.
     # setup_logging() is documented to be called from settings.py, i.e. while the
@@ -266,6 +298,6 @@ def setup_logging(capture_warnings: bool = True):
     # object (everything defined after the setup_logging() call is lost) and
     # breaks the whole app. The exemptions are bridged lazily at log time instead
     # (contextvars_injector -> _auto_configure_masking), when settings are ready.
-    configure_structlog()
+    configure_structlog(integrations=integrations)
     if capture_warnings:
         logging.captureWarnings(True)
