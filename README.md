@@ -91,7 +91,8 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
                       ↓
 2. CidMiddleware reads traceparent, stores in contextvar
                       ↓
-3. LoggingContextMiddleware binds span_id (UUID), client IP
+3. LoggingContextMiddleware clears stale structlog contextvars
+   (left over from the worker's previous request), binds span_id (UUID), client IP
                       ↓
 4. Auth middleware authenticates user
                       ↓

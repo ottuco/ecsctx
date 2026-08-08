@@ -380,7 +380,7 @@ wheels = [
 
 [[package]]
 name = "ecsctx"
-version = "0.5.5"
+version = "0.5.6"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -409,8 +409,10 @@ rq = [
 
 [package.dev-dependencies]
 test = [
+    { name = "celery" },
     { name = "pytest" },
     { name = "pytest-django" },
+    { name = "rq" },
 ]
 
 [package.metadata]
@@ -431,8 +433,10 @@ provides-extras = ["django", "auditlog", "rq", "celery"]
 
 [package.metadata.requires-dev]
 test = [
+    { name = "celery", specifier = ">=5.6.2" },
     { name = "pytest", specifier = ">=7.0" },
     { name = "pytest-django", specifier = ">=4.5.0" },
+    { name = "rq", specifier = "==1.16.2" },
 ]
 
 [[package]]

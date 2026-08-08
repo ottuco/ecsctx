@@ -55,6 +55,10 @@ celery = [
 test = [
     "pytest>=7.0",
     "pytest-django>=4.5.0",
+    # Keep in sync with the rq/celery extras: the contrib boundary tests
+    # import the real packages.
+    "rq==1.16.2",
+    "celery>=5.6.2",
 ]
 
 [tool.hatch.build.targets.wheel]
