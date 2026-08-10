@@ -164,6 +164,19 @@ LoggingIntegration(event_level=None)  # keep breadcrumbs, stop raw-record events
 
 Native exception capture (`DjangoIntegration` etc.) is unaffected either way.
 
+**Scope: native chain only.** `SentryIntegration` runs in the chain used by
+`structlog.get_logger(__name__)` calls. Records from plain stdlib loggers
+(`logging.getLogger(...)` — third-party libraries, `django.request`) are
+formatted through `get_logging_config()`'s separate `foreign_pre_chain` and
+are NOT captured by `SentryIntegration`. With
+`LoggingIntegration(event_level=None)`, deliberate `logger.error()` calls from
+stdlib loggers stop becoming Sentry events (unhandled exceptions still arrive
+via `DjangoIntegration`). If you need stdlib-logger events, keep
+`LoggingIntegration(event_level=ERROR)` and suppress every namespace you log
+through structlog with `sentry_sdk.integrations.logging.ignore_logger`
+(fnmatch globs are supported, e.g. `ignore_logger("myapp.*")`) — any structlog
+namespace you miss will double-send, one copy being the raw unmasked record.
+
 Since 0.5.6, `configure_structlog()` (the native chain — every plain
 `structlog.get_logger(__name__)` call) runs `add_logger_name`,
 `CallsiteParameterAdder` and `callsite_ecs_fields` too, so **every** log line

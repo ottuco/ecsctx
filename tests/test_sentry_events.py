@@ -211,3 +211,16 @@ class TestSentryEventContent:
         logger.info("routine line")
 
         assert sentry_captured == []
+
+    def test_stdlib_foreign_logger_not_captured(self, sentry_captured):
+        """Documented scope: SentryIntegration covers the native chain only.
+
+        Foreign records go through get_logging_config()'s foreign_pre_chain,
+        which SentryIntegration does not touch (see README). This pins that
+        boundary so a future foreign-chain integration changes it knowingly.
+        """
+        configure_structlog(integrations=[SentryIntegration()])
+
+        logging.getLogger("sentrytest.foreign").error("stdlib error line")
+
+        assert sentry_captured == []

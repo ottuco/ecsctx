@@ -220,7 +220,7 @@ class ChainIntegration(Protocol):
 
     ecsctx core stays vendor-neutral: it only folds integrations over the
     default chain. Each integration owns its placement rule and validation
-    (see ``ecsctx.contrib.sentry.SentryIntegration``).
+    (implementations live under ``ecsctx.contrib.*``).
     """
 
     def install(self, processors: list) -> list: ...
