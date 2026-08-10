@@ -26,6 +26,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group test --extra django
+      # The pip install overrides the lock's Django; every later step MUST
+      # use --no-sync (a plain `uv run` or second `uv sync` re-syncs the
+      # venv to the lock and silently reverts the matrix pin).
       - run: uv pip install "Django~=${{ matrix.django-version }}.0"
       - run: uv run --no-sync pytest tests/ -v
 
