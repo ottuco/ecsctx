@@ -5,9 +5,12 @@ This module provides decorators and helpers to propagate logging context
 from web requests to RQ background jobs.
 """
 
+from contextlib import contextmanager
 from dataclasses import asdict
 from functools import wraps
 import uuid
+
+import structlog
 from rq import get_current_job
 
 from ecsctx.context import (
@@ -21,6 +24,26 @@ from ecsctx.context import (
 
 # Reserved kwarg for passing full log context to RQ jobs
 LOG_CONTEXT_KEY = "_rq_log_context"
+
+
+@contextmanager
+def _isolated_structlog_contextvars():
+    """Run the job on a clean structlog slate, restoring the caller's bindings.
+
+    Non-forking workers (SimpleWorker, gevent) reuse one execution context for
+    many jobs, and integrations like LogContextBinder bind structlog
+    contextvars with no reset — job N's bindings would leak into job N+1's
+    logs. Snapshot-and-restore (rather than a bare clear) keeps inline/eager
+    execution safe too: the enclosing request gets its own context back.
+    """
+    saved = structlog.contextvars.get_contextvars()
+    structlog.contextvars.clear_contextvars()
+    try:
+        yield
+    finally:
+        structlog.contextvars.clear_contextvars()
+        if saved:
+            structlog.contextvars.bind_contextvars(**saved)
 
 
 def capture_log_context() -> dict | None:
@@ -57,13 +80,15 @@ def with_log_context(func):
         current_job = get_current_job()
         job_id = current_job.id if current_job else None
 
+        if not log_context_data and not job_id:
+            return func(*args, **kwargs)
+
         if log_context_data:
             ctx_dict = log_context_data.get("ctx", {})
             trace_id = log_context_data.get("trace_id")
 
             # new span id for job as it will be in different container/service/space.
-            _span_id = str(uuid.uuid4())
-            ctx_dict["span_id"] = _span_id
+            ctx_dict["span_id"] = str(uuid.uuid4())
 
             extra = ctx_dict.get("extra", {})
             if trace_id:
@@ -73,22 +98,16 @@ def with_log_context(func):
             ctx_dict["extra"] = extra
 
             ctx = LoggingContext(**ctx_dict)
-            
-            token = set_logging_context(ctx)
-            try:
-                return func(*args, **kwargs)
-            finally:
-                reset_logging_context(token)
-
-        if job_id:
+        else:
             ctx = LoggingContext(extra={"rq_job": {"id": job_id}})
+
+        with _isolated_structlog_contextvars():
             token = set_logging_context(ctx)
             try:
                 return func(*args, **kwargs)
             finally:
                 reset_logging_context(token)
 
-        return func(*args, **kwargs)
     return wrapper
 
 

@@ -18,6 +18,7 @@ Usage:
 import uuid
 from dataclasses import asdict
 
+import structlog
 from celery import signals
 
 from ecsctx.context import (
@@ -66,6 +67,15 @@ def _restore_context_on_prerun(task=None, **kwargs):
     if task is None:
         return
 
+    # Prefork children are long-lived and run many tasks, and integrations
+    # like LogContextBinder bind structlog contextvars with no reset — the
+    # previous task's bindings would leak into this task's logs. Snapshot so
+    # postrun can hand an eager (in-request) caller its own context back, then
+    # start the task from a clean structlog slate. Must happen even when no
+    # context was propagated.
+    task._structlog_saved_contextvars = structlog.contextvars.get_contextvars()
+    structlog.contextvars.clear_contextvars()
+
     log_context_data = getattr(task.request, LOG_CONTEXT_KEY, None)
     if not log_context_data:
         return
@@ -94,6 +104,14 @@ def _cleanup_context_on_postrun(task=None, **kwargs):
     token = getattr(task, "_log_context_token", None)
     if token is not None:
         reset_logging_context(token)
+
+    # Drop whatever the task bound onto structlog contextvars and restore the
+    # prerun snapshot (empty in a worker; the caller's bindings when eager).
+    saved = getattr(task, "_structlog_saved_contextvars", None)
+    structlog.contextvars.clear_contextvars()
+    if saved:
+        structlog.contextvars.bind_contextvars(**saved)
+    task._structlog_saved_contextvars = None
 
 
 def install_celery_hooks():

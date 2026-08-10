@@ -412,8 +412,10 @@ sentry = [
 
 [package.dev-dependencies]
 test = [
+    { name = "celery" },
     { name = "pytest" },
     { name = "pytest-django" },
+    { name = "rq" },
     { name = "sentry-sdk" },
     { name = "structlog-sentry" },
 ]
@@ -437,8 +439,10 @@ provides-extras = ["django", "auditlog", "rq", "celery", "sentry"]
 
 [package.metadata.requires-dev]
 test = [
+    { name = "celery", specifier = ">=5.6.2" },
     { name = "pytest", specifier = ">=7.0" },
     { name = "pytest-django", specifier = ">=4.5.0" },
+    { name = "rq", specifier = "==1.16.2" },
     { name = "sentry-sdk", specifier = ">=2.0" },
     { name = "structlog-sentry", specifier = ">=2.2.1" },
 ]

@@ -30,6 +30,18 @@ class LoggingContextMiddleware(MiddlewareMixin):
 
     def process_request(self, request):
         """Bind span_id and client IP to logging context."""
+        # Integrations like LogContextBinder bind structlog contextvars with
+        # no reset, and stale bindings outlive their request wherever the
+        # execution context is long-lived: a WSGI sync worker reuses one
+        # context for every request it serves (request N's session_id/customer
+        # show up on request N+1), and under ASGI anything bound outside a
+        # request task lands in the base context that every request task
+        # copies (stale values show up on all requests). merge_contextvars
+        # runs before contextvars_injector (first writer wins), so the stale
+        # values would even beat a freshly bound ecsctx context. Start every
+        # request from a clean structlog slate.
+        structlog.contextvars.clear_contextvars()
+
         span_id = str(uuid.uuid4())
         request._span_id = span_id
 
