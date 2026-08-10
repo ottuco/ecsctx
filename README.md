@@ -144,6 +144,18 @@ LOGGING = get_logging_config()
 setup_logging(integrations=[SentryIntegration()])  # event_level=ERROR default
 ```
 
+| Arg | Default | Effect |
+| --- | --- | --- |
+| `event_level` | `ERROR` | Minimum level that becomes a Sentry **event** |
+| `level` | `INFO` | Minimum level recorded as a Sentry **breadcrumb** |
+| `ignore_loggers` | `DEFAULT_IGNORE_LOGGERS` | Logger names dropped entirely |
+
+`DEFAULT_IGNORE_LOGGERS` holds `ecsctx.contrib.django.middleware`, whose
+`process_exception` logs every unhandled exception for the log pipeline. Sentry
+already gets that exception natively off `got_request_exception`, so capturing
+the log line too would file one 500 as two issues. Pass an explicit
+`ignore_loggers` (`()` for none) to override.
+
 `SentryIntegration` installs `mask_sensitive_data` + `structlog_sentry.SentryProcessor`
 as an adjacent pair directly before `error_ecs_fields`: the last spot where
 `exc_info` is still present (so the Sentry event carries the real exception)
@@ -160,8 +172,12 @@ consuming project is REQUIRED when using `SentryIntegration` — otherwise the
 raw record still ships alongside the masked one:
 
 ```python
-LoggingIntegration(event_level=None)  # keep breadcrumbs, stop raw-record events
+LoggingIntegration(level=None, event_level=None)  # stop both raw-record paths
 ```
+
+Turn off both: `event_level` stops the duplicate event, `level` stops the
+breadcrumb, which carries the same unmasked dict. `SentryIntegration` supplies
+both from inside the chain, masked.
 
 Native exception capture (`DjangoIntegration` etc.) is unaffected either way.
 

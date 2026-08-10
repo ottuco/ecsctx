@@ -49,6 +49,9 @@ def sentry_captured():
         auto_enabling_integrations=False,
         before_send=grab,
     )
+    # Breadcrumbs live on the isolation scope, which outlives init() — without
+    # this every test inherits the crumbs of the ones before it.
+    sentry_sdk.get_isolation_scope().clear_breadcrumbs()
     yield captured
     sentry_sdk.init(dsn="")
 
@@ -224,3 +227,99 @@ class TestSentryEventContent:
         logging.getLogger("sentrytest.foreign").error("stdlib error line")
 
         assert sentry_captured == []
+
+
+class TestIgnoreLoggers:
+    """Unhandled Django exceptions must file one Sentry issue, not two (#158768).
+
+    LoggingContextMiddleware.process_exception logs the exception for the log
+    pipeline; DjangoIntegration captures the same exception natively off
+    got_request_exception. Without a default ignore the chain would report it
+    a second time.
+    """
+
+    def test_middleware_logger_ignored_by_default(self, sentry_captured):
+        configure_structlog(integrations=[SentryIntegration()])
+        logger = structlog.get_logger("ecsctx.contrib.django.middleware")
+
+        try:
+            raise ValueError("boom")
+        except ValueError as exc:
+            logger.exception("unhandled_exception", exc_info=exc)
+
+        assert sentry_captured == []
+
+    def test_other_loggers_still_captured(self, sentry_captured):
+        configure_structlog(integrations=[SentryIntegration()])
+
+        structlog.get_logger("core.gateway.acme").error("gateway_boom")
+
+        [event] = sentry_captured
+        assert event["message"] == "gateway_boom"
+
+    def test_ignore_loggers_override(self, sentry_captured):
+        configure_structlog(
+            integrations=[SentryIntegration(ignore_loggers=["core.noisy"])]
+        )
+
+        structlog.get_logger("core.noisy").error("dropped")
+        structlog.get_logger("ecsctx.contrib.django.middleware").error("kept")
+
+        [event] = sentry_captured
+        assert event["message"] == "kept"
+
+    def test_empty_ignore_loggers_captures_everything(self, sentry_captured):
+        configure_structlog(integrations=[SentryIntegration(ignore_loggers=())])
+
+        structlog.get_logger("ecsctx.contrib.django.middleware").error("kept")
+
+        [event] = sentry_captured
+        assert event["message"] == "kept"
+
+
+def _crumbs(event):
+    return [b["message"] for b in event.get("breadcrumbs", {}).get("values", [])]
+
+
+class TestBreadcrumbLevel:
+    def test_default_breadcrumb_level_is_info(self):
+        [processor] = [
+            p
+            for p in SentryIntegration().install(default_processors())
+            if isinstance(p, SentryProcessor)
+        ]
+        assert processor.level == logging.INFO
+
+    def test_breadcrumb_level_is_passed_through(self):
+        [processor] = [
+            p
+            for p in SentryIntegration(level=logging.ERROR).install(
+                default_processors()
+            )
+            if isinstance(p, SentryProcessor)
+        ]
+        assert processor.level == logging.ERROR
+
+    def test_below_breadcrumb_level_records_nothing(self, sentry_captured):
+        configure_structlog(
+            integrations=[SentryIntegration(level=logging.ERROR)]
+        )
+        logger = structlog.get_logger("sentrytest.breadcrumbs")
+
+        logger.info("routine line")
+        logger.error("now it ships")
+
+        [event] = sentry_captured
+        # The event is captured before its own breadcrumb is recorded, so
+        # only the sub-threshold line is what this asserts on.
+        assert "routine line" not in _crumbs(event)
+
+    def test_at_breadcrumb_level_records_crumb(self, sentry_captured):
+        configure_structlog(integrations=[SentryIntegration(level=logging.INFO)])
+        logger = structlog.get_logger("sentrytest.breadcrumbs")
+
+        logger.info("routine line")
+        logger.error("now it ships")
+
+        [event] = sentry_captured
+        assert "routine line" in _crumbs(event)
