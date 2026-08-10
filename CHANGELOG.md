@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.6.0 (2026-08-10)
+
+### Features
+- Merge pull request #22 from ottuco/bug/158767_sentry_processor (4bf322f)
+- feat: ChainIntegration hook + ecsctx.contrib.sentry.SentryIntegration for masked in-chain Sentry events (#158767) (1b12a3a)
+
+### Fixes
+- Merge pull request #25 from ottuco/bug/158865-structlog-context-leak (08f2970)
+- fix(contrib): clear stale structlog contextvars at request/job/task boundaries (ac296ff)
+
+### Other
+- Merge origin/main (v0.6.0 sentry work) — union test deps, regen uv.lock (d8547ee)
+- docs(middleware): transport-neutral leak explanation — cover ASGI base-context inheritance, not just WSGI workers (#158865) (05b59be)
+- docs: scope SentryIntegration to the native chain; drop vendor name from core docstring (#158767) (71479c3)
+
+
 ## v0.5.6 (2026-08-05)
 
 ### Features
