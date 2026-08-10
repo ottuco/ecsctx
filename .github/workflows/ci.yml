@@ -11,14 +11,26 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        # Explicit Django dimension: 4.2 covers the django>=4.0 floor,
+        # 5.2 LTS is what consuming projects run, 6.0 is current.
+        # Pairings follow Django's own python support (4.2/5.2: <=3.12 and
+        # >=3.10 here; 6.0: >=3.12).
         python-version: ["3.10", "3.12"]
+        django-version: ["4.2", "5.2", "6.0"]
+        exclude:
+          - python-version: "3.10"
+            django-version: "6.0"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group test --extra django
-      - run: uv run pytest tests/ -v
+      # The pip install overrides the lock's Django; every later step MUST
+      # use --no-sync (a plain `uv run` or second `uv sync` re-syncs the
+      # venv to the lock and silently reverts the matrix pin).
+      - run: uv pip install "Django~=${{ matrix.django-version }}.0"
+      - run: uv run --no-sync pytest tests/ -v
 
   build:
     runs-on: ubuntu-latest
