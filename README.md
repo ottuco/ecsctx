@@ -126,6 +126,58 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
 12. ECSFormatter                               # ← Format to ECS 1.12.0 JSON
 ```
 
+### Chain integrations (opt-in, since 0.6.0)
+
+`configure_structlog(integrations=[...])` / `setup_logging(integrations=[...])`
+accept objects with an `install(processors) -> list` method, applied in order
+to the default chain (exposed as `default_processors()`). The core stays
+vendor-neutral: it never names any vendor, and each integration owns its
+placement rule and validation. Without integrations the chain is unchanged.
+
+#### Sentry events (`ecsctx[sentry]` extra)
+
+```python
+from ecsctx.contrib.django.logging import get_logging_config, setup_logging
+from ecsctx.contrib.sentry import SentryIntegration
+
+LOGGING = get_logging_config()
+setup_logging(integrations=[SentryIntegration()])  # event_level=ERROR default
+```
+
+`SentryIntegration` installs `mask_sensitive_data` + `structlog_sentry.SentryProcessor`
+as an adjacent pair directly before `error_ecs_fields`: the last spot where
+`exc_info` is still present (so the Sentry event carries the real exception)
+and masking runs first (so Sentry never sees unmasked containers). Installing
+it twice, or into a chain without `error_ecs_fields`, raises at setup time.
+
+Why not sentry-sdk's stdlib `LoggingIntegration`? It hooks
+`logging.Logger.callHandlers` and reads the *pre-formatter* `record.msg` — for
+structlog records that is the whole event dict, so events arrive as an
+unreadable dict repr, group badly, and (because the formatter masks a shallow
+copy) top-level `payload` / `args` / `kwargs` / `headers` reach Sentry
+**unmasked**. That is also why disabling the stdlib event path in the
+consuming project is REQUIRED when using `SentryIntegration` — otherwise the
+raw record still ships alongside the masked one:
+
+```python
+LoggingIntegration(event_level=None)  # keep breadcrumbs, stop raw-record events
+```
+
+Native exception capture (`DjangoIntegration` etc.) is unaffected either way.
+
+**Scope: native chain only.** `SentryIntegration` runs in the chain used by
+`structlog.get_logger(__name__)` calls. Records from plain stdlib loggers
+(`logging.getLogger(...)` — third-party libraries, `django.request`) are
+formatted through `get_logging_config()`'s separate `foreign_pre_chain` and
+are NOT captured by `SentryIntegration`. With
+`LoggingIntegration(event_level=None)`, deliberate `logger.error()` calls from
+stdlib loggers stop becoming Sentry events (unhandled exceptions still arrive
+via `DjangoIntegration`). If you need stdlib-logger events, keep
+`LoggingIntegration(event_level=ERROR)` and suppress every namespace you log
+through structlog with `sentry_sdk.integrations.logging.ignore_logger`
+(fnmatch globs are supported, e.g. `ignore_logger("myapp.*")`) — any structlog
+namespace you miss will double-send, one copy being the raw unmasked record.
+
 Since 0.5.6, `configure_structlog()` (the native chain — every plain
 `structlog.get_logger(__name__)` call) runs `add_logger_name`,
 `CallsiteParameterAdder` and `callsite_ecs_fields` too, so **every** log line
@@ -218,6 +270,7 @@ pip install ecsctx[django]               # With Django support
 pip install ecsctx[django,celery]        # With Django + Celery
 pip install ecsctx[django,rq]            # With Django + RQ
 pip install ecsctx[django,auditlog]      # With Django + auditlog integration
+pip install ecsctx[django,sentry]        # With Django + in-chain Sentry events
 ```
 
 Requires Python >= 3.10.
