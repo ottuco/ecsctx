@@ -105,11 +105,13 @@ class TestProcessResponse:
 class TestStructlogContextvarsCleared:
     """process_request must start each request from a clean structlog slate.
 
-    WSGI workers reuse one execution context across requests, and integrations
-    like LogContextBinder bind structlog contextvars with no reset — without a
-    boundary clear, request N's session_id/customer show up on request N+1's
-    logs and (merge_contextvars runs before contextvars_injector, first writer
-    wins) even beat a freshly bound ecsctx context.
+    Stale structlog bindings outlive their request wherever the execution
+    context is long-lived: WSGI sync workers reuse one context across requests
+    (request N's session_id/customer show up on request N+1), and under ASGI
+    anything bound outside a request task is inherited by every request task
+    via the copied base context. Without a boundary clear those stale values
+    (merge_contextvars runs before contextvars_injector, first writer wins)
+    even beat a freshly bound ecsctx context.
     """
 
     def test_process_request_clears_stale_structlog_contextvars(
