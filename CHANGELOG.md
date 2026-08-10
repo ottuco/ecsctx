@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.6.1 (2026-08-10)
+
+### Other
+- Merge pull request #27 from ottuco/chore/158877_dependabot_upgrades (fdaa9ad)
+- ci: warn future editors that the Django matrix pin dies on any re-sync (#158877) (c6859f6)
+- chore(deps): upgrade vulnerable locked deps; test Django 4.2/5.2/6.0 explicitly in CI (#158877) (2783b92)
+
+
 ## v0.6.0 (2026-08-10)
 
 ### Features
