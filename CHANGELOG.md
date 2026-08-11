@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.2 (2026-08-11)
+
+### Features
+- Merge pull request #28 from ottuco/task/158768_sentry_integration_params (20a3583)
+- feat(sentry): breadcrumb level + ignore_loggers on SentryIntegration (#158768) (0199b01)
+
+
 ## v0.6.1 (2026-08-10)
 
 ### Other
