@@ -31,3 +31,5 @@ htmlcov/
 # claude code local settings
 .claude/settings.local.json
 .codex/
+
+__IGNORED__
