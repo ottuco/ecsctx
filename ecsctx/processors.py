@@ -16,6 +16,14 @@ from structlog.contextvars import get_contextvars
 
 from ecsctx.context import get_logging_context, get_trace_id
 from ecsctx.pii import tokenize as _pii_tokenize
+from ecsctx.exemptions import (
+    _get_exempt_patterns,
+    _reset_masking,
+    _path_is_exempt,
+    configure_masking,
+    configure_masking_from_env,
+    masking_is_configured,
+)
 
 
 def _get_app_version() -> str:
@@ -516,91 +524,6 @@ def _scrub_string_content(text: str) -> str:
     # Only scrub phones that look like phones (length check is in regex)
     # But be careful with IDs.
     return PHONE_PATTERN.sub(lambda m: safe_tokenize(m.group(), "phone"), text)
-
-
-# --- Path-aware mask exemptions (mirrors the PII singleton config pattern) ---
-# Exemption paths let a consuming service mark specific JSON paths as non-PII so
-# their string values are NOT key-tokenized. Email/phone scrubbing still runs on
-# every string leaf regardless (defense in depth). Paths are matched relative to
-# the masked container root (payload/args/kwargs/http body).
-#
-# Path syntax: dict step "key", array step "[*]", single dict-key wildcard "*".
-# Matching is a PREFIX match, so a pattern also exempts the whole subtree below it
-# ("payment_methods" exempts everything under it; "payment_methods[*].name" only
-# that leaf).
-_exempt_patterns: tuple | None = None
-_mask_auto_configure_attempted: bool = False
-
-
-def _compile_path(pattern: str) -> tuple:
-    """Parse an exemption pattern into a tuple of segments.
-
-    "payment_methods[*].name" -> ("payment_methods", "[*]", "name")
-    "customer.name"           -> ("customer", "name")
-    "a.*.b"                   -> ("a", "*", "b")
-    """
-    return tuple(re.findall(r"\[\*\]|[^.\[\]]+", pattern))
-
-
-def configure_masking(*, exempt_paths: list[str] | None = None) -> None:
-    """Configure path exemptions for PII masking (highest precedence)."""
-    global _exempt_patterns, _mask_auto_configure_attempted
-    paths = exempt_paths or []
-    _exempt_patterns = tuple(_compile_path(p) for p in paths if p)
-    _mask_auto_configure_attempted = True
-
-
-def configure_masking_from_env() -> None:
-    """Load exemptions from the PII_MASK_EXEMPT_PATHS env var (CSV). Idempotent."""
-    global _exempt_patterns, _mask_auto_configure_attempted
-    if _mask_auto_configure_attempted or _exempt_patterns is not None:
-        return
-    _mask_auto_configure_attempted = True
-    raw = os.environ.get("PII_MASK_EXEMPT_PATHS", "")
-    paths = [p.strip() for p in raw.split(",") if p.strip()]
-    _exempt_patterns = tuple(_compile_path(p) for p in paths)
-
-
-def masking_is_configured() -> bool:
-    """True if mask exemptions have been explicitly set or env-loaded."""
-    return _exempt_patterns is not None
-
-
-def _get_exempt_patterns() -> tuple:
-    if _exempt_patterns is None:
-        configure_masking_from_env()
-    return _exempt_patterns or ()
-
-
-def _reset_masking() -> None:
-    """Reset masking config. For testing only."""
-    global _exempt_patterns, _mask_auto_configure_attempted
-    _exempt_patterns = None
-    _mask_auto_configure_attempted = False
-
-
-def _path_matches(path: tuple, pattern: tuple) -> bool:
-    """Prefix match: True if `pattern` matches the leading segments of `path`.
-
-    "[*]" matches an array step only; "*" matches exactly one dict-key step
-    (never an array step); a literal matches an equal dict key.
-    """
-    if len(pattern) > len(path):
-        return False
-    for pat_seg, path_seg in zip(pattern, path):
-        if pat_seg == "[*]":
-            if path_seg != "[*]":
-                return False
-        elif pat_seg == "*":
-            if path_seg == "[*]":
-                return False
-        elif pat_seg != path_seg:
-            return False
-    return True
-
-
-def _path_is_exempt(path: tuple, patterns: tuple) -> bool:
-    return any(_path_matches(path, p) for p in patterns)
 
 
 def _mask_leaf(value: str, key, path: tuple, exempt: tuple) -> str:
