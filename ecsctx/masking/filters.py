@@ -1,0 +1,108 @@
+"""MaskPIIFilter — the single masking engine.
+
+A stdlib logging.Filter, so it runs on every LogRecord reaching a handler it
+is attached to, regardless of which library produced the record — structlog,
+plain stdlib logging, or a third-party library. This is strictly more
+coverage than a structlog processor alone can get: a processor only sees
+structlog-originated events, and never sees positional %-style args
+(log.info("user %s", email) puts the email in record.args, which only a
+filter can reach before it gets interpolated into the message text).
+
+Ported from ottu_pg's MaskPIIFilter, merged with ecsctx's PII key-name rules
+and unified onto ecsctx's tokenization so every masked value carries a
+`[LABEL]` or `[LABEL:token]` marker — never a bare `***` — and so the same
+underlying value (found by a key-name match or by a content regex) always
+produces the same token.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from ecsctx.exemptions import _get_exempt_patterns, _path_is_exempt
+from ecsctx.masking.patterns import CONTENT_RULES, KeyMatch, key_label
+from ecsctx.masking.tokens import already_masked, mask_by_label
+
+_RECORD_MASKED_ATTR = "_ecsctx_masked"
+
+
+class MaskPIIFilter(logging.Filter):
+    """Masks PII and PCI-sensitive data in log records before they reach a handler.
+
+    Handles both string and dict messages, recursively masking sensitive
+    data in all string/dict/list values. Safe to attach to many handlers —
+    once a record is masked, it is marked so later handlers skip re-masking.
+
+    skip_keys: top-level dict keys to pass through completely untouched (not
+    even content-scanned). This filter runs at the handler level, which for
+    a structlog-originated record is *before* the formatter reshapes the
+    event — so it sees ecsctx's own injected metadata (e.g. `service`,
+    `project`, both containing a literal `name` child key) as plain
+    top-level keys, not yet nested/exempted. ecsctx's own filter instances
+    (get_logging_config(), install_maskers(), mask_sensitive_data's default)
+    all pass the same skip set; a bare `MaskPIIFilter()` stays fully
+    generic — this only kicks in when the caller opts in.
+    """
+
+    def __init__(self, *, skip_keys: "list[str] | frozenset[str] | None" = None) -> None:
+        super().__init__()
+        self._skip_keys = frozenset(skip_keys or ())
+
+    def _mask_string(self, text: str) -> str:
+        if already_masked(text):
+            return text
+        for pattern, repl in CONTENT_RULES:
+            text = pattern.sub(repl, text)
+        return text
+
+    def _mask_value_by_key(self, value: Any, match: KeyMatch) -> Any:
+        return mask_by_label(str(value), match.field_type, match.tokenizable)
+
+    def _mask_dict(self, data: dict, path: tuple = ()) -> dict:
+        exempt = _get_exempt_patterns()
+        result = {}
+        for key, value in data.items():
+            if path == () and key in self._skip_keys:
+                result[key] = value
+                continue
+            lookup_key = str(key)
+            child_path = path + (lookup_key,)
+            match = key_label(lookup_key)
+            if match is None:
+                result[key] = self._mask_value(value, child_path)
+                continue
+            if match.exemptable and _path_is_exempt(child_path, exempt):
+                result[key] = self._mask_value(value, child_path)
+            else:
+                result[key] = self._mask_value_by_key(value, match)
+        return result
+
+    def _mask_iterable(self, data: list | tuple | set, path: tuple = ()) -> list | tuple | set:
+        arr_path = path + ("[*]",)
+        return type(data)(self._mask_value(v, arr_path) for v in data)
+
+    def _mask_value(self, value: Any, path: tuple = ()) -> Any:
+        """Apply appropriate masking based on value type.
+
+        Non-primitive objects are stringified before masking: their
+        ``__repr__`` can embed sensitive data that would otherwise bypass
+        the filter. Numbers/bools/None are left untouched at the CONTENT
+        level so legitimate values (status codes, counts) are not mangled by
+        the CVV/card patterns — a key-based match still overrides this, see
+        _mask_value_by_key.
+        """
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, (list, tuple, set)):
+            return self._mask_iterable(value, path)
+        if isinstance(value, dict):
+            return self._mask_dict(value, path)
+        return self._mask_string(str(value))
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not getattr(record, _RECORD_MASKED_ATTR, False):
+            record.msg = self._mask_value(record.msg)
+            record.args = self._mask_value(record.args)
+            setattr(record, _RECORD_MASKED_ATTR, True)
+        return True
