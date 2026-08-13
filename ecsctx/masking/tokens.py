@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from ecsctx.pii import tokenize as _pii_tokenize
 
+from ecsctx.masking.fields_rules import get_field_rule
+
+
 _TOKEN_PREFIXE = "ptok:"
 _REDACTED = "[PII_REDACTED]"
 
@@ -17,12 +20,7 @@ def already_tokenized(text: str) -> bool:
     return text.startswith(_TOKEN_PREFIXE)
 
 
-def safe_tokenize(value: str, field_type: str = "generic") -> str:
-    """Tokenize a value using HMAC-SHA-256 via the PII module.
-
-    If PII is not configured, returns [PII_REDACTED] to prevent raw PII from
-    appearing in logs.
-    """
+def tokenize(value: str, field_type: str = "generic") -> str:
     if not value:
         return value
 
@@ -48,13 +46,14 @@ def already_masked(text: str) -> bool:
     return "-MASKED:" in text or "-MASKED]" in text
 
 
-def mask_by_label(value: str, field_type: str, tokenizable: bool=True) -> str:
-    label = make_label(field_type)
-    if not value or not tokenizable:
+def mask(value: str, field_type: str) -> str:
+    field_rule = get_field_rule(field_type)
+    label = make_label(field_rule.field_type)
+    if not value or not field_rule.tokenizable:
         return f"[{label}]"
     if already_masked(value):
         return value
-    token = safe_tokenize(value, field_type)
+    token = tokenize(value, field_rule.field_type)
     if token == _REDACTED:
         return f"[{label}]"
     return f"[{label}:{token}]"

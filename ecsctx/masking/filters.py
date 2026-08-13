@@ -21,8 +21,9 @@ import logging
 from typing import Any
 
 from ecsctx.exemptions import _get_exempt_patterns, _path_is_exempt
-from ecsctx.masking.patterns import CONTENT_RULES, KeyMatch, key_label
-from ecsctx.masking.tokens import already_masked, mask_by_label
+from ecsctx.masking.fields_rules import get_field_rule
+from ecsctx.masking.patterns import apply_all_patterns_masking, check_if_sensitive_keyword
+from ecsctx.masking.tokens import already_masked, mask
 
 _RECORD_MASKED_ATTR = "_ecsctx_masked"
 
@@ -50,14 +51,9 @@ class MaskPIIFilter(logging.Filter):
         self._skip_keys = frozenset(skip_keys or ())
 
     def _mask_string(self, text: str) -> str:
-        if already_masked(text):
-            return text
-        for pattern, repl in CONTENT_RULES:
-            text = pattern.sub(repl, text)
+        if not already_masked(text):
+            text = apply_all_patterns_masking(text)
         return text
-
-    def _mask_value_by_key(self, value: Any, match: KeyMatch) -> Any:
-        return mask_by_label(str(value), match.field_type, match.tokenizable)
 
     def _mask_dict(self, data: dict, path: tuple = ()) -> dict:
         exempt = _get_exempt_patterns()
@@ -68,14 +64,15 @@ class MaskPIIFilter(logging.Filter):
                 continue
             lookup_key = str(key)
             child_path = path + (lookup_key,)
-            match = key_label(lookup_key)
-            if match is None:
+            field_type = check_if_sensitive_keyword(lookup_key)
+            if field_type is None:
                 result[key] = self._mask_value(value, child_path)
                 continue
-            if match.exemptable and _path_is_exempt(child_path, exempt):
+            field_rule = get_field_rule(field_type)
+            if field_rule.exemptable and _path_is_exempt(child_path, exempt):
                 result[key] = self._mask_value(value, child_path)
             else:
-                result[key] = self._mask_value_by_key(value, match)
+                result[key] = mask(str(value), field_type)
         return result
 
     def _mask_iterable(self, data: list | tuple | set, path: tuple = ()) -> list | tuple | set:
@@ -90,7 +87,7 @@ class MaskPIIFilter(logging.Filter):
         the filter. Numbers/bools/None are left untouched at the CONTENT
         level so legitimate values (status codes, counts) are not mangled by
         the CVV/card patterns — a key-based match still overrides this, see
-        _mask_value_by_key.
+        _mask_dict.
         """
         if value is None or isinstance(value, (bool, int, float)):
             return value

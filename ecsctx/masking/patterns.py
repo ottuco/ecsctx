@@ -20,13 +20,38 @@ not even an HMAC digest, because PCI forbids storing CVV in any form.
 from __future__ import annotations
 
 import re
-from typing import NamedTuple
 
-from ecsctx.masking.tokens import mask_by_label
+from ecsctx.masking.tokens import mask
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
 # ---------------------------------------------------------------------------
+
+SAFE_KEYS = frozenset({
+    "gateway_name",
+    "vendor_name",
+    "module_name",
+    "func_name",
+    "task_name",
+    "service_name",
+    "app_name",
+    "project_name",
+    "class_name",
+    "method_name",
+    "view_name",
+    "username",  # username usually safe/auditable
+    "site_name",
+    "domain_name",
+    "bank_name",
+    "display_name",
+    "install_name",
+    "installation_name",
+    "event_name",
+    "pathname",  # structlog CallsiteParameterAdder's source-file path, not PII
+    "customer_id",
+    "id",
+    "pk",
+})
 
 # Sensitive credential keywords / auth schemes. Matched case-insensitively.
 # Bare "key" is intentionally excluded — only sensitive *_key compounds — so
@@ -40,8 +65,6 @@ _CRED_KEYWORD = (
     r"access|master|root|session|api)[_-]?key"
     r")"
 )
-# Credential value characters: token / base64url / JWT / hex (no whitespace).
-_CRED_VALUE = r"[A-Za-z0-9._~+/\-]"
 
 # Card verification code keywords — cvv/cvc/security code are all the same
 # thing under different names depending on card scheme/vendor terminology.
@@ -49,6 +72,22 @@ _CVV_KEYWORD = r"(?:cvv|cvc|security[_\s]?code)"
 
 # Payment/transaction/auth id keywords.
 _PAYMENT_ID_KEYWORD = r"(?:payment|transaction|auth)[_\s-]?id"
+
+_EMAIL_KEY_WORDS = r"email"
+
+_PHONE_KEY_WORDS = r"phone|mobile|tel"
+
+_ADDRESS_KEY_WORDS = r"address"
+
+_NAME_KEY_WORDS = r"name|cardholder|beneficiary|recipient|payer"
+
+_GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
+
+
+
+
+# Credential value characters: token / base64url / JWT / hex (no whitespace).
+_CRED_VALUE = r"[A-Za-z0-9._~+/\-]"
 
 # ISO country codes in the SWIFT IBAN registry, as a regex alternation.
 _IBAN_PREFIX = (
@@ -102,12 +141,12 @@ def _mask_partial_pan(match: re.Match) -> str:
     digit_idx = [i for i, c in enumerate(text) if c.isdigit()]
     bin_end = digit_idx[5]
     tail_start = digit_idx[len(digit_idx) - 4]
-    label = mask_by_label(_digits_only(text), "card")
+    label = mask(_digits_only(text), "card")
     return text[: bin_end + 1] + label + text[tail_start:]
 
 
 def _mask_full_card(match: re.Match) -> str:
-    return mask_by_label(_digits_only(match.group(0)), "card")
+    return mask(_digits_only(match.group(0)), "card")
 
 
 def _mask_pem(match: re.Match) -> str:
@@ -118,74 +157,74 @@ def _mask_pem(match: re.Match) -> str:
     body = match.group(0)
     stripped = re.sub(r"-----(BEGIN|END)[^-]*-----", "", body)
     stripped = re.sub(r"\s+", "", stripped)
-    return mask_by_label(stripped, "pem_key")
+    return mask(stripped, "pem_key")
 
 
 def _cred_quoted(m: re.Match) -> str:
     q, kw, sep, val = m.group(1), m.group(2), m.group(3), m.group(4)
-    return f"{q}{kw}{q}{sep}{q}{mask_by_label(val, 'secret')}{q}"
+    return f"{q}{kw}{q}{sep}{q}{mask(val, 'secret')}{q}"
 
 
 def _cred_kv(m: re.Match) -> str:
     prefix, val = m.group(1), m.group(2)
-    return f"{prefix}{mask_by_label(val, 'secret')}"
+    return f"{prefix}{mask(val, 'secret')}"
 
 
 def _cred_space(m: re.Match) -> str:
     kw, val = m.group(1), m.group(2)
-    return f"{kw} {mask_by_label(val, 'secret')}"
+    return f"{kw} {mask(val, 'secret')}"
 
 
 def _cvv_quoted(m: re.Match) -> str:
     q, kw, sep = m.group(1), m.group(2), m.group(3)
-    return f"{q}{kw}{q}{sep}{q}{mask_by_label('', 'cvv')}{q}"
+    return f"{q}{kw}{q}{sep}{q}{mask('', 'cvv')}{q}"
 
 
 def _cvv_kv(m: re.Match) -> str:
-    return f"{m.group(1)}{mask_by_label('', 'cvv')}"
+    return f"{m.group(1)}{mask('', 'cvv')}"
 
 
 def _cvv_space(m: re.Match) -> str:
-    return f"{m.group(1)} {mask_by_label('', 'cvv')}"
+    return f"{m.group(1)} {mask('', 'cvv')}"
 
 
 def _standalone_cvv(_m: re.Match) -> str:
-    return mask_by_label('', 'cvv')
+    return mask('', 'cvv')
 
 
 def _payid_quoted(m: re.Match) -> str:
     q, kw, sep, val = m.group(1), m.group(2), m.group(3), m.group(4)
-    return f"{q}{kw}{q}{sep}{q}{mask_by_label(val, 'payment_id')}{q}"
+    return f"{q}{kw}{q}{sep}{q}{mask(val, 'payment_id')}{q}"
 
 
 def _payid_kv(m: re.Match) -> str:
     prefix, val = m.group(1), m.group(2)
-    return f"{prefix}{mask_by_label(val, 'payment_id')}"
+    return f"{prefix}{mask(val, 'payment_id')}"
 
 
 def _payid_space(m: re.Match) -> str:
     kw, val = m.group(1), m.group(2)
-    return f"{kw} {mask_by_label(val, 'payment_id')}"
+    return f"{kw} {mask(val, 'payment_id')}"
 
 
 def _iban(m: re.Match) -> str:
-    return mask_by_label(m.group(0), "iban")
+    return mask(m.group(0), "iban")
 
 
 def _phone(m: re.Match) -> str:
-    return mask_by_label(m.group(0), "phone")
+    return mask(m.group(0), "phone")
 
 
 def _email(m: re.Match) -> str:
-    return mask_by_label(m.group(0), "email")
+    return mask(m.group(0), "email")
 
 
 def _jwt(m: re.Match) -> str:
-    return mask_by_label(m.group(0), "jwt")
+    return mask(m.group(0), "jwt")
 
 
 def _ssn(m: re.Match) -> str:
-    return mask_by_label(_digits_only(m.group(0)), "ssn")
+    return mask(_digits_only(m.group(0)), "ssn")
 
 
 # ---------------------------------------------------------------------------
@@ -208,66 +247,62 @@ def _ssn(m: re.Match) -> str:
 #      boundary over-masks.
 # ---------------------------------------------------------------------------
 
-CONTENT_RULES: list[tuple[re.Pattern, object]] = [
+REGEX_TO_MASKER_MAP = [
     # 1. PEM key block.
     (
-        re.compile(r"-----BEGIN [A-Z ]*KEY-----[\s\S]*?-----END [A-Z ]*KEY-----", re.IGNORECASE),
+        r"-----BEGIN [A-Z ]*KEY-----[\s\S]*?-----END [A-Z ]*KEY-----",
         _mask_pem,
     ),
     # 2. Credential — quoted key ("token": "abc123").
     (
-        re.compile(rf"([\"'])({_CRED_KEYWORD})\1(\s*:\s*)\1([^\"']*)\1", re.IGNORECASE),
+        rf"([\"'])({_CRED_KEYWORD})\1(\s*:\s*)\1([^\"']*)\1",
         _cred_quoted,
     ),
     # 3. Credential — ":" / "=" (secret_key=abc123).
     (
-        re.compile(rf"\b({_CRED_KEYWORD}[\"'\s]*[:=][\"'\s]*)({_CRED_VALUE}+={{0,2}})", re.IGNORECASE),
+        rf"\b({_CRED_KEYWORD}[\"'\s]*[:=][\"'\s]*)({_CRED_VALUE}+={{0,2}})",
         _cred_kv,
     ),
     # 4. CVV — quoted key ("cvv": "123").
     (
-        re.compile(rf"([\"'])({_CVV_KEYWORD})\1(\s*:\s*)\1\d{{3,4}}\1", re.IGNORECASE),
+        rf"([\"'])({_CVV_KEYWORD})\1(\s*:\s*)\1\d{{3,4}}\1",
         _cvv_quoted,
     ),
     # 5. CVV — ":" / "=" (cvv=123).
     (
-        re.compile(rf"\b({_CVV_KEYWORD}[\"'\s]*[:=][\"'\s]*)\d{{3,4}}", re.IGNORECASE),
+        rf"\b({_CVV_KEYWORD}[\"'\s]*[:=][\"'\s]*)\d{{3,4}}",
         _cvv_kv,
     ),
     # 6. Payment/transaction/auth id — quoted key ("payment_id": "abc12345").
     (
-        re.compile(rf"([\"'])({_PAYMENT_ID_KEYWORD})\1(\s*:\s*)\1([A-Za-z0-9_\-]+)\1", re.IGNORECASE),
+        rf"([\"'])({_PAYMENT_ID_KEYWORD})\1(\s*:\s*)\1([A-Za-z0-9_\-]+)\1",
         _payid_quoted,
     ),
     # 7. Payment/transaction/auth id (payment_id: abc12345).
     (
-        re.compile(rf"\b({_PAYMENT_ID_KEYWORD}\s*[:=]\s*)([A-Za-z0-9_\-]{{8,}})\b", re.IGNORECASE),
+        rf"\b({_PAYMENT_ID_KEYWORD}\s*[:=]\s*)([A-Za-z0-9_\-]{{8,}})\b",
         _payid_kv,
     ),
     # 8. Credential — bare space (Bearer abc12345).
     (
-        re.compile(
-            rf"\b({_CRED_KEYWORD})\s+(?=(?:{_CRED_VALUE})*\d)({_CRED_VALUE}{{8,}}={{0,2}})",
-            re.IGNORECASE,
-        ),
+        
+        rf"\b({_CRED_KEYWORD})\s+(?=(?:{_CRED_VALUE})*\d)({_CRED_VALUE}{{8,}}={{0,2}})",
         _cred_space,
     ),
     # 9. CVV — bare space (CVV 123).
     (
-        re.compile(rf"\b({_CVV_KEYWORD})\s+\d{{3,4}}\b", re.IGNORECASE),
+        rf"\b({_CVV_KEYWORD})\s+\d{{3,4}}\b",
         _cvv_space,
     ),
     # 10. Payment/transaction/auth id — bare space (payment_id abc12345).
     (
-        re.compile(
-            rf"\b({_PAYMENT_ID_KEYWORD})\s+(?=[A-Za-z0-9_\-]*\d)([A-Za-z0-9_\-]{{8,}})\b",
-            re.IGNORECASE,
-        ),
+        
+        rf"\b({_PAYMENT_ID_KEYWORD})\s+(?=[A-Za-z0-9_\-]*\d)([A-Za-z0-9_\-]{{8,}})\b",
         _payid_space,
     ),
     # 11. IBAN (GB33BUKB20201555555555).
     (
-        re.compile(rf"(?-i:\b(?:{_IBAN_PREFIX})\d{{2}}[A-Z0-9]{{11,30}}\b)", re.IGNORECASE),
+        rf"(?-i:\b(?:{_IBAN_PREFIX})\d{{2}}[A-Z0-9]{{11,30}}\b)",
         _iban,
     ),
     # 12. Phone — international E.164-style or a bare local number. Union of
@@ -275,142 +310,83 @@ CONTENT_RULES: list[tuple[re.Pattern, object]] = [
     # separators, since real phone numbers appear with all three and neither
     # source pattern alone caught every real case.
     (
-        re.compile(
-            _CARD_LEAD_GUARD
-            + r"(?:\+[1-9]\d{0,2}(?:[-.\s]?\d){6,13}|\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})"
-            + _CARD_TAIL_GUARD,
-            re.IGNORECASE,
-        ),
+        
+        _CARD_LEAD_GUARD
+        + r"(?:\+[1-9]\d{0,2}(?:[-.\s]?\d){6,13}|\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})"
+        + _CARD_TAIL_GUARD,
         _phone,
     ),
     # 13. Email (user@example.com).
     (
-        re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", re.IGNORECASE),
+        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
         _email,
     ),
     # 14. JWT (eyJhbGciOi....).
     (
-        re.compile(r"\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{3,}\.[A-Za-z0-9_\-]{3,}", re.IGNORECASE),
+        r"\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{3,}\.[A-Za-z0-9_\-]{3,}",
         _jwt,
     ),
     # 15. Card rule 1 — leading 9 (9123456789012).
     (
-        re.compile(_CARD_LEAD_GUARD + r"9" + _CARD_BODY + _CARD_TAIL_GUARD, re.IGNORECASE),
+        _CARD_LEAD_GUARD + r"9" + _CARD_BODY + _CARD_TAIL_GUARD,
         _mask_full_card,
     ),
     # 16. Card rule 2 — leading 0-8, partial reveal (4111111111111111).
     (
-        re.compile(_CARD_LEAD_GUARD + r"[0-8]" + _CARD_BODY + _CARD_TAIL_GUARD, re.IGNORECASE),
+        _CARD_LEAD_GUARD + r"[0-8]" + _CARD_BODY + _CARD_TAIL_GUARD,
         _mask_partial_pan,
     ),
     # 17. Card rule 3 — mixed separator fallback (4111-1111 1111-1111).
     (
-        re.compile(_CARD_LEAD_GUARD + r"\d" + _CARD_BODY + _CARD_TAIL_GUARD, re.IGNORECASE),
+        _CARD_LEAD_GUARD + r"\d" + _CARD_BODY + _CARD_TAIL_GUARD,
         _mask_full_card,
     ),
     # 18. SSN (123-45-6789).
     (
-        re.compile(_CARD_LEAD_GUARD + r"\d{3}[-\s]?\d{2}[-\s]?\d{4}\b", re.IGNORECASE),
+        _CARD_LEAD_GUARD + r"\d{3}[-\s]?\d{2}[-\s]?\d{4}\b",
         _ssn,
     ),
     # 19. CVV standalone — bare 3-4 digit group, no keyword (call 123 now).
     (
-        re.compile(r"(?:^|(?<=\s))\d{3,4}(?=\s|$)", re.IGNORECASE),
+        r"(?:^|(?<=\s))\d{3,4}(?=\s|$)",
         _standalone_cvv,
     ),
 ]
 
-
-# ---------------------------------------------------------------------------
-# Key-based masking: a dict key that is itself sensitive masks its whole
-# value outright, regardless of type or content.
-# ---------------------------------------------------------------------------
-
-_CVV_KEY_RE = re.compile(rf"^{_CVV_KEYWORD}$", re.IGNORECASE)
-_CRED_KEY_RE = re.compile(rf"^{_CRED_KEYWORD}$", re.IGNORECASE)
-_PAYMENT_ID_KEY_RE = re.compile(rf"^{_PAYMENT_ID_KEYWORD}$", re.IGNORECASE)
-
-# Safe keys that might contain "name" (or another PII-ish substring) but
-# should NOT be masked. Checked before every other key rule.
-SAFE_NAME_KEYS = frozenset({
-    "gateway_name",
-    "vendor_name",
-    "module_name",
-    "func_name",
-    "task_name",
-    "service_name",
-    "app_name",
-    "project_name",
-    "class_name",
-    "method_name",
-    "view_name",
-    "username",  # username usually safe/auditable
-    "site_name",
-    "domain_name",
-    "bank_name",
-    "display_name",
-    "install_name",
-    "installation_name",
-    "event_name",
-    "customer_id",
-    "id",
-    "pk",
-    "pathname",  # structlog CallsiteParameterAdder's source-file path, not PII
-})
-
-# ecsctx's PII key-name keywords, split by label so a key matching more than
-# one family gets the most specific label. Substring match (broad on purpose,
-# to catch variations like "Pyr_Name", "delivery_tel", "billing_email").
-_EMAIL_KEY_WORDS = ("email",)
-_PHONE_KEY_WORDS = ("phone", "mobile", "tel")
-_ADDRESS_KEY_WORDS = ("address",)
-_NAME_KEY_WORDS = ("name", "cardholder", "beneficiary", "recipient", "payer")
-_GENERIC_PII_KEY_WORDS = ("billing", "shipping", "customer", "contact", "udf")
+PATTERN_TO_MASKER_MAP = {
+    re.compile(regex, re.IGNORECASE): masker
+    for regex, masker in REGEX_TO_MASKER_MAP.items()
+}
 
 
-class KeyMatch(NamedTuple):
-    """A sensitive dict key matched against one of the rules below.
-
-    field_type is always a real string — even for CVV, it's "cvv", never a
-    magic None. Whether the value may be tokenized is its own explicit flag,
-    tokenizable, so the "never hash this" decision is a named field a reader
-    can see, not something implied by field_type's type.
-    """
-
-    field_type: str
-    tokenizable: bool
-    exemptable: bool
+def apply_all_patterns_masking(text: str):
+    for pattern, repl in PATTERN_TO_MASKER_MAP.items():
+        text = pattern.sub(repl, text)
+    return text
 
 
-def key_label(key: str) -> KeyMatch | None:
-    """Match a dict key against the sensitive-key rules, else None.
+KEYWORD_REGEX_TO_FIELD_TYPE_MAP = {
+    _CVV_KEYWORD: "cvv",
+    _CRED_KEYWORD: "secret",
+    _PAYMENT_ID_KEYWORD: "payment_id",
+    _EMAIL_KEY_WORDS: "email",
+    _PHONE_KEY_WORDS: "phone",
+    _ADDRESS_KEY_WORDS: "address",
+    _NAME_KEY_WORDS: "name",
+    _GENERIC_PII_KEY_WORDS: "generic",
+}
 
-    exemptable=True means configure_masking(exempt_paths=...) can turn off
-    key-based masking for this path — only true for the ecsctx PII
-    categories (email/phone/address/name/generic); secrets (cvv/credential/
-    payment-id) are never exemptable.
+KEYWORD_PATTERN_TO_FIELD_TYPE_MAP = {
+    re.compile(regex, re.IGNORECASE): field_type
+    for regex, field_type in KEYWORD_REGEX_TO_FIELD_TYPE_MAP.items()
+}
 
-    Order matters: first match wins, so e.g. "billing_email" is labelled an
-    email rather than generic billing data, and "billing_address_name" is
-    treated as an address rather than a name.
-    """
-    low = key.lower()
-    if low in SAFE_NAME_KEYS:
+
+def check_if_sensitive_keyword(dict_key: str) -> str | None:
+    low_dict_key = dict_key.lower()
+    if low_dict_key in SAFE_KEYS:
         return None
-    if _CVV_KEY_RE.match(low):
-        return KeyMatch("cvv", tokenizable=False, exemptable=False)
-    if _CRED_KEY_RE.match(low):
-        return KeyMatch("secret", tokenizable=True, exemptable=False)
-    if _PAYMENT_ID_KEY_RE.match(low):
-        return KeyMatch("payment_id", tokenizable=True, exemptable=False)
-    if any(w in low for w in _EMAIL_KEY_WORDS):
-        return KeyMatch("email", tokenizable=True, exemptable=True)
-    if any(w in low for w in _PHONE_KEY_WORDS):
-        return KeyMatch("phone", tokenizable=True, exemptable=True)
-    if any(w in low for w in _ADDRESS_KEY_WORDS):
-        return KeyMatch("address", tokenizable=True, exemptable=True)
-    if any(w in low for w in _NAME_KEY_WORDS):
-        return KeyMatch("name", tokenizable=True, exemptable=True)
-    if any(w in low for w in _GENERIC_PII_KEY_WORDS):
-        return KeyMatch("generic", tokenizable=True, exemptable=True)
+    for pattern, field_type in KEYWORD_PATTERN_TO_FIELD_TYPE_MAP.items():
+        if pattern.search(low_dict_key):
+            return field_type
     return None
