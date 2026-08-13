@@ -12,7 +12,7 @@ ecsctx's own PII key-name list. Two independent detection strategies:
    where the key and value never appear together in one string for a regex
    to match.
 
-Every masked value becomes `[LABEL]` or `[LABEL:token]` via mask_by_label —
+Every masked value becomes `[LABEL]` or `[LABEL:token]` via mask_by_field_type —
 never a bare `***`. CVV is the one exception: it must never carry a token,
 not even an HMAC digest, because PCI forbids storing CVV in any form.
 """
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 
-from ecsctx.masking.tokens import mask
+from ecsctx.masking.tokens import mask_by_field_type
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -141,12 +141,12 @@ def _mask_partial_pan(match: re.Match) -> str:
     digit_idx = [i for i, c in enumerate(text) if c.isdigit()]
     bin_end = digit_idx[5]
     tail_start = digit_idx[len(digit_idx) - 4]
-    label = mask(_digits_only(text), "card")
+    label = mask_by_field_type(_digits_only(text), "card")
     return text[: bin_end + 1] + label + text[tail_start:]
 
 
 def _mask_full_card(match: re.Match) -> str:
-    return mask(_digits_only(match.group(0)), "card")
+    return mask_by_field_type(_digits_only(match.group(0)), "card")
 
 
 def _mask_pem(match: re.Match) -> str:
@@ -157,74 +157,74 @@ def _mask_pem(match: re.Match) -> str:
     body = match.group(0)
     stripped = re.sub(r"-----(BEGIN|END)[^-]*-----", "", body)
     stripped = re.sub(r"\s+", "", stripped)
-    return mask(stripped, "pem_key")
+    return mask_by_field_type(stripped, "pem_key")
 
 
 def _cred_quoted(m: re.Match) -> str:
     q, kw, sep, val = m.group(1), m.group(2), m.group(3), m.group(4)
-    return f"{q}{kw}{q}{sep}{q}{mask(val, 'secret')}{q}"
+    return f"{q}{kw}{q}{sep}{q}{mask_by_field_type(val, 'secret')}{q}"
 
 
 def _cred_kv(m: re.Match) -> str:
     prefix, val = m.group(1), m.group(2)
-    return f"{prefix}{mask(val, 'secret')}"
+    return f"{prefix}{mask_by_field_type(val, 'secret')}"
 
 
 def _cred_space(m: re.Match) -> str:
     kw, val = m.group(1), m.group(2)
-    return f"{kw} {mask(val, 'secret')}"
+    return f"{kw} {mask_by_field_type(val, 'secret')}"
 
 
 def _cvv_quoted(m: re.Match) -> str:
     q, kw, sep = m.group(1), m.group(2), m.group(3)
-    return f"{q}{kw}{q}{sep}{q}{mask('', 'cvv')}{q}"
+    return f"{q}{kw}{q}{sep}{q}{mask_by_field_type('', 'cvv')}{q}"
 
 
 def _cvv_kv(m: re.Match) -> str:
-    return f"{m.group(1)}{mask('', 'cvv')}"
+    return f"{m.group(1)}{mask_by_field_type('', 'cvv')}"
 
 
 def _cvv_space(m: re.Match) -> str:
-    return f"{m.group(1)} {mask('', 'cvv')}"
+    return f"{m.group(1)} {mask_by_field_type('', 'cvv')}"
 
 
 def _standalone_cvv(_m: re.Match) -> str:
-    return mask('', 'cvv')
+    return mask_by_field_type('', 'cvv')
 
 
 def _payid_quoted(m: re.Match) -> str:
     q, kw, sep, val = m.group(1), m.group(2), m.group(3), m.group(4)
-    return f"{q}{kw}{q}{sep}{q}{mask(val, 'payment_id')}{q}"
+    return f"{q}{kw}{q}{sep}{q}{mask_by_field_type(val, 'payment_id')}{q}"
 
 
 def _payid_kv(m: re.Match) -> str:
     prefix, val = m.group(1), m.group(2)
-    return f"{prefix}{mask(val, 'payment_id')}"
+    return f"{prefix}{mask_by_field_type(val, 'payment_id')}"
 
 
 def _payid_space(m: re.Match) -> str:
     kw, val = m.group(1), m.group(2)
-    return f"{kw} {mask(val, 'payment_id')}"
+    return f"{kw} {mask_by_field_type(val, 'payment_id')}"
 
 
 def _iban(m: re.Match) -> str:
-    return mask(m.group(0), "iban")
+    return mask_by_field_type(m.group(0), "iban")
 
 
 def _phone(m: re.Match) -> str:
-    return mask(m.group(0), "phone")
+    return mask_by_field_type(m.group(0), "phone")
 
 
 def _email(m: re.Match) -> str:
-    return mask(m.group(0), "email")
+    return mask_by_field_type(m.group(0), "email")
 
 
 def _jwt(m: re.Match) -> str:
-    return mask(m.group(0), "jwt")
+    return mask_by_field_type(m.group(0), "jwt")
 
 
 def _ssn(m: re.Match) -> str:
-    return mask(_digits_only(m.group(0)), "ssn")
+    return mask_by_field_type(_digits_only(m.group(0)), "ssn")
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +359,7 @@ PATTERN_TO_MASKER_MAP = {
 }
 
 
-def apply_all_patterns_masking(text: str):
+def mask_by_all_patterns(text: str):
     for pattern, repl in PATTERN_TO_MASKER_MAP.items():
         text = pattern.sub(repl, text)
     return text

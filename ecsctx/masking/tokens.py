@@ -20,7 +20,7 @@ def already_tokenized(text: str) -> bool:
     return text.startswith(_TOKEN_PREFIXE)
 
 
-def tokenize(value: str, field_type: str = "generic") -> str:
+def safe_tokenize(value: str, field_type: str = "generic") -> str:
     if not value:
         return value
 
@@ -46,14 +46,14 @@ def already_masked(text: str) -> bool:
     return "-MASKED:" in text or "-MASKED]" in text
 
 
-def mask(value: str, field_type: str) -> str:
+def mask_by_field_type(value: str, field_type: str) -> str:
     field_rule = get_field_rule(field_type)
     label = make_label(field_rule.field_type)
     if not value or not field_rule.tokenizable:
         return f"[{label}]"
     if already_masked(value):
         return value
-    token = tokenize(value, field_rule.field_type)
+    token = safe_tokenize(value, field_rule.field_type)
     if token == _REDACTED:
         return f"[{label}]"
     return f"[{label}:{token}]"

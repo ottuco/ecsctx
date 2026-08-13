@@ -22,8 +22,8 @@ from typing import Any
 
 from ecsctx.exemptions import _get_exempt_patterns, _path_is_exempt
 from ecsctx.masking.fields_rules import get_field_rule
-from ecsctx.masking.patterns import apply_all_patterns_masking, check_if_sensitive_keyword
-from ecsctx.masking.tokens import already_masked, mask
+from ecsctx.masking.patterns import check_if_sensitive_keyword, mask_by_all_patterns
+from ecsctx.masking.tokens import already_masked, mask_by_field_type
 
 _RECORD_MASKED_ATTR = "_ecsctx_masked"
 
@@ -52,7 +52,7 @@ class MaskPIIFilter(logging.Filter):
 
     def _mask_string(self, text: str) -> str:
         if not already_masked(text):
-            text = apply_all_patterns_masking(text)
+            text = mask_by_all_patterns(text)
         return text
 
     def _mask_dict(self, data: dict, path: tuple = ()) -> dict:
@@ -72,7 +72,7 @@ class MaskPIIFilter(logging.Filter):
             if field_rule.exemptable and _path_is_exempt(child_path, exempt):
                 result[key] = self._mask_value(value, child_path)
             else:
-                result[key] = mask(str(value), field_type)
+                result[key] = mask_by_field_type(str(value), field_type)
         return result
 
     def _mask_iterable(self, data: list | tuple | set, path: tuple = ()) -> list | tuple | set:
