@@ -27,6 +27,13 @@ from ecsctx.masking.tokens import already_masked, mask_by_field_type
 
 _RECORD_MASKED_ATTR = "_ecsctx_masked"
 
+# service/project/log are ecsctx's own injected metadata, not user payload —
+# service/project come from SERVICE_TYPE/PROJECT_NAME env vars; log.origin.
+# file.name (a source-code path) is reshaped in by callsite_ecs_fields. All
+# three contain a literal "name" key that would otherwise be mistaken for a
+# PII name, so every filter skips them at the top level by default.
+STRUCTURAL_ECS_KEYS = frozenset({"service", "project", "log"})
+
 
 class MaskPIIFilter(logging.Filter):
     """Masks PII and PCI-sensitive data in log records before they reach a handler.
@@ -40,15 +47,13 @@ class MaskPIIFilter(logging.Filter):
     a structlog-originated record is *before* the formatter reshapes the
     event — so it sees ecsctx's own injected metadata (e.g. `service`,
     `project`, both containing a literal `name` child key) as plain
-    top-level keys, not yet nested/exempted. ecsctx's own filter instances
-    (get_logging_config(), install_maskers(), mask_sensitive_data's default)
-    all pass the same skip set; a bare `MaskPIIFilter()` stays fully
-    generic — this only kicks in when the caller opts in.
+    top-level keys, not yet nested/exempted. Defaults to STRUCTURAL_ECS_KEYS;
+    pass skip_keys=() for a fully generic filter with nothing skipped.
     """
 
-    def __init__(self, *, skip_keys: "list[str] | frozenset[str] | None" = None) -> None:
+    def __init__(self, *, skip_keys: "list[str] | frozenset[str]" = STRUCTURAL_ECS_KEYS) -> None:
         super().__init__()
-        self._skip_keys = frozenset(skip_keys or ())
+        self._skip_keys = frozenset(skip_keys)
 
     def _mask_string(self, text: str) -> str:
         if not already_masked(text):
