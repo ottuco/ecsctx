@@ -3,7 +3,7 @@
 Ported from ottu_pg's MaskPIIFilter (utils/log/filters.py), merged with
 ecsctx's own PII key-name list. Two independent detection strategies:
 
-1. Content-based (CONTENT_RULES): 19 ordered regexes applied to every string
+1. Content-based (CONTENT_RULES): 17 ordered regexes applied to every string
    the filter reaches. Rule order is load-bearing — see the comments on each
    rule and the ordering invariants they protect. Do not reorder.
 2. Key-based (key_label): in a dict, a key that is itself a sensitive keyword
@@ -122,29 +122,6 @@ def _digits_only(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _mask_partial_pan(match: re.Match) -> str:
-    """Reveal the first 6 digits (BIN) and last 4, mask the middle with a
-    label carrying a token computed over the digits only (separators
-    stripped), so `4111 1111 1111 1111` and `4111111111111111` produce the
-    same token.
-
-    Only fires cleanly for a single, consistent separator (or none at all):
-    if more than one separator character is used, the match is returned
-    unchanged so the fallback rule (which always fully masks) catches it
-    instead — a mixed separator means the BIN's position can no longer be
-    trusted.
-    """
-    text = match.group(0)
-    seps = {c for c in text if c in " -"}
-    if len(seps) > 1:
-        return text
-    digit_idx = [i for i, c in enumerate(text) if c.isdigit()]
-    bin_end = digit_idx[5]
-    tail_start = digit_idx[len(digit_idx) - 4]
-    label = mask_by_field_type(_digits_only(text), "card")
-    return text[: bin_end + 1] + label + text[tail_start:]
-
-
 def _mask_full_card(match: re.Match) -> str:
     return mask_by_field_type(_digits_only(match.group(0)), "card")
 
@@ -228,16 +205,16 @@ def _ssn(m: re.Match) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The 19 content rules, in execution order. DO NOT REORDER — several rules
+# The 17 content rules, in execution order. DO NOT REORDER — several rules
 # only behave correctly because a more specific rule ran first:
 #   1. Credential/CVV/payment-id keyword rules before all shape rules —
-#      otherwise a numeric secret in the card-digit range gets partially
-#      "revealed" as if it were a PAN.
+#      otherwise a numeric secret in the card-digit range gets masked as a
+#      card number instead of by its own (more specific) rule.
 #   2. Quoted-key form before ":"/"=" form before bare-space form, per
 #      keyword family.
-#   3. IBAN before the card rules — many IBANs contain a letter-free 12-19
-#      digit run that the card rules would otherwise partially reveal.
-#   4. Phone before the card rules — same reason.
+#   3. IBAN before the card rule — many IBANs contain a letter-free 12-19
+#      digit run that the card rule would otherwise catch first.
+#   4. Phone before the card rule — same reason.
 #   5. Email before card/CVV/SSN — a numeric-heavy address must mask as one
 #      email rather than fragment.
 #   6. SSN before standalone-CVV — a space-separated SSN's outer groups are
@@ -326,27 +303,17 @@ REGEX_TO_MASKER_MAP = [
         r"\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{3,}\.[A-Za-z0-9_\-]{3,}",
         _jwt,
     ),
-    # 15. Card rule 1 — leading 9 (9123456789012).
-    (
-        _CARD_LEAD_GUARD + r"9" + _CARD_BODY + _CARD_TAIL_GUARD,
-        _mask_full_card,
-    ),
-    # 16. Card rule 2 — leading 0-8, partial reveal (4111111111111111).
-    (
-        _CARD_LEAD_GUARD + r"[0-8]" + _CARD_BODY + _CARD_TAIL_GUARD,
-        _mask_partial_pan,
-    ),
-    # 17. Card rule 3 — mixed separator fallback (4111-1111 1111-1111).
+    # 15. Card number — always fully masked (4111111111111111).
     (
         _CARD_LEAD_GUARD + r"\d" + _CARD_BODY + _CARD_TAIL_GUARD,
         _mask_full_card,
     ),
-    # 18. SSN (123-45-6789).
+    # 16. SSN (123-45-6789).
     (
         _CARD_LEAD_GUARD + r"\d{3}[-\s]?\d{2}[-\s]?\d{4}\b",
         _ssn,
     ),
-    # 19. CVV standalone — bare 3-4 digit group, no keyword (call 123 now).
+    # 17. CVV standalone — bare 3-4 digit group, no keyword (call 123 now).
     (
         r"(?:^|(?<=\s))\d{3,4}(?=\s|$)",
         _standalone_cvv,
