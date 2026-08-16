@@ -25,7 +25,23 @@ from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import check_if_sensitive_keyword, mask_by_all_patterns
 from ecsctx.masking.tokens import already_masked, mask_by_field_type
 
-_RECORD_MASKED_ATTR = "_ecsctx_masked"
+_IS_MASKED_ = "_IS_MASKED_"
+
+
+def mark_dict_as_masked(data: dict) -> None:
+    data[_IS_MASKED_] = True
+
+
+def is_masked_dict(data: dict) -> bool:
+    return bool(data.get(_IS_MASKED_, False))
+
+
+def mark_object_as_masked(obj: Any) -> None:
+    setattr(obj, _IS_MASKED_, True)
+
+
+def is_masked_object(obj: Any) -> bool:
+    return bool(getattr(obj, _IS_MASKED_, False))
 
 # service/project/log are ecsctx's own injected metadata, not user payload —
 # service/project come from SERVICE_TYPE/PROJECT_NAME env vars; log.origin.
@@ -61,6 +77,8 @@ class MaskPIIFilter(logging.Filter):
         return text
 
     def _mask_dict(self, data: dict, path: tuple = ()) -> dict:
+        if path == () and is_masked_dict(data):
+            return data
         exempt = _get_exempt_patterns()
         result = {}
         for key, value in data.items():
@@ -78,6 +96,8 @@ class MaskPIIFilter(logging.Filter):
                 result[key] = self._mask_value(value, child_path)
             else:
                 result[key] = mask_by_field_type(str(value), field_type)
+        if path == ():
+            mark_dict_as_masked(result)
         return result
 
     def _mask_iterable(self, data: list | tuple | set, path: tuple = ()) -> list | tuple | set:
@@ -103,8 +123,8 @@ class MaskPIIFilter(logging.Filter):
         return self._mask_string(str(value))
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if not getattr(record, _RECORD_MASKED_ATTR, False):
+        if not is_masked_object(record):
             record.msg = self._mask_value(record.msg)
             record.args = self._mask_value(record.args)
-            setattr(record, _RECORD_MASKED_ATTR, True)
+            mark_object_as_masked(record)
         return True

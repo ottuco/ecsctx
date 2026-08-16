@@ -406,11 +406,7 @@ def mask_sensitive_data(_logger, _method_name, event_dict):
     record already masked by MaskPIIFilter (e.g. via install_maskers() on
     the same handler chain) is not re-processed.
     """
-    if event_dict.get("_ecsctx_masked"):
-        return event_dict
-
     to_mask = {k: v for k, v in event_dict.items() if not (isinstance(k, str) and k.startswith("event."))}
     masked = _default_filter._mask_dict(to_mask)
     event_dict.update(masked)
-    event_dict["_ecsctx_masked"] = True
     return event_dict
