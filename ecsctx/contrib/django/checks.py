@@ -13,9 +13,13 @@ handler) must either carry it itself, or only be reached by loggers that
 carry it.
 
 find_masking_config_errors() is the framework-agnostic core, reusable from
-plain code or tests; validate_masking_config() raises for direct calls (e.g.
-from a project's own AppConfig.ready(), matching the original ottu_pg
-pattern); check_masking_configured() is the registered Django system check.
+plain code or tests; validate_masking_config() raises ValueError for direct
+calls (e.g. from a project's own AppConfig.ready(), matching the original
+ottu_pg pattern); assert_masking_configured() raises AssertionError for use
+in a project's own test suite — unlike the system check below, it is never
+skipped by environment, since the system check specifically skips itself in
+local/test/dev environments where a test suite runs; check_masking_configured()
+is the registered Django system check.
 """
 
 from __future__ import annotations
@@ -148,6 +152,24 @@ def validate_masking_config(logging_config: dict[str, Any]) -> None:
     errors = find_masking_config_errors(logging_config)
     if errors:
         raise ValueError(" ".join(errors))
+
+
+def assert_masking_configured(logging_config: dict[str, Any]) -> None:
+    """Assert that a Django-style LOGGING dict has PII masking fully wired in.
+
+    Raises AssertionError with the specific problem(s) found, listing every
+    logger/handler that could ship logs off-host unmasked. Intended for a
+    project's own test suite, e.g.:
+
+        def test_logging_is_masked(settings):
+            assert_masking_configured(settings.LOGGING)
+
+    This mirrors check_masking_configured() below, but is never skipped by
+    environment — use it when you want the same guarantee enforced in CI
+    even where the system check silences itself (local/test/dev).
+    """
+    errors = find_masking_config_errors(logging_config)
+    assert not errors, " ".join(errors)
 
 
 def _should_skip(settings) -> bool:
