@@ -224,7 +224,7 @@ def _ssn(m: re.Match) -> str:
 #      boundary over-masks.
 # ---------------------------------------------------------------------------
 
-REGEX_TO_MASKER_MAP = [
+REGEX_MASKER = (
     # 1. PEM key block.
     (
         r"-----BEGIN [A-Z ]*KEY-----[\s\S]*?-----END [A-Z ]*KEY-----",
@@ -318,42 +318,42 @@ REGEX_TO_MASKER_MAP = [
         r"(?:^|(?<=\s))\d{3,4}(?=\s|$)",
         _standalone_cvv,
     ),
-]
+)
 
-PATTERN_TO_MASKER_MAP = {
-    re.compile(regex, re.IGNORECASE): masker
-    for regex, masker in REGEX_TO_MASKER_MAP.items()
-}
+PATTERN_MASKER = tuple(
+    (re.compile(regex, re.IGNORECASE), masker)
+    for regex, masker in REGEX_MASKER
+)
 
 
 def mask_by_all_patterns(text: str):
-    for pattern, repl in PATTERN_TO_MASKER_MAP.items():
+    for pattern, repl in PATTERN_MASKER:
         text = pattern.sub(repl, text)
     return text
 
 
-KEYWORD_REGEX_TO_FIELD_TYPE_MAP = {
-    _CVV_KEYWORD: "cvv",
-    _CRED_KEYWORD: "secret",
-    _PAYMENT_ID_KEYWORD: "payment_id",
-    _EMAIL_KEY_WORDS: "email",
-    _PHONE_KEY_WORDS: "phone",
-    _ADDRESS_KEY_WORDS: "address",
-    _NAME_KEY_WORDS: "name",
-    _GENERIC_PII_KEY_WORDS: "generic",
-}
+KEYWORD_REGEX_FIELD_TYPE = (
+    (_CVV_KEYWORD, "cvv"),
+    (_CRED_KEYWORD, "secret"),
+    (_PAYMENT_ID_KEYWORD, "payment_id"),
+    (_EMAIL_KEY_WORDS, "email"),
+    (_PHONE_KEY_WORDS, "phone"),
+    (_ADDRESS_KEY_WORDS, "address"),
+    (_NAME_KEY_WORDS, "name"),
+    (_GENERIC_PII_KEY_WORDS, "generic"),
+)
 
-KEYWORD_PATTERN_TO_FIELD_TYPE_MAP = {
-    re.compile(regex, re.IGNORECASE): field_type
-    for regex, field_type in KEYWORD_REGEX_TO_FIELD_TYPE_MAP.items()
-}
+KEYWORD_PATTERN_FIELD_TYPE = tuple(
+    (re.compile(regex, re.IGNORECASE), field_type)
+    for regex, field_type in KEYWORD_REGEX_FIELD_TYPE
+)
 
 
 def check_if_sensitive_keyword(dict_key: str) -> str | None:
     low_dict_key = dict_key.lower()
     if low_dict_key in SAFE_KEYS:
         return None
-    for pattern, field_type in KEYWORD_PATTERN_TO_FIELD_TYPE_MAP.items():
+    for pattern, field_type in KEYWORD_PATTERN_FIELD_TYPE:
         if pattern.search(low_dict_key):
             return field_type
     return None
