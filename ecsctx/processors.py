@@ -13,7 +13,7 @@ import traceback
 from structlog.contextvars import get_contextvars
 
 from ecsctx.context import get_logging_context, get_trace_id
-from ecsctx.exemptions import (
+from ecsctx.masking.exemptions import (
     _reset_masking,
     configure_masking,
     configure_masking_from_env,

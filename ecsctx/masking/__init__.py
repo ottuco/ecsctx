@@ -9,10 +9,10 @@ MaskPIIFilter is the single engine every masking path calls into:
   still covered.
 
 See ecsctx.masking.patterns for the masking rules themselves and
-ecsctx.exemptions for the configure_masking() path-exemption API.
+ecsctx.masking.exemptions for the configure_masking() path-exemption API.
 """
 
-from ecsctx.exemptions import (
+from ecsctx.masking.exemptions import (
     configure_masking,
     configure_masking_from_env,
     masking_is_configured,

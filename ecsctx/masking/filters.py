@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ecsctx.exemptions import _get_exempt_patterns, _path_is_exempt
+from ecsctx.masking.exemptions import _get_exempt_patterns, _path_is_exempt
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import check_if_sensitive_keyword, mask_by_all_patterns
 from ecsctx.masking.tokens import already_masked, mask_by_field_type
