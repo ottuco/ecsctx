@@ -18,18 +18,13 @@ from ecsctx.exemptions import (
     masking_is_configured,
 )
 from ecsctx.masking.filters import MaskPIIFilter
-from ecsctx.masking.install import (
-    install_maskers,
-    masking_is_disabled,
-    uninstall_maskers,
-)
+from ecsctx.masking.install import install_maskers, uninstall_maskers
 from ecsctx.masking.tokens import mask_by_field_type, safe_tokenize
 
 __all__ = [
     "MaskPIIFilter",
     "install_maskers",
     "uninstall_maskers",
-    "masking_is_disabled",
     "configure_masking",
     "configure_masking_from_env",
     "masking_is_configured",
