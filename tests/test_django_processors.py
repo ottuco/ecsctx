@@ -16,15 +16,16 @@ from ecsctx.contrib.django.processors import (
     _serialize_django_user,
     contextvars_injector,
 )
+from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.pii import configure_pii
 from ecsctx.processors import (
-    _safe_dump_and_mask,
     masking_is_configured,
     reshape_log_event,
     root_fields_are_configured,
 )
 
 User = get_user_model()
+_mask = MaskPIIFilter()._mask_value
 
 
 class TestGetDjangoUserModel:
@@ -115,11 +116,14 @@ class TestMaskingSettingsBridge:
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         _auto_configure_masking()
         assert masking_is_configured()
-        out = _safe_dump_and_mask(
-            {"payment_methods": [{"name": "KNET"}], "customer": {"name": "John"}}
+        # "profile" (not "customer") — "customer" is itself a sensitive
+        # keyword (see ecsctx.masking.patterns) and would blanket-mask the
+        # whole dict instead of just its nested "name".
+        out = _mask(
+            {"payment_methods": [{"name": "KNET"}], "profile": {"name": "John"}}
         )
         assert out["payment_methods"][0]["name"] == "KNET"
-        assert out["customer"]["name"].startswith("ptok:v1:")
+        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
 
     @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["payment_methods[*].name"])
     def test_setting_applied_via_processor_first_call(self, token_keyset_path):
@@ -128,22 +132,22 @@ class TestMaskingSettingsBridge:
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         contextvars_injector(None, None, {"event": "hello"})
         assert masking_is_configured()
-        out = _safe_dump_and_mask({"payment_methods": [{"name": "KNET"}]})
+        out = _mask({"payment_methods": [{"name": "KNET"}]})
         assert out["payment_methods"][0]["name"] == "KNET"
 
     def test_absent_setting_is_noop(self):
         _auto_configure_masking()
         assert not masking_is_configured()
 
-    @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["customer.name"])
+    @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["profile.name"])
     def test_explicit_configure_beats_setting(self, token_keyset_path):
         from ecsctx.processors import configure_masking
 
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=[])  # explicit empty wins over the setting
         _auto_configure_masking()
-        out = _safe_dump_and_mask({"customer": {"name": "John"}})
-        assert out["customer"]["name"].startswith("ptok:v1:")
+        out = _mask({"profile": {"name": "John"}})
+        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
 
     def test_retries_when_settings_not_ready(self, token_keyset_path):
         """Regression for the original bug: if settings access raises (e.g.
@@ -164,7 +168,7 @@ class TestMaskingSettingsBridge:
         with override_settings(ECSCTX_MASK_EXEMPT_PATHS=["payment_methods[*].name"]):
             _auto_configure_masking()
         assert masking_is_configured()
-        out = _safe_dump_and_mask({"payment_methods": [{"name": "KNET"}]})
+        out = _mask({"payment_methods": [{"name": "KNET"}]})
         assert out["payment_methods"][0]["name"] == "KNET"
 
 
