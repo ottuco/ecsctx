@@ -5,6 +5,8 @@ The same business value must always produce the same token regardless of
 formatting, so these functions run on every value before it is hashed.
 """
 
+import re
+
 import pytest
 
 from ecsctx.masking.tokens import safe_tokenize
@@ -111,7 +113,7 @@ class TestNormalizationAppliedDuringTokenization:
     def _assert_same_token(variant, canonical, field_type):
         got = safe_tokenize(variant, field_type)
         expected = safe_tokenize(canonical, field_type)
-        assert got.startswith("ptok:v1:"), f"not a real token: {got!r}"
+        assert re.fullmatch(r"ptok:v1:[\w-]+", got), f"not a real token: {got!r}"
         assert got == expected
 
     @pytest.mark.parametrize(

@@ -156,9 +156,9 @@ class TestSentryEventContent:
 
         [event] = sentry_captured
         assert event["message"] == "gateway call failed"
-        blob = str(event)
-        assert "RAW-TOKEN-123" not in blob
-        assert "[SECRET-MASKED" in blob
+        assert event["contexts"]["structlog"]["headers"] == {
+            "Authorization": "[SECRET-MASKED]"
+        }
 
     def test_exception_attached_from_exc_info(self, sentry_captured):
         configure_structlog(integrations=[SentryIntegration()])
@@ -277,8 +277,16 @@ class TestIgnoreLoggers:
         assert event["message"] == "kept"
 
 
-def _crumbs(event):
-    return [b["message"] for b in event.get("breadcrumbs", {}).get("values", [])]
+def _crumbs(event, *expected):
+    """Breadcrumb messages, narrowed to the ones a test emitted itself.
+
+    The buffer collects records from anything else logging in the process, so
+    a test can only compare an exact list if it filters to its own messages
+    first."""
+    messages = [b["message"] for b in event.get("breadcrumbs", {}).get("values", [])]
+    if not expected:
+        return messages
+    return [m for m in messages if m in set(expected)]
 
 
 class TestBreadcrumbLevel:
@@ -312,7 +320,7 @@ class TestBreadcrumbLevel:
         [event] = sentry_captured
         # The event is captured before its own breadcrumb is recorded, so
         # only the sub-threshold line is what this asserts on.
-        assert "routine line" not in _crumbs(event)
+        assert _crumbs(event, "routine line", "now it ships") == []
 
     def test_at_breadcrumb_level_records_crumb(self, sentry_captured):
         configure_structlog(integrations=[SentryIntegration(level=logging.INFO)])
@@ -322,4 +330,4 @@ class TestBreadcrumbLevel:
         logger.error("now it ships")
 
         [event] = sentry_captured
-        assert "routine line" in _crumbs(event)
+        assert _crumbs(event, "routine line", "now it ships") == ["routine line"]

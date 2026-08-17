@@ -18,6 +18,7 @@ These run with PII tokenization unconfigured, so every label is the bare
 """
 
 import logging
+import re
 
 import pytest
 
@@ -157,8 +158,7 @@ class TestMaskByFieldType:
     def test_tokenizable_field_gets_token_when_pii_configured(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         result = mask_by_field_type("user@example.com", "email")
-        assert result.startswith("[EMAIL-MASKED:ptok:v1:")
-        assert result.endswith("]")
+        assert re.fullmatch(r"\[EMAIL-MASKED:ptok:v1:[\w-]+\]", result)
 
     def test_tokenizable_field_falls_back_when_unconfigured(self):
         assert mask_by_field_type("user@example.com", "email") == "[EMAIL-MASKED]"
@@ -190,7 +190,7 @@ class TestContentRules:
 
     def test_email_regex_no_pipe_leak(self):
         """Regression: [A-Z|a-z] would let a literal '|' into the TLD."""
-        assert "|" not in mask_by_all_patterns("a@b.com")
+        assert mask_by_all_patterns("a@b.com") == "[EMAIL-MASKED]"
 
     def test_card_number_separators_dont_matter(self):
         spaced = mask_by_all_patterns("4111 1111 1111 1111")
@@ -715,10 +715,7 @@ def test_card_number_masking(label, sample, expected):
 def test_card_number_never_reveals_bin_or_last4():
     """The partial-reveal drop, stated directly rather than only implied by
     the table above."""
-    masked = _mask("4111111111111111")
-    assert masked == "[CARD-MASKED]"
-    assert "411111" not in masked
-    assert "1111" not in masked
+    assert _mask("4111111111111111") == "[CARD-MASKED]"
 
 
 # ---------------------------------------------------------------------------
@@ -922,15 +919,21 @@ class TestObjectAndPrimitiveHandling:
         """Structured logging passes objects as kwargs; their repr must not
         leak. The filter stringifies a non-primitive before masking, or the
         embedded PAN would render unmasked downstream."""
-        rendered = str(_mask({"event": "decrypted payment data", "card": _FakeCard()}))
-        assert "9584184138614802" not in rendered
-        assert "CARD-MASKED" in rendered
-        # the already-masked portion of the repr is left as-is
-        assert "512345******0008" in rendered
+        # the PAN is replaced; the already-masked portion of the repr is
+        # left as-is
+        assert _mask({"event": "decrypted payment data", "card": _FakeCard()}) == {
+            "event": "decrypted payment data",
+            "card": "<Card(VISA, 512345******0008, [CARD-MASKED])>",
+        }
 
     def test_masks_object_nested_in_list_and_dict(self):
-        masked = _mask({"data": {"cards": [{"instrument": _FakeCard()}]}})
-        assert "9584184138614802" not in str(masked)
+        assert _mask({"data": {"cards": [{"instrument": _FakeCard()}]}}) == {
+            "data": {
+                "cards": [
+                    {"instrument": "<Card(VISA, 512345******0008, [CARD-MASKED])>"}
+                ]
+            }
+        }
 
     def test_masks_cvv_string_field(self):
         assert _mask({"processed_data": {"cvv": "100"}}) == {
@@ -944,9 +947,7 @@ class TestObjectAndPrimitiveHandling:
         assert _mask(sample) == {"status_code": 200, "count": 100, "ok": True, "nothing": None}
 
     def test_masks_plain_string_message(self):
-        masked = _mask("card 5123 4500 0000 0008")
-        assert "5123 4500 0000 0008" not in masked
-        assert "5123450000000008" not in masked
+        assert _mask("card 5123 4500 0000 0008") == "card [CARD-MASKED]"
 
 
 class TestMaskPIIFilterEngine:
@@ -954,8 +955,8 @@ class TestMaskPIIFilterEngine:
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         flt = MaskPIIFilter()
         out = flt._mask_value({"customer_name": "John Doe", "amount": 5})
-        assert out["customer_name"].startswith("[NAME-MASKED:ptok:v1:")
-        assert out["amount"] == 5
+        assert re.fullmatch(r"\[NAME-MASKED:ptok:v1:[\w-]+\]", out["customer_name"])
+        assert out == {"customer_name": out["customer_name"], "amount": 5}
 
     def test_structural_ecs_keys_skipped_at_top_level_by_default(self):
         flt = MaskPIIFilter()
@@ -1034,12 +1035,15 @@ class TestMaskPIIFilterAsLoggingFilter:
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         record = self._record({"customer_name": "Jane Doe"})
         MaskPIIFilter().filter(record)
-        assert record.msg["customer_name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert re.fullmatch(
+            r"\[NAME-MASKED:ptok:v1:[\w-]+\]", record.msg["customer_name"]
+        )
+        assert list(record.msg) == ["customer_name"]
 
     def test_filter_masks_string_record_msg(self):
         record = self._record("contact a@b.com please")
         MaskPIIFilter().filter(record)
-        assert "[EMAIL-MASKED]" in record.msg
+        assert record.msg == "contact [EMAIL-MASKED] please"
 
     def test_filter_masks_positional_args(self):
         record = self._record("user %s signed in", args=("bob@example.com",))

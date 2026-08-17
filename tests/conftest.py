@@ -117,3 +117,18 @@ def logging_state():
         logger.handlers = list(handlers)
     for handler, filters in saved_filters.values():
         handler.filters = list(filters)
+
+
+@pytest.fixture
+def isolated_logging_tree(logging_state):
+    """An empty logging tree for the duration of the test.
+
+    Builds on logging_state for the restore, then clears every logger and
+    root's handlers, so a test asserting on the whole tree sees only what it
+    put there — pytest and Django both leave real loggers behind otherwise.
+    """
+    import logging
+
+    logging.Logger.manager.loggerDict.clear()
+    logging.root.handlers = []
+    yield

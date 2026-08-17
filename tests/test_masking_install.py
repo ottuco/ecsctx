@@ -5,7 +5,6 @@ import logging
 
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.install import (
-    _has_masker,
     install_maskers,
     install_maskers_in_config,
     install_maskers_on_handlers,
@@ -34,7 +33,7 @@ class TestInstallMaskersInConfig:
             },
         }
         install_maskers_in_config(cfg)
-        assert "mask_pii_filter" in cfg["handlers"]["console"]["filters"]
+        assert cfg["handlers"]["console"]["filters"] == ["mask_pii_filter"]
         assert cfg["handlers"]["file"]["filters"] == ["other", "mask_pii_filter"]
 
     def test_idempotent_does_not_add_twice(self):
@@ -55,8 +54,8 @@ class TestUninstallMaskersInConfig:
         cfg = {"filters": {}, "handlers": {"console": {"class": "logging.StreamHandler", "filters": []}}}
         install_maskers_in_config(cfg)
         uninstall_maskers_in_config(cfg)
-        assert "mask_pii_filter" not in cfg["filters"]
-        assert "mask_pii_filter" not in cfg["handlers"]["console"]["filters"]
+        assert cfg["filters"] == {}
+        assert cfg["handlers"]["console"]["filters"] == []
 
     def test_noop_on_config_without_masker(self):
         cfg = {"filters": {}, "handlers": {"console": {"class": "logging.StreamHandler", "filters": []}}}
@@ -85,9 +84,9 @@ class TestInstallMaskersOnHandlers:
 
     def test_attaches_masker_to_live_handler(self, logging_state):
         h = self._handler()
-        assert not _has_masker(h)
+        assert _count_maskers(h) == 0
         install_maskers_on_handlers()
-        assert _has_masker(h)
+        assert _count_maskers(h) == 1
 
     def test_idempotent_does_not_double_attach(self, logging_state):
         h = self._handler()
@@ -98,16 +97,16 @@ class TestInstallMaskersOnHandlers:
     def test_uninstall_removes_from_live_handler(self, logging_state):
         h = self._handler()
         install_maskers_on_handlers()
-        assert _has_masker(h)
+        assert _count_maskers(h) == 1
         uninstall_maskers_on_handlers()
-        assert not _has_masker(h)
+        assert h.filters == []
 
     def test_does_not_touch_a_handler_created_afterward(self, logging_state):
         """install_maskers_on_handlers() deliberately does not patch the
         stdlib — only handlers that exist at call time are covered."""
         install_maskers_on_handlers()
         h = self._handler()
-        assert not _has_masker(h)
+        assert h.filters == []
 
 
 class TestIterHandlers:
@@ -126,9 +125,9 @@ class TestIterHandlers:
         handler = logging.StreamHandler()
         logging.root.addHandler(handler)
         install_maskers_on_handlers()
-        assert _has_masker(handler)
+        assert _count_maskers(handler) == 1
         uninstall_maskers_on_handlers()
-        assert not _has_masker(handler)
+        assert handler.filters == []
 
     def test_root_handler_shared_with_a_named_logger_is_swept_once(self, logging_state):
         handler = logging.StreamHandler()
@@ -141,11 +140,13 @@ class TestIterHandlers:
         """A dotted logger name leaves a logging.PlaceHolder behind for each
         missing ancestor. PlaceHolder has no .handlers, so _iter_handlers()
         must skip it rather than blow up."""
-        logging.getLogger("ecsctx-ph-parent.child")
+        handler = logging.StreamHandler()
+        logging.getLogger("ecsctx-ph-parent.child").addHandler(handler)
         assert isinstance(
             logging.Logger.manager.loggerDict["ecsctx-ph-parent"], logging.PlaceHolder
         )
-        install_maskers_on_handlers()  # must not raise
+        install_maskers_on_handlers()
+        assert _count_maskers(handler) == 1
 
 
 class TestFullInstallUninstall:
@@ -154,9 +155,11 @@ class TestFullInstallUninstall:
         logging.getLogger("ecsctx-install-test-full").addHandler(h)
         cfg = {"filters": {}, "handlers": {"console": {"class": "logging.StreamHandler", "filters": []}}}
         install_maskers(cfg)
-        assert "mask_pii_filter" in cfg["filters"]
+        assert cfg["filters"] == {
+            "mask_pii_filter": {"()": "ecsctx.masking.filters.MaskPIIFilter"}
+        }
         assert cfg["handlers"]["console"]["filters"] == ["mask_pii_filter"]
-        assert _has_masker(h)
+        assert _count_maskers(h) == 1
 
     def test_uninstall_maskers_covers_config_and_live_handlers(self, logging_state):
         h = logging.StreamHandler()
@@ -164,6 +167,6 @@ class TestFullInstallUninstall:
         cfg = {"filters": {}, "handlers": {"console": {"class": "logging.StreamHandler", "filters": []}}}
         install_maskers(cfg)
         uninstall_maskers(cfg)
-        assert "mask_pii_filter" not in cfg["filters"]
+        assert cfg["filters"] == {}
         assert cfg["handlers"]["console"]["filters"] == []
-        assert not _has_masker(h)
+        assert _count_maskers(h) == 0

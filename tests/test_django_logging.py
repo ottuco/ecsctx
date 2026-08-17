@@ -165,8 +165,6 @@ class TestMaskingPipelineIntegration:
         """The service/project exemption above must not become a blanket
         exemption — actual PII alongside them in the same record still has
         to come out masked."""
-        import json
-
         import structlog
 
         doc = self._formatted(
@@ -175,9 +173,7 @@ class TestMaskingPipelineIntegration:
             ),
             capsys,
         )
-        blob = json.dumps(doc)
-        assert "alice@example.com" not in blob
-        assert "[EMAIL-MASKED" in blob
+        assert doc["payload"] == {"email": "[EMAIL-MASKED]"}
 
     def test_third_party_stdlib_log_with_percent_args_is_masked(self, capsys):
         """A record that never touches structlog at all (e.g. a third-party
@@ -185,7 +181,6 @@ class TestMaskingPipelineIntegration:
         capability a structlog-only processor alone can't provide, and the
         handler-level MaskPIIFilter (wired in by get_logging_config()) is
         what closes that gap."""
-        import json
         import logging
 
         doc = self._formatted(
@@ -194,6 +189,4 @@ class TestMaskingPipelineIntegration:
             ),
             capsys,
         )
-        blob = json.dumps(doc)
-        assert "bob@example.com" not in blob
-        assert "[EMAIL-MASKED" in blob
+        assert doc["message"] == "user [EMAIL-MASKED] signed in"
