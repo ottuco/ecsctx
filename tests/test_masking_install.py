@@ -3,8 +3,6 @@ and their config-dict / live-handler variants."""
 
 import logging
 
-import pytest
-
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.install import (
     _has_masker,
@@ -15,38 +13,6 @@ from ecsctx.masking.install import (
     uninstall_maskers_in_config,
     uninstall_maskers_on_handlers,
 )
-
-
-@pytest.fixture
-def logging_state():
-    """Snapshot and restore process-wide logging state.
-
-    install_maskers_on_handlers() / uninstall_maskers_on_handlers() touch
-    *every* live handler in the process, not just the one a test made — and
-    logging is a module-level singleton nothing resets between tests. So any
-    test that calls them must put the handlers, the loggers, and their filter
-    lists back the way it found them.
-    """
-    manager = logging.Logger.manager
-    known_names = set(manager.loggerDict)
-    loggers = [logging.root] + [
-        lg for lg in manager.loggerDict.values() if isinstance(lg, logging.Logger)
-    ]
-    saved_handlers = [(lg, list(lg.handlers)) for lg in loggers]
-    saved_filters = {}
-    for lg in loggers:
-        for handler in lg.handlers:
-            saved_filters.setdefault(id(handler), (handler, list(handler.filters)))
-
-    yield
-
-    for name in list(manager.loggerDict):
-        if name not in known_names:
-            del manager.loggerDict[name]
-    for logger, handlers in saved_handlers:
-        logger.handlers = list(handlers)
-    for handler, filters in saved_filters.values():
-        handler.filters = list(filters)
 
 
 def _count_maskers(handler):

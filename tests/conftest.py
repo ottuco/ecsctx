@@ -85,3 +85,35 @@ def _reset_root_fields_module():
     """Reset configurable root-fields state between tests."""
     yield
     _reset_root_fields()
+
+
+@pytest.fixture
+def logging_state():
+    """Snapshot and restore process-wide logging state.
+
+    Logging is a module-level singleton nothing resets between tests, so any
+    test that installs/removes filters across live handlers, or adds loggers,
+    must put the tree back the way it found it.
+    """
+    import logging
+
+    manager = logging.Logger.manager
+    known_names = set(manager.loggerDict)
+    loggers = [logging.root] + [
+        lg for lg in manager.loggerDict.values() if isinstance(lg, logging.Logger)
+    ]
+    saved_handlers = [(lg, list(lg.handlers)) for lg in loggers]
+    saved_filters = {}
+    for lg in loggers:
+        for handler in lg.handlers:
+            saved_filters.setdefault(id(handler), (handler, list(handler.filters)))
+
+    yield
+
+    for name in list(manager.loggerDict):
+        if name not in known_names:
+            del manager.loggerDict[name]
+    for logger, handlers in saved_handlers:
+        logger.handlers = list(handlers)
+    for handler, filters in saved_filters.values():
+        handler.filters = list(filters)
