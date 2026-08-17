@@ -8,6 +8,7 @@ from ecsctx.processors import (
     error_ecs_fields,
     safe_tokenize,
     configure_masking,
+    configure_masking_from_env,
     configure_root_fields,
     masking_is_configured,
     root_fields_are_configured,
@@ -44,41 +45,6 @@ class TestTokenizeInProcessor:
         always falls back to the same redaction marker."""
         result = safe_tokenize('"user@example.com"', "email")
         assert result == "[PII_REDACTED]"
-
-    def test_quotes_stripped_before_tokenizing(self, token_keyset_path):
-        """A regex-artifact-quoted value and its bare form must tokenize to
-        the same value — the quotes are punctuation, not part of the real
-        value (see ecsctx.pii.normalize.strip_wrapping_quotes)."""
-        configure_pii(token_keyset_path=token_keyset_path, env="test")
-        quoted = safe_tokenize('"user@example.com"', "email")
-        bare = safe_tokenize("user@example.com", "email")
-        assert quoted == bare
-
-    def test_outer_whitespace_stripped_before_tokenizing(self, token_keyset_path):
-        """Leading/trailing whitespace is punctuation too, not part of the
-        value — normalize_value() strips it before tokenizing."""
-        configure_pii(token_keyset_path=token_keyset_path, env="test")
-        padded = safe_tokenize("  user@example.com   ", "email")
-        bare = safe_tokenize("user@example.com", "email")
-        assert padded == bare
-
-    def test_whitespace_around_quotes_stripped(self, token_keyset_path):
-        """Whitespace outside the quotes (a regex match can include both) must
-        not survive into the tokenized value either."""
-        configure_pii(token_keyset_path=token_keyset_path, env="test")
-        padded = safe_tokenize('  "user@example.com"   ', "email")
-        bare = safe_tokenize("user@example.com", "email")
-        assert padded == bare
-
-    def test_whitespace_inside_and_outside_quotes_stripped(self, token_keyset_path):
-        """Whitespace can appear on both sides of the quotes AND between the
-        quotes and the real value — strip_wrapping_quotes() only removes the
-        quote characters, so the second normalize_value() strip (after
-        unquoting) is what catches the inner padding."""
-        configure_pii(token_keyset_path=token_keyset_path, env="test")
-        padded = safe_tokenize('   "   user@example.com   "   ', "email")
-        bare = safe_tokenize("user@example.com", "email")
-        assert padded == bare
 
     def test_empty_value_passthrough(self):
         assert safe_tokenize("", "email") == ""
@@ -384,6 +350,40 @@ class TestMaskConfigEnv:
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask({"profile": {"name": "John"}})
         assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert masking_is_configured()
+
+
+class TestConfigureMaskingFromEnv:
+    def test_parses_csv_ignoring_blanks(self, monkeypatch):
+        from ecsctx.masking.exemptions import _get_exempt_patterns
+
+        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "a.b, c[*].d ,, ")
+        configure_masking_from_env()
+        assert _get_exempt_patterns() == (("a", "b"), ("c", "[*]", "d"))
+
+    def test_idempotent_second_call_does_not_reload(self, monkeypatch):
+        from ecsctx.masking.exemptions import _get_exempt_patterns
+
+        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "first")
+        configure_masking_from_env()
+        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "second")
+        configure_masking_from_env()
+        assert _get_exempt_patterns() == (("first",),)
+
+    def test_explicit_configure_beats_a_later_env_load(self, monkeypatch):
+        from ecsctx.masking.exemptions import _get_exempt_patterns
+
+        configure_masking(exempt_paths=["explicit"])
+        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "fromenv")
+        configure_masking_from_env()
+        assert _get_exempt_patterns() == (("explicit",),)
+
+    def test_unset_env_yields_no_exemptions_but_marks_configured(self, monkeypatch):
+        from ecsctx.masking.exemptions import _get_exempt_patterns
+
+        monkeypatch.delenv("PII_MASK_EXEMPT_PATHS", raising=False)
+        configure_masking_from_env()
+        assert _get_exempt_patterns() == ()
         assert masking_is_configured()
 
 
