@@ -359,10 +359,7 @@ class TestMaskTopLevel:
         assert _mask(None) is None
 
     def test_empty_containers(self):
-        # An empty dict still picks up MaskPIIFilter's internal already-masked
-        # marker (stripped from real output by ECSFormatter/filter() — see
-        # ecsctx.masking.filters._IS_MASKED_) — no other content is added.
-        assert _mask({}) == {"_IS_MASKED_": True}
+        assert _mask({}) == {}
         assert _mask([]) == []
 
 
