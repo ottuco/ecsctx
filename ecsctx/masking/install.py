@@ -29,8 +29,6 @@ import logging
 
 from ecsctx.masking.filters import MaskPIIFilter
 
-_enabled = False
-
 
 def _has_masker(handler: logging.Handler) -> bool:
     return any(isinstance(f, MaskPIIFilter) for f in handler.filters)
@@ -81,8 +79,6 @@ def install_maskers(logging_config: dict) -> None:
     live handler that exists right now."""
     install_maskers_in_config(logging_config)
     install_maskers_on_handlers()
-    global _enabled
-    _enabled = True
 
 
 def uninstall_maskers_in_config(logging_config: dict) -> None:
@@ -107,5 +103,3 @@ def uninstall_maskers(logging_config: dict) -> None:
     every live handler that has one."""
     uninstall_maskers_in_config(logging_config)
     uninstall_maskers_on_handlers()
-    global _enabled
-    _enabled = False
