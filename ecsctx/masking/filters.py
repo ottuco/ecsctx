@@ -28,14 +28,6 @@ from ecsctx.masking.tokens import already_masked, mask_by_field_type
 _IS_MASKED_ = "_IS_MASKED_"
 
 
-def mark_dict_as_masked(data: dict) -> None:
-    data[_IS_MASKED_] = True
-
-
-def is_masked_dict(data: dict) -> bool:
-    return bool(data.get(_IS_MASKED_, False))
-
-
 def mark_object_as_masked(obj: Any) -> None:
     setattr(obj, _IS_MASKED_, True)
 
@@ -77,8 +69,6 @@ class MaskPIIFilter(logging.Filter):
         return text
 
     def _mask_dict(self, data: dict, path: tuple = ()) -> dict:
-        if path == () and is_masked_dict(data):
-            return data
         exempt = _get_exempt_patterns()
         result = {}
         for key, value in data.items():
@@ -96,8 +86,6 @@ class MaskPIIFilter(logging.Filter):
                 result[key] = self._mask_value(value, child_path)
             else:
                 result[key] = mask_by_field_type(str(value), field_type)
-        if path == ():
-            mark_dict_as_masked(result)
         return result
 
     def _mask_iterable(self, data: list | tuple | set, path: tuple = ()) -> list | tuple | set:
