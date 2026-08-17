@@ -116,3 +116,84 @@ class TestUnhandled500EndToEnd:
         assert doc["error"]["stack_trace"].startswith("Traceback")
         assert doc["log"]["logger"] == "django.request"
         assert "extra" not in doc
+
+
+class TestMaskingPipelineIntegration:
+    """End-to-end: real dictConfig + real structlog config + an actual
+    emitted log line — not just calling the masking functions directly.
+    get_logging_config() wires MaskPIIFilter both as a handler-level
+    logging.Filter (via install_maskers_in_config, so the declarative
+    LOGGING dict satisfies ecsctx.contrib.django.checks) and, in its
+    formatter's own processors/foreign_pre_chain, as the mask_sensitive_data
+    structlog processor — the two layers must not conflict or leak
+    internals into the final JSON.
+    """
+
+    def _formatted(self, emit, capsys):
+        import json
+        import logging.config
+
+        import structlog
+
+        from ecsctx.contrib.django import get_logging_config, setup_logging
+
+        cfg = get_logging_config(use_cid_filter=False)
+        cfg["loggers"] = {}
+        logging.config.dictConfig(cfg)
+        setup_logging()
+        try:
+            emit()
+        finally:
+            structlog.reset_defaults()
+
+        lines = [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
+        return json.loads(lines[-1])
+
+    def test_service_and_project_name_survive_unmasked(self, capsys):
+        """service.name / project.name are ecsctx's own injected metadata,
+        not user payload — they must never be masked, even though both
+        contain a literal "name" child key."""
+        import structlog
+
+        doc = self._formatted(
+            lambda: structlog.get_logger("test").info("hello"), capsys
+        )
+        assert doc["service"]["name"] == "app"
+        assert doc["project"]["name"] == "connect"
+
+    def test_user_payload_still_masked_through_the_full_pipeline(self, capsys):
+        """The service/project exemption above must not become a blanket
+        exemption — actual PII alongside them in the same record still has
+        to come out masked."""
+        import json
+
+        import structlog
+
+        doc = self._formatted(
+            lambda: structlog.get_logger("test").info(
+                "hello", payload={"email": "alice@example.com"}
+            ),
+            capsys,
+        )
+        blob = json.dumps(doc)
+        assert "alice@example.com" not in blob
+        assert "[EMAIL-MASKED" in blob
+
+    def test_third_party_stdlib_log_with_percent_args_is_masked(self, capsys):
+        """A record that never touches structlog at all (e.g. a third-party
+        library using %-style args) must still be masked — this is the
+        capability a structlog-only processor alone can't provide, and the
+        handler-level MaskPIIFilter (wired in by get_logging_config()) is
+        what closes that gap."""
+        import json
+        import logging
+
+        doc = self._formatted(
+            lambda: logging.getLogger("some.third.party").info(
+                "user %s signed in", "bob@example.com"
+            ),
+            capsys,
+        )
+        blob = json.dumps(doc)
+        assert "bob@example.com" not in blob
+        assert "[EMAIL-MASKED" in blob
