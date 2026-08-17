@@ -158,7 +158,7 @@ class TestSentryEventContent:
         assert event["message"] == "gateway call failed"
         blob = str(event)
         assert "RAW-TOKEN-123" not in blob
-        assert "RAW-****-123" in blob
+        assert "[SECRET-MASKED" in blob
 
     def test_exception_attached_from_exc_info(self, sentry_captured):
         configure_structlog(integrations=[SentryIntegration()])
