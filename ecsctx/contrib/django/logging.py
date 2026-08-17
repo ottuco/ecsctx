@@ -43,6 +43,7 @@ from ecsctx import (
     namespace_ecs_fields,
 )
 from ecsctx.contrib.django.processors import contextvars_injector
+from ecsctx.masking.install import install_maskers_in_config
 
 # =============================================================================
 # LOGGER PRESETS
@@ -122,7 +123,16 @@ def get_logging_config(
             RQ_LOGGERS, CELERY_LOGGERS)
 
     Returns:
-        Complete LOGGING dict ready to use in Django settings.
+        Complete LOGGING dict ready to use in Django settings. "mask_pii_filter"
+        is wired into LOGGING["filters"] and every handler built here (via
+        ecsctx.masking.install_maskers_in_config) — masking already runs twice
+        over for records this config's own console handler emits (once via
+        this filter, once via the mask_sensitive_data processor already in
+        the formatter chain — proven idempotent, not a bug), but it's what
+        makes ecsctx.contrib.django.checks' boot-time system check pass
+        without an extra install_maskers() call, and it's the only masking
+        layer that reaches a handler this LOGGING dict builds if a project
+        later swaps in a different formatter.
 
     Example:
         # Basic usage
@@ -210,6 +220,8 @@ def get_logging_config(
     # Merge custom/preset loggers
     if loggers:
         config["loggers"].update(loggers)
+
+    install_maskers_in_config(config)
 
     return config
 
