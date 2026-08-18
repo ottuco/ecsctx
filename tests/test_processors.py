@@ -1,20 +1,25 @@
 """Tests for PII masking and field reshaping in log processors."""
 
+from ecsctx.masking.exemptions import _compile_path, _path_is_exempt
+from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.pii import configure_pii, is_configured
 from ecsctx.processors import (
     callsite_ecs_fields,
     error_ecs_fields,
-    _compile_path,
-    _path_is_exempt,
-    _safe_dump_and_mask,
     safe_tokenize,
     configure_masking,
+    configure_masking_from_env,
     configure_root_fields,
     masking_is_configured,
     root_fields_are_configured,
     namespace_ecs_fields,
     reshape_log_event,
 )
+
+# MaskPIIFilter._mask_value is the direct engine entry point the old
+# ecsctx.processors._safe_dump_and_mask used to wrap — mask_sensitive_data
+# (the structlog processor) now delegates to the same MaskPIIFilter instance.
+_mask = MaskPIIFilter()._mask_value
 
 
 class TestTokenizeInProcessor:
@@ -36,8 +41,10 @@ class TestTokenizeInProcessor:
         assert result == token
 
     def test_redacted_when_quoted(self):
+        """No quote re-wrapping on output — quoted or bare, unconfigured
+        always falls back to the same redaction marker."""
         result = safe_tokenize('"user@example.com"', "email")
-        assert result == '"[PII_REDACTED]"'
+        assert result == "[PII_REDACTED]"
 
     def test_empty_value_passthrough(self):
         assert safe_tokenize("", "email") == ""
@@ -210,119 +217,173 @@ class TestPathExempt:
 
 
 class TestMaskWalker:
+    """MaskPIIFilter._mask_value walks dicts/lists, tokenizing sensitive-key
+    values (unless whitelisted/exempted) and content-scanning every string.
+
+    Note: a top-level dict key that is itself a sensitive keyword (e.g.
+    "customer" — see ecsctx.masking.patterns.KEYWORD_REGEX_FIELD_TYPE) is
+    blanket-masked as a whole, not recursed into — so these tests use
+    "profile" (not itself sensitive) as the non-colliding wrapper key when
+    they need to assert on a *nested* field.
+    """
+
     def test_exempted_leaf_notsafe_tokenized(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=["payment_methods[*].name"])
-        out = _safe_dump_and_mask({"payment_methods": [{"name": "VISA-John"}]})
+        out = _mask({"payment_methods": [{"name": "VISA-John"}]})
         assert out["payment_methods"][0]["name"] == "VISA-John"
 
-    def test_same_key_non_exemptsafe_tokenized(self, token_keyset_path):
+    def test_same_key_non_exempt_tokenized(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=["payment_methods[*].name"])
-        out = _safe_dump_and_mask({"customer": {"name": "John Doe"}})
-        assert out["customer"]["name"].startswith("ptok:v1:")
+        out = _mask({"profile": {"name": "John Doe"}})
+        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
 
     def test_subtree_exemption_with_email_still_scrubbed(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=["audit"])
-        out = _safe_dump_and_mask(
+        out = _mask(
             {"audit": {"customer_name": "X", "billing_email": "a@b.com"}}
         )
         assert out["audit"]["customer_name"] == "X"
-        assert out["audit"]["billing_email"].startswith("ptok:v1:")
+        # Key-based masking is exempted under "audit", but the email regex
+        # still catches the value content-wise (defense in depth).
+        assert out["audit"]["billing_email"].startswith("[EMAIL-MASKED:ptok:v1:")
 
     def test_nested_dict_path(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=["a.b.customer_name"])
-        out = _safe_dump_and_mask(
+        out = _mask(
             {"a": {"b": {"customer_name": "Keep", "payer_name": "Mask"}}}
         )
         assert out["a"]["b"]["customer_name"] == "Keep"
-        assert out["a"]["b"]["payer_name"].startswith("ptok:v1:")
+        assert out["a"]["b"]["payer_name"].startswith("[NAME-MASKED:ptok:v1:")
 
     def test_arrays_of_arrays(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=[])
-        out = _safe_dump_and_mask({"matrix": [[{"customer_email": "x@y.com"}]]})
-        assert out["matrix"][0][0]["customer_email"].startswith("ptok:v1:")
+        out = _mask({"matrix": [[{"customer_email": "x@y.com"}]]})
+        assert out["matrix"][0][0]["customer_email"].startswith("[EMAIL-MASKED:ptok:v1:")
 
     def test_list_of_strings_email_scrubbed(self, token_keyset_path):
+        # "notes" (not itself a sensitive key, unlike "emails") so each list
+        # item is content-scanned independently rather than the whole list
+        # being blanket-masked as one key-based match.
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        out = _safe_dump_and_mask({"emails": ["x@y.com", "plain"]})
-        assert out["emails"][0].startswith("ptok:v1:")
-        assert out["emails"][1] == "plain"
+        out = _mask({"notes": ["x@y.com", "plain"]})
+        assert out["notes"][0].startswith("[EMAIL-MASKED:ptok:v1:")
+        assert out["notes"][1] == "plain"
 
-    def test_non_string_values_untouched(self, token_keyset_path):
+    def test_non_sensitive_key_scalars_untouched(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        out = _safe_dump_and_mask(
-            {"customer_name": 123, "amount": 10, "flag": True, "nope": None}
-        )
-        assert out["customer_name"] == 123
+        out = _mask({"amount": 10, "flag": True, "nope": None})
         assert out["amount"] == 10
         assert out["flag"] is True
         assert out["nope"] is None
 
+    def test_sensitive_key_scalar_masked_regardless_of_type(self, token_keyset_path):
+        """A sensitive key (e.g. containing "name") blanket-masks its value
+        even when the value isn't a string — key-based masking overrides the
+        numeric/bool/None content-level passthrough."""
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        out = _mask({"customer_name": 123})
+        assert out["customer_name"].startswith("[NAME-MASKED:ptok:v1:")
+
     def test_idempotent_rerun(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        payload = {"customer": {"name": "John", "email": "a@b.com"}}
-        once = _safe_dump_and_mask(payload)
-        twice = _safe_dump_and_mask(once)
+        payload = {"profile": {"name": "John", "email": "a@b.com"}}
+        once = _mask(payload)
+        twice = _mask(once)
         assert once == twice
 
 
 class TestMaskWalkerUnconfiguredPII:
     def test_unconfigured_redacts(self):
         assert not is_configured()
-        out = _safe_dump_and_mask({"customer_name": "John"})
-        assert out["customer_name"] == "[PII_REDACTED]"
+        out = _mask({"customer_name": "John"})
+        assert out["customer_name"] == "[NAME-MASKED]"
 
     def test_unconfigured_idempotent(self):
-        once = _safe_dump_and_mask({"customer_name": "John"})
-        twice = _safe_dump_and_mask(once)
+        once = _mask({"customer_name": "John"})
+        twice = _mask(once)
         assert once == twice
 
 
 class TestMaskTopLevel:
     def test_top_level_list(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        out = _safe_dump_and_mask([{"customer_name": "John"}])
-        assert out[0]["customer_name"].startswith("ptok:v1:")
+        out = _mask([{"customer_name": "John"}])
+        assert out[0]["customer_name"].startswith("[NAME-MASKED:ptok:v1:")
 
     def test_top_level_string_email(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        out = _safe_dump_and_mask("contact a@b.com please")
-        assert "ptok:v1:" in out
+        out = _mask("contact a@b.com please")
+        assert "[EMAIL-MASKED:ptok:v1:" in out
 
     def test_top_level_scalars(self):
-        assert _safe_dump_and_mask(42) == 42
-        assert _safe_dump_and_mask(None) is None
+        assert _mask(42) == 42
+        assert _mask(None) is None
 
     def test_empty_containers(self):
-        assert _safe_dump_and_mask({}) == {}
-        assert _safe_dump_and_mask([]) == []
+        assert _mask({}) == {}
+        assert _mask([]) == []
 
 
 class TestMaskConfigEnv:
     def test_env_var_config(self, token_keyset_path, monkeypatch):
         monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "payment_methods[*].name, audit")
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        out = _safe_dump_and_mask(
-            {"payment_methods": [{"name": "KNET"}], "customer": {"name": "John"}}
+        out = _mask(
+            {"payment_methods": [{"name": "KNET"}], "profile": {"name": "John"}}
         )
         assert out["payment_methods"][0]["name"] == "KNET"
-        assert out["customer"]["name"].startswith("ptok:v1:")
+        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
 
     def test_explicit_beats_env(self, token_keyset_path, monkeypatch):
-        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "customer.name")
+        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "profile.name")
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=[])
-        out = _safe_dump_and_mask({"customer": {"name": "John"}})
-        assert out["customer"]["name"].startswith("ptok:v1:")
+        out = _mask({"profile": {"name": "John"}})
+        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
 
     def test_empty_default_still_configured(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        out = _safe_dump_and_mask({"customer": {"name": "John"}})
-        assert out["customer"]["name"].startswith("ptok:v1:")
+        out = _mask({"profile": {"name": "John"}})
+        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert masking_is_configured()
+
+
+class TestConfigureMaskingFromEnv:
+    def test_parses_csv_ignoring_blanks(self, monkeypatch):
+        from ecsctx.masking.exemptions import _get_exempt_patterns
+
+        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "a.b, c[*].d ,, ")
+        configure_masking_from_env()
+        assert _get_exempt_patterns() == (("a", "b"), ("c", "[*]", "d"))
+
+    def test_idempotent_second_call_does_not_reload(self, monkeypatch):
+        from ecsctx.masking.exemptions import _get_exempt_patterns
+
+        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "first")
+        configure_masking_from_env()
+        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "second")
+        configure_masking_from_env()
+        assert _get_exempt_patterns() == (("first",),)
+
+    def test_explicit_configure_beats_a_later_env_load(self, monkeypatch):
+        from ecsctx.masking.exemptions import _get_exempt_patterns
+
+        configure_masking(exempt_paths=["explicit"])
+        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "fromenv")
+        configure_masking_from_env()
+        assert _get_exempt_patterns() == (("explicit",),)
+
+    def test_unset_env_yields_no_exemptions_but_marks_configured(self, monkeypatch):
+        from ecsctx.masking.exemptions import _get_exempt_patterns
+
+        monkeypatch.delenv("PII_MASK_EXEMPT_PATHS", raising=False)
+        configure_masking_from_env()
+        assert _get_exempt_patterns() == ()
         assert masking_is_configured()
 
 
