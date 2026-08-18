@@ -64,8 +64,9 @@ class TestAttributionEndToEnd:
             capsys,
         )
         assert doc["log"]["logger"] == "core.gateway.knetv3.views.KnetV3ResponseView"
-        assert doc["log"]["origin"]["function"]
-        assert doc["log"]["origin"]["file"]["name"].endswith(".py")
+        # the callsite is the lambda above, in this file
+        assert doc["log"]["origin"]["function"] == "<lambda>"
+        assert doc["log"]["origin"]["file"]["name"] == __file__
         assert isinstance(doc["log"]["origin"]["file"]["line"], int)
         assert "extra" not in doc
 
@@ -77,7 +78,8 @@ class TestAttributionEndToEnd:
             capsys,
         )
         assert doc["log"]["logger"] == "some.stdlib.ForeignLogger"
-        assert doc["log"]["origin"]["file"]["name"]
+        assert doc["log"]["origin"]["function"] == "<lambda>"
+        assert doc["log"]["origin"]["file"]["name"] == __file__
         assert "extra" not in doc
 
 
