@@ -6,10 +6,10 @@ using bind_logging_context(extra={"merchant_id": "..."})
 """
 
 import contextlib
-import os
 
 from structlog.contextvars import get_contextvars
 
+from ecsctx import identity
 from ecsctx.context import get_trace_id
 from ecsctx.pii import configure_pii_from_env
 from ecsctx.processors import _detect_service, _inject_logging_context
@@ -192,7 +192,7 @@ def contextvars_injector(_logger, _method_name, event_dict):
         "version": service_version,
     }
     event_dict["project"] = {
-        "name": os.environ.get("PROJECT_NAME", "connect"),
+        "name": identity.get_project_name(),
     }
 
     # 5. Serialize Django User objects

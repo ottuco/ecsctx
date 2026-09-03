@@ -14,42 +14,19 @@ import traceback
 
 from structlog.contextvars import get_contextvars
 
+from ecsctx import identity
 from ecsctx.context import get_logging_context, get_trace_id
 from ecsctx.pii import tokenize as _pii_tokenize
 
 
 def _get_app_version() -> str:
-    """Get application version from environment."""
-    return os.environ.get("APP_VERSION", "0.0.0")
+    """Application version. Kept as a name other modules import."""
+    return identity.get_app_version()
 
 
 def _detect_service():
-    """Detect service name and version from environment or process name.
-
-    Returns tuple of (name, version).
-    """
-    service_type = os.environ.get("SERVICE_TYPE")
-    if service_type:
-        if service_type == "rq":
-            import rq  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
-
-            return "rq", rq.VERSION
-        if service_type == "rqscheduler":
-            import rq_scheduler  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
-
-            return "rqscheduler", ".".join(map(str, rq_scheduler.VERSION))
-        return service_type, _get_app_version()
-
-    # Auto-detect from command line
-    if any("rqworker" in arg for arg in sys.argv):
-        import rq  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
-
-        return "rq", rq.VERSION
-    if any("rqscheduler" in arg for arg in sys.argv):
-        import rq_scheduler  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
-
-        return "rqscheduler", ".".join(map(str, rq_scheduler.VERSION))
-    return "app", _get_app_version()
+    """(service.name, service.version). See ecsctx.identity for the order."""
+    return identity.detect_service()
 
 
 # ECS-compliant root allowlist for log events.
@@ -368,7 +345,7 @@ def contextvars_injector(_logger, _method_name, event_dict):
         "version": service_version,
     }
     event_dict["project"] = {
-        "name": os.environ.get("PROJECT_NAME", "connect"),
+        "name": identity.get_project_name(),
     }
 
     return event_dict
