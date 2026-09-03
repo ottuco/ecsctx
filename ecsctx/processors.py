@@ -417,6 +417,12 @@ SAFE_NAME_KEYS = frozenset({
 EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
 # Phone: roughly 10-15 digits, optional +, spaces/dashes.
 # Avoids matching timestamps/IDs often.
+# 13-19 digits, optionally grouped by single spaces or hyphens — the PAN
+# lengths in ISO/IEC 7812. Deliberately NOT restricted to issuer BINs (2-6):
+# a missed PAN is a breach and a masked order reference is an inconvenience,
+# so the Luhn check alone decides, and it errs toward masking.
+CARD_NUMBER_PATTERN = re.compile(r"\b(?:\d[ -]?){12,18}\d\b")
+
 PHONE_PATTERN = re.compile(
     r"\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4,6}\b"
 )
@@ -445,11 +451,53 @@ SENSITIVE_KEYWORDS = (
 )
 
 
+# Cardholder data. Matched EXACTLY, not as substrings like SENSITIVE_KEYWORDS:
+# these are short, generic words, and a substring rule would swallow legitimate
+# diagnostics — "number" alone would mask `reference_number`, which is one of
+# ecsctx's own context fields, and `order_number`.
+#
+# The names come from what PSP request builders actually emit. MPGS sends
+# sourceOfFunds.provided.card.{number,expiry,securityCode}; CyberSource sends
+# {number,expirationMonth,expirationYear,securityCode}. None of those keys
+# matched any existing keyword, so a logged PSP request carried the PAN in
+# clear (#159488).
+CARD_KEYS = frozenset({
+    "number",
+    "card",
+    "pan",
+    "cardnumber",
+    "card_number",
+    "accountnumber",
+    "account_number",
+    "cvv",
+    "cvv2",
+    "cvc",
+    "cvc2",
+    "securitycode",
+    "security_code",
+    "expiry",
+    "expirydate",
+    "expiry_date",
+    "expiration",
+    "expirationdate",
+    "expiration_date",
+    "expirationmonth",
+    "expirationyear",
+    "iban",
+    "track1",
+    "track2",
+    "track_data",
+})
+
+
 def _key_is_sensitive(key) -> bool:
-    """True if a dict key suggests PII (and is not whitelisted)."""
+    """True if a dict key suggests PII or cardholder data (and is not whitelisted)."""
     if not isinstance(key, str):
         return False
     low = key.lower()
+    if low in CARD_KEYS:
+        # Deliberately ahead of SAFE_NAME_KEYS: nothing may whitelist a PAN.
+        return True
     if low in SAFE_NAME_KEYS:
         return False
     return any(kw in low for kw in SENSITIVE_KEYWORDS)
@@ -507,12 +555,38 @@ def _mask_headers(headers: dict) -> dict:
     return result
 
 
+def _luhn_ok(digits: str) -> bool:
+    """Luhn check digit. Every real PAN satisfies it; most other numbers do not."""
+    total = 0
+    for index, char in enumerate(reversed(digits)):
+        value = int(char)
+        if index % 2:
+            value *= 2
+            if value > 9:
+                value -= 9
+        total += value
+    return total % 10 == 0
+
+
+def _scrub_card_number(match: re.Match) -> str:
+    raw = match.group()
+    digits = re.sub(r"[ -]", "", raw)
+    if not _luhn_ok(digits):
+        # Keep it. Order references and ids of this length are common, and
+        # tokenizing every long number would cost real diagnostics.
+        return raw
+    return safe_tokenize(digits, "card")
+
+
 def _scrub_string_content(text: str) -> str:
     """
     Scrub PII from a string using regex.
-    Handles Emails, Phones, Credit Cards.
+    Handles emails, phones and card numbers.
     """
     text = EMAIL_PATTERN.sub(lambda m: safe_tokenize(m.group(), "email"), text)
+    # Card numbers before phones: a 13-19 digit PAN can look like a long phone
+    # number, and tokenizing it as one would still leak its length and prefix.
+    text = CARD_NUMBER_PATTERN.sub(_scrub_card_number, text)
     # Only scrub phones that look like phones (length check is in regex)
     # But be careful with IDs.
     return PHONE_PATTERN.sub(lambda m: safe_tokenize(m.group(), "phone"), text)

@@ -2,6 +2,11 @@
 
 from ecsctx.pii import configure_pii, is_configured
 from ecsctx.processors import (
+    CARD_KEYS,
+    SAFE_NAME_KEYS,
+    _key_is_sensitive,
+    _luhn_ok,
+    _scrub_string_content,
     callsite_ecs_fields,
     error_ecs_fields,
     _compile_path,
@@ -521,3 +526,105 @@ class TestStandalonePipelineSafety:
         assert event["error"]["stack_trace"].startswith("Traceback")
         assert "exc_info" not in event
         assert "exc_info" not in event.get("extra", {})
+
+
+class TestCardholderDataMasking:
+    """ecsctx claimed to handle credit cards in a docstring and did not: there
+    was no card pattern, no Luhn check, and no card key in SENSITIVE_KEYWORDS.
+    A logged PSP request carried the PAN in clear (#159488).
+    """
+
+    def test_the_keys_psp_clients_actually_use_are_sensitive(self):
+        # MPGS sends sourceOfFunds.provided.card.{number,expiry,securityCode};
+        # CyberSource sends {number,expirationMonth,expirationYear,securityCode}.
+        # None of these matched any keyword before.
+        for key in (
+            "number",
+            "card",
+            "expiry",
+            "securityCode",
+            "expirationMonth",
+            "expirationYear",
+            "cvv",
+            "pan",
+            "iban",
+        ):
+            assert _key_is_sensitive(key), key
+
+    def test_case_does_not_matter(self):
+        assert _key_is_sensitive("SecurityCode")
+        assert _key_is_sensitive("CARD")
+
+    def test_diagnostics_that_merely_contain_a_card_word_are_kept(self):
+        # Exact match, not substring: `number` as a substring would swallow
+        # reference_number, which is one of ecsctx's own context fields.
+        for key in (
+            "reference_number",
+            "order_number",
+            "card_scheme",
+            "gateway_name",
+            "session_id",
+            "merchant_id",
+        ):
+            assert not _key_is_sensitive(key), key
+
+    def test_cardholder_substring_masking_is_unchanged(self):
+        # Pre-existing behaviour, not from CARD_KEYS: `cardholder` is a
+        # SENSITIVE_KEYWORDS substring, so cardholder_present (a card-present
+        # flag, not PII) is masked. Asserted so this change is not blamed for it
+        # and so a later fix is a deliberate one.
+        assert _key_is_sensitive("cardholder_present")
+
+    def test_a_card_key_cannot_be_whitelisted(self):
+        # CARD_KEYS is checked before SAFE_NAME_KEYS on purpose.
+        assert CARD_KEYS & SAFE_NAME_KEYS == set() or all(
+            _key_is_sensitive(k) for k in CARD_KEYS & SAFE_NAME_KEYS
+        )
+
+    def test_luhn_accepts_real_card_numbers(self):
+        for pan in ("4111111111111111", "5555555555554444", "378282246310005"):
+            assert _luhn_ok(pan), pan
+
+    def test_luhn_rejects_a_number_that_merely_looks_like_one(self):
+        assert not _luhn_ok("1234567890123456")
+
+    def test_pan_is_scrubbed_from_a_string_in_every_grouping(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        for raw in (
+            "4111111111111111",
+            "4111 1111 1111 1111",
+            "4111-1111-1111-1111",
+        ):
+            scrubbed = _scrub_string_content(f"charging {raw} now")
+            assert raw not in scrubbed, raw
+            assert "ptok:" in scrubbed
+
+    def test_a_non_luhn_number_of_card_length_is_left_alone(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        # Masking every long digit run would cost real diagnostics, so the Luhn
+        # check decides.
+        assert "1234567890123456" in _scrub_string_content("order 1234567890123456")
+
+    def test_a_reference_with_letters_is_untouched(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        assert "deltabRKJ5X_0" in _scrub_string_content("ref deltabRKJ5X_0")
+
+    def test_the_real_mpgs_payload_is_masked_end_to_end(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        payload = {
+            "sourceOfFunds": {
+                "provided": {
+                    "card": {
+                        "number": "4111111111111111",
+                        "expiry": {"year": "27", "month": "01"},
+                        "securityCode": "123",
+                    }
+                }
+            },
+            "order": {"reference": "deltabRKJ5X_0", "amount": 20},
+        }
+        masked = _safe_dump_and_mask(payload)
+        assert "4111111111111111" not in str(masked)
+        assert "123" not in str(masked.get("sourceOfFunds", {}))
+        # The order reference is diagnostics and must survive.
+        assert "deltabRKJ5X_0" in str(masked)
