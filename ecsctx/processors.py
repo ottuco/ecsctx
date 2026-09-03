@@ -490,6 +490,11 @@ CARD_KEYS = frozenset({
 })
 
 
+def _key_is_card_container(key) -> bool:
+    """True if this key's whole subtree is cardholder data."""
+    return isinstance(key, str) and key.lower() in CARD_KEYS
+
+
 def _key_is_sensitive(key) -> bool:
     """True if a dict key suggests PII or cardholder data (and is not whitelisted)."""
     if not isinstance(key, str):
@@ -677,41 +682,59 @@ def _path_is_exempt(path: tuple, patterns: tuple) -> bool:
     return any(_path_matches(path, p) for p in patterns)
 
 
-def _mask_leaf(value: str, key, path: tuple, exempt: tuple) -> str:
-    """Mask a single string leaf that has a known dict key."""
+def _mask_leaf(value: str, key, path: tuple, exempt: tuple, in_card=False) -> str:
+    """Mask a single string leaf that has a known dict key.
+
+    `in_card` is set when an ancestor key was a card container. MPGS sends
+    expiry as {"year": "27", "month": "01"} — neither sub-key is a card key or
+    a PII keyword, so judging each leaf on its own name alone let the expiry
+    date through in clear even though `expiry` itself is sensitive (#159488).
+    """
     # Idempotency: already tokenized/redacted -> leave alone.
     if value.startswith(_TOKEN_PREFIXES):
         return value
-    if _key_is_sensitive(key) and not _path_is_exempt(path, exempt):
+    if (in_card or _key_is_sensitive(key)) and not _path_is_exempt(path, exempt):
         return safe_tokenize(value, "generic")
     # Non-sensitive or exempted key: still catch emails/phones in the value.
     return _scrub_string_content(value)
 
 
-def _mask_structure(node, path: tuple, exempt: tuple):
+def _mask_structure(node, path: tuple, exempt: tuple, in_card=False):
     """Recursively mask a JSON-normalized structure, tracking the path.
 
     - dict: recurse per key (path += (key,))
     - list: recurse per element (path += ("[*]",))
     - str leaf with a key: tokenize if sensitive and not exempt, else scrub
     - other scalars (int/float/bool/None): unchanged
+
+    `in_card` carries sensitivity DOWN from a card container, so every leaf
+    beneath `card` or `expiry` is masked whatever its own key is called. It is
+    the inverse of `_path_is_exempt`, which already matches a whole subtree by
+    prefix; without it a nested value only had to avoid being named like a card
+    field to escape.
     """
     if isinstance(node, dict):
         for k, v in node.items():
             child_path = path + (k,)
+            child_in_card = in_card or _key_is_card_container(k)
             if isinstance(v, str):
-                node[k] = _mask_leaf(v, k, child_path, exempt)
+                node[k] = _mask_leaf(v, k, child_path, exempt, child_in_card)
             else:
-                node[k] = _mask_structure(v, child_path, exempt)
+                node[k] = _mask_structure(v, child_path, exempt, child_in_card)
         return node
     if isinstance(node, list):
         arr_path = path + ("[*]",)
         for i, v in enumerate(node):
             if isinstance(v, str):
-                # Array elements have no key -> email/phone scrub only.
-                node[i] = _scrub_string_content(v)
+                # Array elements have no key. Inside a card container they are
+                # still card data, so mask rather than merely scrub.
+                node[i] = (
+                    safe_tokenize(v, "generic")
+                    if in_card and not v.startswith(_TOKEN_PREFIXES)
+                    else _scrub_string_content(v)
+                )
             else:
-                node[i] = _mask_structure(v, arr_path, exempt)
+                node[i] = _mask_structure(v, arr_path, exempt, in_card)
         return node
     return node
 

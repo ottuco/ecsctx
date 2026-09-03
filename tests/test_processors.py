@@ -1,5 +1,6 @@
 """Tests for PII masking and field reshaping in log processors."""
 
+from ecsctx import processors
 from ecsctx.pii import configure_pii, is_configured
 from ecsctx.processors import (
     CARD_KEYS,
@@ -575,11 +576,12 @@ class TestCardholderDataMasking:
         # and so a later fix is a deliberate one.
         assert _key_is_sensitive("cardholder_present")
 
-    def test_a_card_key_cannot_be_whitelisted(self):
-        # CARD_KEYS is checked before SAFE_NAME_KEYS on purpose.
-        assert CARD_KEYS & SAFE_NAME_KEYS == set() or all(
-            _key_is_sensitive(k) for k in CARD_KEYS & SAFE_NAME_KEYS
-        )
+    def test_a_card_key_cannot_be_whitelisted(self, monkeypatch):
+        # CARD_KEYS is checked before SAFE_NAME_KEYS on purpose. The sets do not
+        # overlap today, so asserting on the real ones passes whichever order
+        # the check runs in — the precedence has to be forced to be tested.
+        monkeypatch.setattr(processors, "SAFE_NAME_KEYS", frozenset({"number"}))
+        assert _key_is_sensitive("number")
 
     def test_luhn_accepts_real_card_numbers(self):
         for pan in ("4111111111111111", "5555555555554444", "378282246310005"):
@@ -624,7 +626,45 @@ class TestCardholderDataMasking:
             "order": {"reference": "deltabRKJ5X_0", "amount": 20},
         }
         masked = _safe_dump_and_mask(payload)
+        card = masked["sourceOfFunds"]["provided"]["card"]
         assert "4111111111111111" not in str(masked)
         assert "123" not in str(masked.get("sourceOfFunds", {}))
+        # expiry is a nested dict, and neither `year` nor `month` is a card key
+        # or a PII keyword — so judging each leaf on its own name let the
+        # expiration date through in clear. Sensitivity propagates from the
+        # container now, and this is the assertion that was missing.
+        assert card["expiry"] != {"year": "27", "month": "01"}
+        assert "27" not in str(card["expiry"])
+        assert "01" not in str(card["expiry"])
         # The order reference is diagnostics and must survive.
         assert "deltabRKJ5X_0" in str(masked)
+
+    def test_every_leaf_under_a_card_container_is_masked(self, token_keyset_path):
+        """Whatever the sub-key is called. A container named `card` or `expiry`
+        makes its whole subtree cardholder data, which is the inverse of how
+        _path_is_exempt already clears a subtree by prefix."""
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _safe_dump_and_mask(
+            {"card": {"anything_at_all": "sensitive", "nested": {"deep": "also"}}}
+        )
+        assert masked["card"]["anything_at_all"] != "sensitive"
+        assert masked["card"]["nested"]["deep"] != "also"
+
+    def test_strings_in_a_list_under_a_card_container_are_masked(
+        self, token_keyset_path
+    ):
+        """List elements have no key of their own, so they were only ever
+        email/phone-scrubbed. Inside a card container they are card data."""
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _safe_dump_and_mask({"card": {"tokens": ["4111111111111111", "x"]}})
+        assert "4111111111111111" not in str(masked)
+
+    def test_nothing_outside_a_card_container_is_newly_masked(self, token_keyset_path):
+        """The propagation must not widen masking generally — an `order` subtree
+        keeps its diagnostics."""
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _safe_dump_and_mask(
+            {"order": {"reference": "deltabRKJ5X_0", "nested": {"id": "abc123"}}}
+        )
+        assert masked["order"]["reference"] == "deltabRKJ5X_0"
+        assert masked["order"]["nested"]["id"] == "abc123"
