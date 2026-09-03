@@ -17,10 +17,13 @@ Resolution order is settings, then environment, then a default:
 
 Settings are read lazily and the result is cached. ecsctx must import cleanly
 without Django (it is an optional extra) and long before the app registry is
-ready, so nothing here runs at import time and every lookup is guarded — see
-the note in CLAUDE.md about why the Django injector avoids `settings` during
-bootstrap. Reading a setting is safe once something is actually logging; it is
-the *model* imports that are not.
+ready, so nothing here runs at import time and every lookup is guarded.
+
+CLAUDE.md used to say the Django injector "does not read django.conf.settings".
+The constraint behind that is an eager model or app-registry import at
+module-import time, not settings access as such — reading a setting is safe once
+something is actually logging. CLAUDE.md now says so, rather than stating a rule
+this module breaks.
 """
 
 import os
@@ -89,6 +92,13 @@ def get_project_name() -> str:
 
 
 def get_app_version() -> str:
+    """Deliberately warns when unset, like project_name and unlike service_type.
+
+    `service.version: "0.0.0"` means a log line cannot be tied to a release, so
+    it is a real loss rather than a harmless default — APP_VERSION is currently
+    unset in all three services, so expect this alongside the project_name
+    warning on a cold start until both are declared.
+    """
     return _resolve("app_version", UNRESOLVED_VERSION)
 
 

@@ -168,3 +168,29 @@ class TestProcessorsStillWork:
         monkeypatch.setenv("PROJECT_NAME", "ottu_pg")
         assert identity.get_project_name() == "ottu_pg"
         assert os.environ.get("PROJECT_NAME") == "ottu_pg"
+
+
+class TestWarningScope:
+    """Which fields warn is a decision, not an accident of sharing _resolve."""
+
+    def test_app_version_warns_because_a_release_cannot_be_identified(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            identity.get_app_version()
+        assert [w for w in caught if "app_version" in str(w.message)]
+
+    def test_exactly_two_fields_warn_on_a_cold_start(self, monkeypatch):
+        """project_name and app_version, not service_type. A worker detected
+        from argv is correctly identified; an unnamed project is not."""
+        monkeypatch.setattr(sys, "argv", ["manage.py", "runserver"])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            identity.get_project_name()
+            identity.get_app_version()
+            identity.get_service_type()
+        fields = {
+            f
+            for f in ("project_name", "app_version", "service_type")
+            if any(f in str(w.message) for w in caught)
+        }
+        assert fields == {"project_name", "app_version"}
