@@ -1451,6 +1451,8 @@ If you use a `common-logs` ingest pipeline, it can enforce ECS field types so ma
 | `SERVICE_TYPE` | Service type: `app`, `rq`, `celery`. Prefer `ECSCTX_SERVICE_TYPE` in Django settings. A declared value beats argv detection | Auto-detected from argv | No |
 | `PROJECT_NAME` | Project name in `project.name` + Vector data stream. Prefer `ECSCTX_PROJECT_NAME` in Django settings | `"unknown"` + one-time `RuntimeWarning` | **Yes** |
 | `ENVIRONMENT` | Environment name for Vector data stream namespace | - | **Yes** |
+| `ES_URL` | Elasticsearch endpoint | `https://your-elasticsearch-host/` | **Yes (production)** |
+| `ES_API_KEY` | Elasticsearch API key for Vector auth | - | **Yes (production)** |
 
 #### Service identity: settings first
 
@@ -1472,8 +1474,6 @@ log line cannot be tied to a release.
 
 Settings are read lazily at log time and cached, never at import, so ecsctx still imports
 cleanly without Django and before the app registry is ready.
-| `ES_URL` | Elasticsearch endpoint | `https://your-elasticsearch-host/` | **Yes (production)** |
-| `ES_API_KEY` | Elasticsearch API key for Vector auth | - | **Yes (production)** |
 
 ### .env Example
 
