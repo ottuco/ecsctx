@@ -56,9 +56,17 @@ def register_domain(prefix: str, specs) -> None:
             f"{prefix!r} is an ECS field-set name; an event under it would be "
             f"indistinguishable from the {prefix}.* fields in a query"
         )
+    seen: set[str] = set()
     for spec in specs:
         if spec.domain != prefix:
             raise ValueError(f"{spec.action!r} does not belong to domain {prefix!r}")
+        # A copy-pasted EventSpec would otherwise leave the last one winning in
+        # _by_action while _domains kept both, so resolve() and all_events()
+        # would silently disagree about which spec an action means. Rejecting a
+        # duplicate action is the same rule as rejecting a duplicate prefix.
+        if spec.action in seen:
+            raise ValueError(f"{spec.action!r} is declared twice in domain {prefix!r}")
+        seen.add(spec.action)
     with _lock:
         if _frozen:
             raise RegistryFrozenError(

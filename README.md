@@ -1764,7 +1764,10 @@ when `outcome="failure"` (defaulting to `error` for terminal events). Pass
 | any other structure | `extra.<name>` |
 
 An ECS namespace passed whole (`http={"response": {...}}`) still passes through
-at root and deep-merges with anything the table placed.
+at root and deep-merges with anything the table placed. The check reads the
+**live** allowlist, so a namespace your service claimed with
+`configure_root_fields(["wallet"])` or `ECSCTX_ROOT_FIELDS` passes through too —
+`wallet={...}` reaches root rather than `extra.wallet`.
 
 ### Migrating existing names
 

@@ -5,6 +5,8 @@ several names and none of them aggregated. This table makes it one decision,
 made once.
 
 Every path here resolves under a key already in `processors.ROOT_ALLOWLIST`.
+Root namespaces a caller passes whole are checked against the *live* allowlist,
+so a service's own `configure_root_fields()` namespaces pass through too.
 That is the property `test_events_fields.py` asserts: a path outside it would be
 swept into `extra` by `namespace_ecs_fields`, so routing would look correct at
 the call site and be wrong in Elasticsearch.
@@ -12,7 +14,7 @@ the call site and be wrong in Elasticsearch.
 
 from typing import Any
 
-from ecsctx.processors import ROOT_ALLOWLIST
+from ecsctx.processors import _get_root_allowlist
 
 # kwarg name -> dotted ECS path.
 FIELD_PATHS: dict[str, str] = {
@@ -47,21 +49,31 @@ FIELD_PATHS: dict[str, str] = {
 
 _SCALARS = (str, int, float, bool, type(None))
 
-# Root keys a caller may pass whole, e.g. `http={"response": {...}}`. These are
-# already ECS namespaces that survive `namespace_ecs_fields` untouched, and 44
-# existing call sites pass them this way — routing them into `extra` would be a
-# regression dressed up as normalization.
-#
-# `event` and `ecs_event` are excluded because `emit()` owns them: a caller who
-# sets them directly would be racing the spec for the same key.
-PASSTHROUGH = frozenset(ROOT_ALLOWLIST) - {
-    "event",
-    "ecs_event",
-    "level",
-    "message",
-    "timestamp",
-    "extra",
-}
+# Keys `emit()` owns or that structlog sets. A caller passing these would be
+# racing the spec for the same key, so they never pass through.
+NOT_PASSTHROUGH = frozenset(
+    {
+        "event",
+        "ecs_event",
+        "level",
+        "message",
+        "timestamp",
+        "extra",
+    }
+)
+
+
+def _passthrough_keys() -> frozenset:
+    """Root keys a caller may pass whole, e.g. `http={"response": {...}}`.
+
+    Read at call time, not snapshotted at import: a service adds its own root
+    namespace with `configure_root_fields(["wallet"])` or `ECSCTX_ROOT_FIELDS`,
+    and `reshape_log_event` honours those dynamically. A frozen copy here would
+    send `wallet={...}` to `extra.wallet` while the rest of the chain treated
+    `wallet` as root — the same silent mismatch this module fixes for `http=`,
+    and it would land on the first non-payment domain to adopt the package.
+    """
+    return _get_root_allowlist() - NOT_PASSTHROUGH
 
 
 def _merge(document: dict[str, Any], path: str, value: Any) -> None:
@@ -99,11 +111,12 @@ def route(fields: dict[str, Any]) -> dict[str, Any]:
     """
     document: dict[str, Any] = {}
     passthrough: dict[str, Any] = {}
+    passthrough_keys = _passthrough_keys()
     for name, value in fields.items():
         path = FIELD_PATHS.get(name)
         if path is not None:
             _merge(document, path, value)
-        elif name in PASSTHROUGH:
+        elif name in passthrough_keys:
             passthrough[name] = value
         elif isinstance(value, _SCALARS):
             document.setdefault("labels", {})[name] = value

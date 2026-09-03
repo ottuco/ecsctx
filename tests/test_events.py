@@ -21,7 +21,11 @@ from ecsctx.events import (
     route,
 )
 from ecsctx.events import fields as field_table
-from ecsctx.processors import ROOT_ALLOWLIST
+from ecsctx.processors import (
+    ROOT_ALLOWLIST,
+    _reset_root_fields,
+    configure_root_fields,
+)
 
 REQUEST_SENT = EventSpec(
     action="pg.request_sent",
@@ -174,6 +178,15 @@ class TestRegistry:
         with pytest.raises(ValueError, match="lowercase identifier"):
             register_domain(prefix, [])
 
+    def test_the_same_action_cannot_be_declared_twice_in_one_domain(self):
+        # A copy-pasted EventSpec used to leave the last one winning in the
+        # action index while the domain kept both, so resolve() and all_events()
+        # silently disagreed about what the action meant.
+        other = EventSpec(action="pg.request_sent", level="warning")
+        with pytest.raises(ValueError, match="declared twice"):
+            register_domain("pg", [REQUEST_SENT, other])
+        assert registry.domains() == ()
+
     def test_an_event_must_live_under_the_prefix_it_registers_with(self):
         with pytest.raises(ValueError, match="does not belong"):
             register_domain("wallet", [REQUEST_SENT])
@@ -237,6 +250,25 @@ class TestRouting:
         # would be a regression dressed up as normalization.
         assert route({"http": {"response": {"status_code": 500}}}) == {
             "http": {"response": {"status_code": 500}}
+        }
+
+    def test_a_service_configured_root_namespace_also_passes_through(self):
+        # configure_root_fields() is how Wallet, AutoPay et al. claim their own
+        # root namespace, and reshape_log_event honours it dynamically. Reading
+        # a frozen copy of the allowlist here would send wallet={...} to
+        # extra.wallet while the rest of the chain treated wallet as root.
+        try:
+            configure_root_fields(extra_fields=["wallet"])
+            assert route({"wallet": {"balance": 100}}) == {"wallet": {"balance": 100}}
+        finally:
+            _reset_root_fields()
+
+    def test_an_unconfigured_namespace_still_goes_to_extra(self):
+        # The passthrough follows the allowlist rather than waving through any
+        # dict, so this must stay in extra once the configuration is gone.
+        _reset_root_fields()
+        assert route({"wallet": {"balance": 100}}) == {
+            "extra": {"wallet": {"balance": 100}}
         }
 
     def test_an_explicit_namespace_merges_with_the_table_rather_than_replacing(self):
