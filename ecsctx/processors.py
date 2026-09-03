@@ -491,7 +491,15 @@ CARD_KEYS = frozenset({
 
 
 def _key_is_card_container(key) -> bool:
-    """True if this key's whole subtree is cardholder data."""
+    """True if this key's whole subtree is cardholder data.
+
+    Note this widens the blunt-`number` trade-off by one level: a key literally
+    named `number` holding a dict (a hypothetical `tracking.number` with
+    `{"formatted": ..., "raw": ...}`) now has that subtree masked, where before
+    only a same-named string leaf was. An unusual shape, and the alternative is
+    letting `card.expiry.{year,month}` through, which is the case this exists
+    for. Path exemptions remain the escape hatch for a service that hits it.
+    """
     return isinstance(key, str) and key.lower() in CARD_KEYS
 
 
