@@ -1670,6 +1670,7 @@ ecsctx/
 │   ├── spec.py                # EventSpec — what an event declares
 │   ├── registry.py            # Domain prefixes, aliases, freeze()
 │   ├── fields.py              # kwarg -> ECS path table
+│   ├── validator.py           # event_contract processor (strict / repair)
 │   └── emit.py                # emit() — build, route, choose level, log
 └── contrib/
     ├── django/
@@ -1768,6 +1769,54 @@ at root and deep-merges with anything the table placed. The check reads the
 **live** allowlist, so a namespace your service claimed with
 `configure_root_fields(["wallet"])` or `ECSCTX_ROOT_FIELDS` passes through too —
 `wallet={...}` reaches root rather than `extra.wallet`.
+
+### The log contract (`event_contract` processor)
+
+The most damaging mistake in this whole area is invisible at the call site:
+
+```python
+logger.info("Payment started", ecs_event="payment.started")   # WRONG
+```
+
+A **string** `ecs_event` is routed by `namespace_ecs_fields` to `event.original`
+— ECS's field for the *raw unparsed message* — so `event.action` is simply
+absent and the line vanishes from every dashboard that filters on it. Six of the
+most important events in one production service are in that state today.
+
+`event_contract` is a structlog processor that catches it. It is already wired
+into `get_logging_config()`, immediately **before** `namespace_ecs_fields` —
+ordering is the point, since running after it would leave nothing to repair.
+
+It checks five things:
+
+| code | what it caught |
+|---|---|
+| `string_action` | `ecs_event` passed as a string; coerced to `{"action": ...}` |
+| `unknown_action` | the action is not in the registry (only once `freeze()` has been called) |
+| `missing_outcome` | a terminal event with no `event.outcome`; set to `"unknown"` |
+| `failure_below_warning` | `outcome="failure"` logged at debug or info |
+| `unbounded_label` | a `labels.*` value that is not a scalar; stringified |
+
+**Modes.** `repair` (the default) fixes what it can, stamps
+`labels.log_contract` with the comma-joined codes, and never drops the line.
+`strict` raises `EventContractError` instead — use it in dev and test settings,
+so a broken call is caught at the desk:
+
+```python
+# settings/dev.py
+ECSCTX_EVENT_CONTRACT = "strict"
+```
+
+Resolution is Django setting, then `ECSCTX_EVENT_CONTRACT`, then `repair`.
+`repair` is the default deliberately: a logging library that takes a service down
+over a malformed log line has chosen the wrong failure.
+
+`unknown_action` stays silent until `freeze()` is called, and silent entirely if
+nothing is registered — a service that does not use the registry must not have
+every line stamped as a violation.
+
+`labels.log_contract` is a keyword field, which is why the codes are a bounded
+set joined into one string rather than a list.
 
 ### Migrating existing names
 
