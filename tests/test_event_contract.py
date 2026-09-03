@@ -201,6 +201,33 @@ class TestMultipleViolations:
         assert isinstance(out["labels"]["log_contract"], str)
 
 
+class TestTheDoublePassOnStdlibRecords:
+    """A stdlib record runs the processor twice — once in `foreign_pre_chain`,
+    once in the shared `processors` list. That is a property of
+    ProcessorFormatter, not of this processor, but it must not cost the record
+    the violations found on the first pass."""
+
+    def test_the_stamp_survives_the_second_pass_intact(self):
+        record = {
+            "event": "Payment started",
+            "ecs_event": "payment.started",
+            "labels": {"ids": [1, 2]},
+        }
+        record = contract(record)
+        expected = f"{STRING_ACTION},{UNBOUNDED_LABEL}"
+        assert record["labels"]["log_contract"] == expected
+
+        record = namespace_ecs_fields(None, "info", record)
+        assert "ecs_event" not in record
+
+        # Nothing left to find: the ecs_event-derived codes cannot re-fire
+        # because the key is gone, and the labels are scalars now. The
+        # processor only ever writes the stamp when it finds violations, so
+        # finding none leaves the first pass's verdict standing.
+        record = contract(record)
+        assert record["labels"]["log_contract"] == expected
+
+
 class TestChainWiring:
     def test_it_runs_before_namespace_ecs_fields_in_both_chains(self):
         # Ordering is the whole point: namespace_ecs_fields is what turns a

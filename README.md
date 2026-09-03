@@ -1789,13 +1789,13 @@ ordering is the point, since running after it would leave nothing to repair.
 
 It checks five things:
 
-| code | what it caught |
-|---|---|
-| `string_action` | `ecs_event` passed as a string; coerced to `{"action": ...}` |
-| `unknown_action` | the action is not in the registry (only once `freeze()` has been called) |
-| `missing_outcome` | a terminal event with no `event.outcome`; set to `"unknown"` |
-| `failure_below_warning` | `outcome="failure"` logged at debug or info |
-| `unbounded_label` | a `labels.*` value that is not a scalar; stringified |
+| code | what it caught | repaired? |
+|---|---|---|
+| `string_action` | `ecs_event` passed as a string | coerced to `{"action": ...}` |
+| `unknown_action` | the action is not in the registry (only once `freeze()` has been called) | no — the name is the call site's to fix |
+| `missing_outcome` | a terminal event with no `event.outcome` | set to `"unknown"` |
+| `failure_below_warning` | `outcome="failure"` logged at debug or info | **no** — the level was decided before the chain ran, and a processor cannot re-route an emitted record |
+| `unbounded_label` | a `labels.*` value that is not a scalar | stringified |
 
 **Modes.** `repair` (the default) fixes what it can, stamps
 `labels.log_contract` with the comma-joined codes, and never drops the line.
