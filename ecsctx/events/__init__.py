@@ -34,6 +34,7 @@ from ecsctx.events.registry import (
     resolve,
 )
 from ecsctx.events.spec import ECS_OUTCOMES, EventSpec
+from ecsctx.events.timing import Call, Timer, emit_pair, timed
 from ecsctx.events.validator import (
     MODE_REPAIR,
     MODE_STRICT,
@@ -50,14 +51,17 @@ __all__ = [
     "MODE_REPAIR",
     "MODE_STRICT",
     "RESERVED_PREFIXES",
+    "Call",
     "EventContractError",
     "EventSpec",
     "RegistryFrozenError",
+    "Timer",
     "UnknownEventError",
     "all_events",
     "configure_event_contract",
     "domains",
     "emit",
+    "emit_pair",
     "event_contract",
     "freeze",
     "get_mode",
@@ -67,4 +71,5 @@ __all__ = [
     "reset_event_contract",
     "resolve",
     "route",
+    "timed",
 ]

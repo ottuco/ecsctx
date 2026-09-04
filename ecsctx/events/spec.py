@@ -71,7 +71,7 @@ class EventSpec:
         takes the message as a positional arg *named* `event`, so `event={...}`
         raises `TypeError: got multiple values for argument 'event'` at call
         time. The parameter is `_ns` because ECS `event.duration` is nanoseconds,
-        and a millisecond value misreports by three orders of magnitude while
+        and a millisecond value misreports by six orders of magnitude while
         looking entirely plausible.
         """
         if self.terminal and outcome is None:

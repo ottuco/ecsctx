@@ -1671,6 +1671,7 @@ ecsctx/
 │   ├── registry.py            # Domain prefixes, aliases, freeze()
 │   ├── fields.py              # kwarg -> ECS path table
 │   ├── validator.py           # event_contract processor (strict / repair)
+│   ├── timing.py              # timed(), emit_pair() — event.duration in ns
 │   └── emit.py                # emit() — build, route, choose level, log
 └── contrib/
     ├── django/
@@ -1769,6 +1770,51 @@ at root and deep-merges with anything the table placed. The check reads the
 **live** allowlist, so a namespace your service claimed with
 `configure_root_fields(["wallet"])` or `ECSCTX_ROOT_FIELDS` passes through too —
 `wallet={...}` reaches root rather than `extra.wallet`.
+
+### Timing: `event.duration` is nanoseconds
+
+`event.duration` is on **0.0%** of application logs in one production index —
+every document carrying it is nginx's — because there was no timer to reach for.
+
+```python
+from ecsctx.events import timed
+
+with timed() as t:
+    response = call_gateway()
+
+emit(logger, PG_RESPONSE_RECEIVED, "Gateway replied in %.1f ms", t.ms,
+     outcome="success", duration_ns=t.ns)
+```
+
+`.ns` and `.ms` are separate, explicitly named properties, and the emit
+parameter is `duration_ns`, because **the unit is the thing most likely to go
+wrong here**: a millisecond value is accepted, indexes cleanly, and misreports
+by six orders of magnitude while looking entirely plausible. There is no
+unit-less `duration` anywhere in this package to pass by accident.
+
+The timer stops whether the block completed or raised, so a failure path still
+reports how long it took to fail — usually the more interesting number.
+
+### Request/reply pairs
+
+`emit_pair` emits both halves and puts the duration on the reply:
+
+```python
+with emit_pair(logger, PG_REQUEST_SENT, PG_RESPONSE_RECEIVED,
+               "Gateway call", pg_code="mpgs") as call:
+    response = call_gateway()
+    call.set(status_code=response.status)
+```
+
+The outcome is inferred — `success` if the block completed, `failure` if it
+raised (which also attaches `exc_info`, so the traceback reaches `error.*`
+rather than the reply saying only that it failed quickly). Set `call.outcome`
+or `call.reason` inside the block to override.
+
+One message serves both lines: `event.action` is what distinguishes them
+(`pg.request_sent` from `pg.response_received`), and making the action
+authoritative rather than the prose is the point of the vocabulary. For two
+genuinely different messages, use `timed()` with two `emit()` calls.
 
 ### The log contract (`event_contract` processor)
 

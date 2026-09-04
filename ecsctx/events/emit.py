@@ -18,6 +18,13 @@ class UnknownEventError(LookupError):
     """A name that is neither a registered event nor a known retired one."""
 
 
+# Logging-control kwargs, which belong to the logger rather than to the
+# document. Without this they are routed like any other unknown scalar, so
+# `exc_info=True` becomes `labels.exc_info: true` — a useless boolean label,
+# and the traceback never reaches `error.*` at all.
+LOGGER_KWARGS = frozenset({"exc_info", "stack_info", "stacklevel"})
+
+
 def emit(
     logger,
     event,
@@ -49,8 +56,9 @@ def emit(
         raise TypeError(f"expected an EventSpec, got {type(spec).__name__}")
 
     chosen = level or (spec.level_on_failure if outcome == "failure" else spec.level)
+    control = {k: fields.pop(k) for k in tuple(fields) if k in LOGGER_KWARGS}
     payload = field_table.route(fields)
     payload["ecs_event"] = spec.ecs(
         outcome=outcome, reason=reason, duration_ns=duration_ns
     )
-    return getattr(logger, chosen)(message, *args, **payload)
+    return getattr(logger, chosen)(message, *args, **payload, **control)
