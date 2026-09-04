@@ -61,7 +61,7 @@ dict key without `.action`.
 to build without an outcome, outcome is checked against the ECS closed set,
 a declared `reasons` tuple bounds `event.reason`, and `duration_ns` rejects
 negatives. `duration_ns` is nanoseconds because ECS `event.duration` is, and a
-millisecond value misreports by three orders of magnitude while looking fine.
+millisecond value misreports by six orders of magnitude while looking fine.
 
 ### `registry.py` — who owns which prefix
 
