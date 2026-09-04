@@ -153,6 +153,13 @@ def api_logging(view_cls):
                 raise
             finally:
                 # This block runs regardless of whether the view succeeded or crashed
+                # Deliberately from `exc` only, not from the DRF-handled
+                # exception. A throttled or invalid request is the system
+                # working as designed, not an error condition — populating
+                # error.type for it would make every "count the errors"
+                # dashboard include successful rate limiting. The bounded
+                # event.reason already says which refusal it was, from a
+                # vocabulary we control, which error.type is not.
                 exception_type = exc.__class__.__name__ if exc else None
                 status_code = _resolve_status_code(response, exc)
                 self._log_outbound(
