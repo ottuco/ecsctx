@@ -186,6 +186,93 @@ class TestEmitPair:
         assert [c[2] for c in log.calls] == [("mpgs",), ("mpgs",)]
 
 
+class TestReservedFields:
+    """emit_pair passes outcome/reason/duration_ns/exc_info to the closing
+    event itself, so a field of the same name used to arrive twice and raise
+    TypeError from inside the except handler.
+
+    Every assertion here matches on "cannot be passed as" rather than on the
+    field name alone. The *bug*'s message — "got multiple values for keyword
+    argument 'outcome'" — also contains the field name, so matching that would
+    pass against the unfixed code and pin nothing.
+    """
+
+    GUARD = "cannot be passed as"
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("outcome", "success"),
+            ("reason", "declined"),
+            ("duration_ns", 1),
+            ("level", "warning"),
+        ],
+    )
+    def test_an_opening_field_that_clashes_is_rejected_before_anything_is_logged(
+        self, field, value
+    ):
+        # Rejected at the call, not at block exit: without the guard the
+        # opening event is emitted first and the collision surfaces on the way
+        # out, so a half-logged pair reaches the index.
+        log = Recorder()
+        with (
+            pytest.raises(TypeError, match=self.GUARD),
+            emit_pair(log, SENT, GOT, "msg", **{field: value}),
+        ):
+            pass
+        assert log.calls == []
+
+    @pytest.mark.parametrize("field", ["outcome", "reason", "duration_ns", "exc_info"])
+    def test_call_set_rejects_the_same_names(self, field):
+        # Easy to reach for by mistake: Call exposes .reason as an attribute,
+        # so call.set(reason=...) reads like it should work.
+        log = Recorder()
+        with (
+            pytest.raises(TypeError, match=self.GUARD),
+            emit_pair(log, SENT, GOT, "msg") as call,
+        ):
+            call.set(**{field: "x"})
+
+    def test_the_error_names_the_mechanism_that_does_work(self):
+        log = Recorder()
+        with (
+            pytest.raises(TypeError, match=r"call\.outcome"),
+            emit_pair(log, SENT, GOT, "msg") as call,
+        ):
+            call.set(outcome="failure")
+
+    def test_a_real_failure_is_not_masked_by_a_kwargs_error(self):
+        # The serious form. Without the guard, call.set(reason=...) collided
+        # inside the except handler, so a gateway timeout reached the caller as
+        # a TypeError about keyword arguments and the real exception was
+        # demoted to __context__.
+        log = Recorder()
+        with (
+            pytest.raises(TypeError, match=self.GUARD),
+            emit_pair(log, SENT, GOT, "msg") as call,
+        ):
+            call.set(reason="timeout")
+            raise RuntimeError("THE REAL FAILURE")
+
+    def test_the_attribute_override_still_reaches_the_closing_event(self):
+        log = Recorder()
+        with (
+            pytest.raises(RuntimeError, match="THE REAL FAILURE"),
+            emit_pair(log, SENT, GOT, "msg") as call,
+        ):
+            call.outcome = "failure"
+            call.reason = "timeout"
+            raise RuntimeError("THE REAL FAILURE")
+        assert ecs(log.calls[1])["outcome"] == "failure"
+        assert ecs(log.calls[1])["reason"] == "timeout"
+
+    def test_ordinary_fields_are_unaffected(self):
+        log = Recorder()
+        with emit_pair(log, SENT, GOT, "msg", pg_code="mpgs") as call:
+            call.set(status_code=200)
+        assert log.calls[1][3]["http"] == {"response": {"status_code": 200}}
+
+
 class TestControlKwargs:
     def test_exc_info_reaches_the_logger_rather_than_becoming_a_label(self):
         # It used to route like any other unknown scalar, so exc_info=True

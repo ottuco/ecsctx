@@ -67,6 +67,34 @@ def timed():
         timer._stop()
 
 
+# `emit_pair` passes these to the closing `emit()` itself. A field of the same
+# name would arrive twice and raise TypeError from inside the except handler —
+# which on the failure path demotes the real exception to __context__ and
+# propagates a kwargs error instead, at exactly the moment the feature exists
+# to help. `reason` is the easy one to hit, because Call exposes `.reason` as
+# an attribute, so `call.set(reason=...)` is a natural thing to reach for.
+RESERVED_FIELDS = frozenset(
+    {
+        "outcome",
+        "reason",
+        "duration_ns",
+        "exc_info",
+        "level",
+    }
+)
+
+
+def _reject_reserved(fields, where: str) -> None:
+    clashing = sorted(RESERVED_FIELDS & set(fields))
+    if not clashing:
+        return
+    raise TypeError(
+        f"{', '.join(clashing)} cannot be passed as {where}: emit_pair sets "
+        f"them on the closing event itself. Use call.outcome = ... and "
+        f"call.reason = ... inside the block instead."
+    )
+
+
 class Call:
     """The in-flight half of an `emit_pair` block."""
 
@@ -87,7 +115,12 @@ class Call:
         return self.timer.ms
 
     def set(self, **fields: Any) -> None:
-        """Add fields to the closing event — a status code, a byte count."""
+        """Add fields to the closing event — a status code, a byte count.
+
+        Not the outcome or the reason: those are attributes (`call.outcome`),
+        because emit_pair passes them to the closing event itself.
+        """
+        _reject_reserved(fields, "a call.set() field")
         self.fields.update(fields)
 
 
@@ -110,6 +143,7 @@ def emit_pair(logger, start, end, message: str, *args: Any, **fields: Any):
     `exc_info`, so the traceback reaches `error.*` instead of being lost to a
     duration that says only that it failed quickly.
     """
+    _reject_reserved(fields, "an emit_pair field")
     timer = Timer()
     call = Call(timer, dict(fields))
     emit(logger, start, message, *args, **fields)
