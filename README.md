@@ -1816,6 +1816,24 @@ One message serves both lines: `event.action` is what distinguishes them
 authoritative rather than the prose is the point of the vocabulary. For two
 genuinely different messages, use `timed()` with two `emit()` calls.
 
+### The one vocabulary this package does ship
+
+`api_logging` is a decorator *in this package* that emits two log lines, and a
+log line that will not name itself is the defect this whole area exists to
+remove — a service cannot declare an action for a call site it does not own. So
+`ecsctx.events.http` defines three specs and the decorator uses them:
+
+| action | when |
+|---|---|
+| `api.request_received` | a request arrives |
+| `api.response_sent` | the view answered; carries `event.outcome`, `event.duration` and `http.response.status_code` |
+| `api.request_rejected` | refused at the boundary — `reason` is `throttled` or `validation_failed` |
+
+They are generic to any DRF service, not Ottu vocabulary. The `api` domain is
+**not** claimed on import — that would take the prefix from a service that wants
+it, and the decorator needs no registry. Call `register_http_events()` from your
+AppConfig if you run the contract validator in strict mode.
+
 ### The log contract (`event_contract` processor)
 
 The most damaging mistake in this whole area is invisible at the call site:
