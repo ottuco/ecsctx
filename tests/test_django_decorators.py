@@ -202,6 +202,30 @@ class TestRejections:
         assert _closing(mock_logger)["duration"] > 0
 
 
+class TestErrorTypeOnRejections:
+    def test_a_refusal_is_not_an_error_condition(self):
+        """A throttled request is the system working as designed. Setting
+        error.type for it would put successful rate limiting into every
+        "count the errors" dashboard."""
+        request = APIRequestFactory().get("/ping/")
+        with patch("ecsctx.contrib.django.decorators.logger") as mock_logger:
+            _ThrottledView.as_view()(request)
+        closing = [k for _n, _a, k in mock_logger.method_calls if "ecs_event" in k][-1]
+        assert "error" not in closing
+        # The bounded reason carries the same fact, from a vocabulary we own.
+        assert closing["ecs_event"]["reason"] == "throttled"
+
+    def test_a_genuine_crash_still_reports_error_type(self):
+        request = APIRequestFactory().get("/ping/")
+        with patch("ecsctx.contrib.django.decorators.logger") as mock_logger:
+            try:
+                _BrokenView.as_view()(request)
+            except RuntimeError:
+                pass
+        closing = [k for _n, _a, k in mock_logger.method_calls if "ecs_event" in k][-1]
+        assert closing["error"] == {"type": "RuntimeError"}
+
+
 class TestRegistration:
     def test_the_api_domain_is_not_claimed_on_import(self):
         # Auto-claiming `api` would take the prefix from a service that wants
