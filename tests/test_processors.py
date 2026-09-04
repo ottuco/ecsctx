@@ -1,19 +1,25 @@
 """Tests for PII masking and field reshaping in log processors."""
 
+import pytest
+
+from ecsctx import processors
 from ecsctx.pii import configure_pii, is_configured
 from ecsctx.processors import (
-    callsite_ecs_fields,
-    error_ecs_fields,
     _compile_path,
+    _key_is_sensitive,
+    _luhn_ok,
     _path_is_exempt,
     _safe_dump_and_mask,
-    safe_tokenize,
+    _scrub_string_content,
+    callsite_ecs_fields,
     configure_masking,
     configure_root_fields,
+    error_ecs_fields,
     masking_is_configured,
-    root_fields_are_configured,
     namespace_ecs_fields,
     reshape_log_event,
+    root_fields_are_configured,
+    safe_tokenize,
 )
 
 
@@ -521,3 +527,201 @@ class TestStandalonePipelineSafety:
         assert event["error"]["stack_trace"].startswith("Traceback")
         assert "exc_info" not in event
         assert "exc_info" not in event.get("extra", {})
+
+
+class TestCardholderDataMasking:
+    """ecsctx claimed to handle credit cards in a docstring and did not: there
+    was no card pattern, no Luhn check, and no card key in SENSITIVE_KEYWORDS.
+    A logged PSP request carried the PAN in clear (#159488).
+    """
+
+    def test_the_keys_psp_clients_actually_use_are_sensitive(self):
+        # MPGS sends sourceOfFunds.provided.card.{number,expiry,securityCode};
+        # CyberSource sends {number,expirationMonth,expirationYear,securityCode}.
+        # None of these matched any keyword before.
+        for key in (
+            "number",
+            "card",
+            "expiry",
+            "securityCode",
+            "expirationMonth",
+            "expirationYear",
+            "cvv",
+            "pan",
+            "iban",
+        ):
+            assert _key_is_sensitive(key), key
+
+    def test_case_does_not_matter(self):
+        assert _key_is_sensitive("SecurityCode")
+        assert _key_is_sensitive("CARD")
+
+    def test_diagnostics_that_merely_contain_a_card_word_are_kept(self):
+        # Exact match, not substring: `number` as a substring would swallow
+        # reference_number, which is one of ecsctx's own context fields.
+        for key in (
+            "reference_number",
+            "order_number",
+            "card_scheme",
+            "gateway_name",
+            "session_id",
+            "merchant_id",
+        ):
+            assert not _key_is_sensitive(key), key
+
+    def test_cardholder_substring_masking_is_unchanged(self):
+        # Pre-existing behaviour, not from CARD_KEYS: `cardholder` is a
+        # SENSITIVE_KEYWORDS substring, so cardholder_present (a card-present
+        # flag, not PII) is masked. Asserted so this change is not blamed for it
+        # and so a later fix is a deliberate one.
+        assert _key_is_sensitive("cardholder_present")
+
+    def test_a_card_key_cannot_be_whitelisted(self, monkeypatch):
+        # CARD_KEYS is checked before SAFE_NAME_KEYS on purpose. The sets do not
+        # overlap today, so asserting on the real ones passes whichever order
+        # the check runs in — the precedence has to be forced to be tested.
+        monkeypatch.setattr(processors, "SAFE_NAME_KEYS", frozenset({"number"}))
+        assert _key_is_sensitive("number")
+
+    def test_a_saved_card_token_is_masked(self, token_keyset_path):
+        """Not cardholder data, but the credential that charges a stored card:
+        anyone who can read it from the index can replay a payment.
+
+        Found by instrumenting Connect's submit-token endpoint, which ships
+        `{"token": ..., "cvv": ...}` into http.request.body via api_logging
+        (#159500). The cvv half was already covered; this is the other half.
+        """
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _safe_dump_and_mask({"token": "tok_live_9f3a2b", "cvv": "123"})
+        assert "tok_live_9f3a2b" not in str(masked)
+        assert "123" not in str(masked)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "token",
+            "cardtoken",
+            "card_token",
+            "cardToken",
+            "paymenttoken",
+            "payment_token",
+            "sourcetoken",
+            "source_token",
+        ],
+    )
+    def test_every_token_spelling_a_psp_uses_is_masked(self, key, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _safe_dump_and_mask({key: "tok_live_9f3a"})
+        assert "tok_live_9f3a" not in str(masked)
+
+    def test_a_path_exemption_reaches_list_elements_too(self, token_keyset_path):
+        """`_key_is_card_container` promises path exemptions as the escape hatch
+        for a service that hits a false positive. That promise held for dict
+        leaves and silently failed for list elements: the list branch decided on
+        `in_card` alone and never consulted the exempt patterns.
+
+        A guarantee that works for one shape and not the other is worse than no
+        guarantee, because a service configures it once and never re-checks.
+        """
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        configure_masking(exempt_paths=["card.tokens"])
+        try:
+            masked = _safe_dump_and_mask({"card": {"tokens": ["diagnostic-value"]}})
+            assert masked["card"]["tokens"] == ["diagnostic-value"]
+        finally:
+            configure_masking(exempt_paths=[])
+
+    def test_an_unexempted_list_under_a_card_container_is_still_masked(
+        self, token_keyset_path
+    ):
+        # The control: the exemption is what spares it, not the list shape.
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        configure_masking(exempt_paths=[])
+        masked = _safe_dump_and_mask({"card": {"tokens": ["diagnostic-value"]}})
+        assert masked["card"]["tokens"] != ["diagnostic-value"]
+
+    def test_luhn_accepts_real_card_numbers(self):
+        for pan in ("4111111111111111", "5555555555554444", "378282246310005"):
+            assert _luhn_ok(pan), pan
+
+    def test_luhn_rejects_a_number_that_merely_looks_like_one(self):
+        assert not _luhn_ok("1234567890123456")
+
+    def test_pan_is_scrubbed_from_a_string_in_every_grouping(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        for raw in (
+            "4111111111111111",
+            "4111 1111 1111 1111",
+            "4111-1111-1111-1111",
+        ):
+            scrubbed = _scrub_string_content(f"charging {raw} now")
+            assert raw not in scrubbed, raw
+            assert "ptok:" in scrubbed
+
+    def test_a_non_luhn_number_of_card_length_is_left_alone(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        # Masking every long digit run would cost real diagnostics, so the Luhn
+        # check decides.
+        assert "1234567890123456" in _scrub_string_content("order 1234567890123456")
+
+    def test_a_reference_with_letters_is_untouched(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        assert "deltabRKJ5X_0" in _scrub_string_content("ref deltabRKJ5X_0")
+
+    def test_the_real_mpgs_payload_is_masked_end_to_end(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        payload = {
+            "sourceOfFunds": {
+                "provided": {
+                    "card": {
+                        "number": "4111111111111111",
+                        "expiry": {"year": "27", "month": "01"},
+                        "securityCode": "123",
+                    }
+                }
+            },
+            "order": {"reference": "deltabRKJ5X_0", "amount": 20},
+        }
+        masked = _safe_dump_and_mask(payload)
+        card = masked["sourceOfFunds"]["provided"]["card"]
+        assert "4111111111111111" not in str(masked)
+        assert "123" not in str(masked.get("sourceOfFunds", {}))
+        # expiry is a nested dict, and neither `year` nor `month` is a card key
+        # or a PII keyword — so judging each leaf on its own name let the
+        # expiration date through in clear. Sensitivity propagates from the
+        # container now, and this is the assertion that was missing.
+        assert card["expiry"] != {"year": "27", "month": "01"}
+        assert "27" not in str(card["expiry"])
+        assert "01" not in str(card["expiry"])
+        # The order reference is diagnostics and must survive.
+        assert "deltabRKJ5X_0" in str(masked)
+
+    def test_every_leaf_under_a_card_container_is_masked(self, token_keyset_path):
+        """Whatever the sub-key is called. A container named `card` or `expiry`
+        makes its whole subtree cardholder data, which is the inverse of how
+        _path_is_exempt already clears a subtree by prefix."""
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _safe_dump_and_mask(
+            {"card": {"anything_at_all": "sensitive", "nested": {"deep": "also"}}}
+        )
+        assert masked["card"]["anything_at_all"] != "sensitive"
+        assert masked["card"]["nested"]["deep"] != "also"
+
+    def test_strings_in_a_list_under_a_card_container_are_masked(
+        self, token_keyset_path
+    ):
+        """List elements have no key of their own, so they were only ever
+        email/phone-scrubbed. Inside a card container they are card data."""
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _safe_dump_and_mask({"card": {"tokens": ["4111111111111111", "x"]}})
+        assert "4111111111111111" not in str(masked)
+
+    def test_nothing_outside_a_card_container_is_newly_masked(self, token_keyset_path):
+        """The propagation must not widen masking generally — an `order` subtree
+        keeps its diagnostics."""
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _safe_dump_and_mask(
+            {"order": {"reference": "deltabRKJ5X_0", "nested": {"id": "abc123"}}}
+        )
+        assert masked["order"]["reference"] == "deltabRKJ5X_0"
+        assert masked["order"]["nested"]["id"] == "abc123"

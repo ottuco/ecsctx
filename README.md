@@ -30,6 +30,7 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
 20. [API Reference](#20-api-reference)
 21. [Log Output Example](#21-log-output-example)
 22. [Package Structure](#22-package-structure)
+23. [Declared Events (`ecsctx.events`)](#23-declared-events-ecsctxevents)
 
 ---
 
@@ -1446,13 +1447,34 @@ If you use a `common-logs` ingest pipeline, it can enforce ECS field types so ma
 | `PII_VAULT_CACERT_PATH` | CA cert for Vault TLS (vault provider) | System CA | No |
 | `PII_REFRESH_SECONDS` | Keyset refresh interval in seconds (vault provider) | `300` | No |
 | `PII_VAULT_TIMEOUT` | HTTP timeout for Vault requests in seconds | `10` | No |
-| `APP_VERSION` | Application version in `service.version` | `"0.0.0"` | No |
+| `APP_VERSION` | Application version in `service.version`. Prefer `ECSCTX_APP_VERSION` in Django settings | `"0.0.0"` + one-time `RuntimeWarning` | No |
 | `ECSCTX_ROOT_FIELDS` | Extra root-level log fields (CSV), extends `ROOT_ALLOWLIST` | — | No |
-| `SERVICE_TYPE` | Service type: `app`, `rq`, `celery` | Auto-detected from argv | No |
-| `PROJECT_NAME` | Project name in `project.name` + Vector data stream | `"connect"` | **Yes** |
+| `SERVICE_TYPE` | Service type: `app`, `rq`, `celery`. Prefer `ECSCTX_SERVICE_TYPE` in Django settings. A declared value beats argv detection | Auto-detected from argv | No |
+| `PROJECT_NAME` | Project name in `project.name` + Vector data stream. Prefer `ECSCTX_PROJECT_NAME` in Django settings | `"unknown"` + one-time `RuntimeWarning` | **Yes** |
 | `ENVIRONMENT` | Environment name for Vector data stream namespace | - | **Yes** |
 | `ES_URL` | Elasticsearch endpoint | `https://your-elasticsearch-host/` | **Yes (production)** |
 | `ES_API_KEY` | Elasticsearch API key for Vector auth | - | **Yes (production)** |
+
+#### Service identity: settings first
+
+`project.name`, `service.type` and `service.version` resolve in this order:
+
+1. **Django settings** — `ECSCTX_PROJECT_NAME`, `ECSCTX_SERVICE_TYPE`, `ECSCTX_APP_VERSION`.
+   Preferred: settings are versioned code, per service, and reviewed like anything else.
+2. **Environment** — `PROJECT_NAME`, `SERVICE_TYPE`, `APP_VERSION`. Still supported, and the
+   only route for non-Django consumers.
+3. **A default**, with a `RuntimeWarning` emitted once per process.
+
+The unresolved `project.name` default is `"unknown"`. It used to be the literal `"connect"`,
+which meant every unconfigured service claimed to be Connect and two services could not be told
+apart in a shared index — the warning exists so that is loud rather than silent.
+
+`service_type` does **not** warn when unset: argv detection is a real answer for an RQ worker,
+unlike an unnamed project. `app_version` does warn, because `service.version: "0.0.0"` means a
+log line cannot be tied to a release.
+
+Settings are read lazily at log time and cached, never at import, so ecsctx still imports
+cleanly without Django and before the app registry is ready.
 
 ### .env Example
 
@@ -1643,6 +1665,14 @@ ecsctx/
 │   ├── keyset.py              # FileKeysetProvider (mtime-based hot-reload)
 │   ├── vault.py               # VaultKeysetProvider (AppRole auth)
 │   └── normalize.py           # Email/phone normalization for deterministic tokens
+├── events/
+│   ├── __init__.py            # Public API: EventSpec, register_domain, emit
+│   ├── spec.py                # EventSpec — what an event declares
+│   ├── registry.py            # Domain prefixes, aliases, freeze()
+│   ├── fields.py              # kwarg -> ECS path table
+│   ├── validator.py           # event_contract processor (strict / repair)
+│   ├── timing.py              # timed(), emit_pair() — event.duration in ns
+│   └── emit.py                # emit() — build, route, choose level, log
 └── contrib/
     ├── django/
     │   ├── __init__.py        # Django exports
@@ -1658,6 +1688,192 @@ ecsctx/
         ├── __init__.py        # RQ exports
         └── log_context.py     # @with_log_context, capture_log_context
 ```
+
+---
+
+## 23. Declared Events (`ecsctx.events`)
+
+`event.action` is the field a reader looks at first to know what happened, and it
+is the easiest one to get wrong — writing a log line takes a string, and a string
+is always valid. Before this module, one service carried 34 hand-rolled names:
+88% with no namespace, two containing a literal space, one in SCREAMING_CASE.
+
+`ecsctx.events` ships the **mechanism** — how an event is declared, how a domain
+claims a prefix, where a field lands. It deliberately ships **no vocabulary**:
+your business events stay in your own codebase and register at startup.
+
+### Declaring and registering
+
+```python
+from ecsctx.events import EventSpec, register_domain
+
+PG_REQUEST_SENT = EventSpec(
+    action="pg.request_sent",
+    category=("network",),          # ECS closed set
+    type=("connection",),           # ECS closed set
+    required=("pg_code", "session_id"),
+)
+PG_RESPONSE_RECEIVED = EventSpec(
+    action="pg.response_received",
+    terminal=True,                  # must report an outcome
+    category=("network",),
+    type=("connection",),
+)
+
+register_domain("pg", [PG_REQUEST_SENT, PG_RESPONSE_RECEIVED])
+```
+
+Register from your Django `AppConfig.ready()`, then call `freeze()` once app
+loading is done — a domain registered after that is invisible to anything that
+already read the registry.
+
+`register_domain` rejects a prefix claimed twice, a prefix that is an ECS
+field-set name (`log`, `event`, `service`, `trace`, …), and any event whose action
+does not live under the prefix it registers with.
+
+### Emitting
+
+```python
+from ecsctx.events import emit
+
+emit(logger, PG_RESPONSE_RECEIVED, "Gateway replied in %s ms", elapsed_ms,
+     outcome="success", duration_ns=elapsed_ns,
+     pg_code="mpgs", session_id=sid, status_code=200)
+```
+
+`emit()` builds the `ecs_event=` payload, routes each field to its ECS path,
+picks the level, and calls the logger. Positional args pass through untouched, so
+lazy `%s` formatting still works.
+
+**Level** comes from the spec: `level` on the success path, `level_on_failure`
+when `outcome="failure"` (defaulting to `error` for terminal events). Pass
+`level=` to override.
+
+### Field placement
+
+`emit()` routes kwargs so placement stops being a per-developer decision:
+
+| kwarg | lands at |
+|---|---|
+| `session_id`, `merchant_id` | root (flat) |
+| `pg_code`, `order_id`, `orn`, `reference`, `amount`, `currency` | `payment.*` |
+| `method`, `status_code`, `request_bytes`, `response_bytes` | `http.request.*` / `http.response.*` |
+| `path`, `query` | `url.*` |
+| `target`, `target_type` | `service.target.*` |
+| `user_id` | `user.id` |
+| `error_type`, `error_message` | `error.*` |
+| any other scalar | `labels.<name>` |
+| any other structure | `extra.<name>` |
+
+An ECS namespace passed whole (`http={"response": {...}}`) still passes through
+at root and deep-merges with anything the table placed. The check reads the
+**live** allowlist, so a namespace your service claimed with
+`configure_root_fields(["wallet"])` or `ECSCTX_ROOT_FIELDS` passes through too —
+`wallet={...}` reaches root rather than `extra.wallet`.
+
+### Timing: `event.duration` is nanoseconds
+
+`event.duration` is on **0.0%** of application logs in one production index —
+every document carrying it is nginx's — because there was no timer to reach for.
+
+```python
+from ecsctx.events import timed
+
+with timed() as t:
+    response = call_gateway()
+
+emit(logger, PG_RESPONSE_RECEIVED, "Gateway replied in %.1f ms", t.ms,
+     outcome="success", duration_ns=t.ns)
+```
+
+`.ns` and `.ms` are separate, explicitly named properties, and the emit
+parameter is `duration_ns`, because **the unit is the thing most likely to go
+wrong here**: a millisecond value is accepted, indexes cleanly, and misreports
+by six orders of magnitude while looking entirely plausible. There is no
+unit-less `duration` anywhere in this package to pass by accident.
+
+The timer stops whether the block completed or raised, so a failure path still
+reports how long it took to fail — usually the more interesting number.
+
+### Request/reply pairs
+
+`emit_pair` emits both halves and puts the duration on the reply:
+
+```python
+with emit_pair(logger, PG_REQUEST_SENT, PG_RESPONSE_RECEIVED,
+               "Gateway call", pg_code="mpgs") as call:
+    response = call_gateway()
+    call.set(status_code=response.status)
+```
+
+The outcome is inferred — `success` if the block completed, `failure` if it
+raised (which also attaches `exc_info`, so the traceback reaches `error.*`
+rather than the reply saying only that it failed quickly). Set `call.outcome`
+or `call.reason` inside the block to override.
+
+One message serves both lines: `event.action` is what distinguishes them
+(`pg.request_sent` from `pg.response_received`), and making the action
+authoritative rather than the prose is the point of the vocabulary. For two
+genuinely different messages, use `timed()` with two `emit()` calls.
+
+### The log contract (`event_contract` processor)
+
+The most damaging mistake in this whole area is invisible at the call site:
+
+```python
+logger.info("Payment started", ecs_event="payment.started")   # WRONG
+```
+
+A **string** `ecs_event` is routed by `namespace_ecs_fields` to `event.original`
+— ECS's field for the *raw unparsed message* — so `event.action` is simply
+absent and the line vanishes from every dashboard that filters on it. Six of the
+most important events in one production service are in that state today.
+
+`event_contract` is a structlog processor that catches it. It is already wired
+into `get_logging_config()`, immediately **before** `namespace_ecs_fields` —
+ordering is the point, since running after it would leave nothing to repair.
+
+It checks five things:
+
+| code | what it caught | repaired? |
+|---|---|---|
+| `string_action` | `ecs_event` passed as a string | coerced to `{"action": ...}` |
+| `unknown_action` | the action is not in the registry (only once `freeze()` has been called) | no — the name is the call site's to fix |
+| `missing_outcome` | a terminal event with no `event.outcome` | set to `"unknown"` |
+| `failure_below_warning` | `outcome="failure"` logged at debug or info | **no** — the level was decided before the chain ran, and a processor cannot re-route an emitted record |
+| `unbounded_label` | a `labels.*` value that is not a scalar | stringified |
+
+**Modes.** `repair` (the default) fixes what it can, stamps
+`labels.log_contract` with the comma-joined codes, and never drops the line.
+`strict` raises `EventContractError` instead — use it in dev and test settings,
+so a broken call is caught at the desk:
+
+```python
+# settings/dev.py
+ECSCTX_EVENT_CONTRACT = "strict"
+```
+
+Resolution is Django setting, then `ECSCTX_EVENT_CONTRACT`, then `repair`.
+`repair` is the default deliberately: a logging library that takes a service down
+over a malformed log line has chosen the wrong failure.
+
+`unknown_action` stays silent until `freeze()` is called, and silent entirely if
+nothing is registered — a service that does not use the registry must not have
+every line stamped as a violation.
+
+`labels.log_contract` is a keyword field, which is why the codes are a bounded
+set joined into one string rather than a list.
+
+### Migrating existing names
+
+```python
+from ecsctx.events import register_aliases
+
+register_aliases({"PG_CALL": "pg.request_sent"})
+```
+
+`emit(logger, "PG_CALL", ...)` then resolves to the current spec and raises a
+`DeprecationWarning`, so old call sites migrate rather than break.
 
 ## License
 
