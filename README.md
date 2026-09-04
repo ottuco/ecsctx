@@ -1446,13 +1446,34 @@ If you use a `common-logs` ingest pipeline, it can enforce ECS field types so ma
 | `PII_VAULT_CACERT_PATH` | CA cert for Vault TLS (vault provider) | System CA | No |
 | `PII_REFRESH_SECONDS` | Keyset refresh interval in seconds (vault provider) | `300` | No |
 | `PII_VAULT_TIMEOUT` | HTTP timeout for Vault requests in seconds | `10` | No |
-| `APP_VERSION` | Application version in `service.version` | `"0.0.0"` | No |
+| `APP_VERSION` | Application version in `service.version`. Prefer `ECSCTX_APP_VERSION` in Django settings | `"0.0.0"` + one-time `RuntimeWarning` | No |
 | `ECSCTX_ROOT_FIELDS` | Extra root-level log fields (CSV), extends `ROOT_ALLOWLIST` | — | No |
-| `SERVICE_TYPE` | Service type: `app`, `rq`, `celery` | Auto-detected from argv | No |
-| `PROJECT_NAME` | Project name in `project.name` + Vector data stream | `"connect"` | **Yes** |
+| `SERVICE_TYPE` | Service type: `app`, `rq`, `celery`. Prefer `ECSCTX_SERVICE_TYPE` in Django settings. A declared value beats argv detection | Auto-detected from argv | No |
+| `PROJECT_NAME` | Project name in `project.name` + Vector data stream. Prefer `ECSCTX_PROJECT_NAME` in Django settings | `"unknown"` + one-time `RuntimeWarning` | **Yes** |
 | `ENVIRONMENT` | Environment name for Vector data stream namespace | - | **Yes** |
 | `ES_URL` | Elasticsearch endpoint | `https://your-elasticsearch-host/` | **Yes (production)** |
 | `ES_API_KEY` | Elasticsearch API key for Vector auth | - | **Yes (production)** |
+
+#### Service identity: settings first
+
+`project.name`, `service.type` and `service.version` resolve in this order:
+
+1. **Django settings** — `ECSCTX_PROJECT_NAME`, `ECSCTX_SERVICE_TYPE`, `ECSCTX_APP_VERSION`.
+   Preferred: settings are versioned code, per service, and reviewed like anything else.
+2. **Environment** — `PROJECT_NAME`, `SERVICE_TYPE`, `APP_VERSION`. Still supported, and the
+   only route for non-Django consumers.
+3. **A default**, with a `RuntimeWarning` emitted once per process.
+
+The unresolved `project.name` default is `"unknown"`. It used to be the literal `"connect"`,
+which meant every unconfigured service claimed to be Connect and two services could not be told
+apart in a shared index — the warning exists so that is loud rather than silent.
+
+`service_type` does **not** warn when unset: argv detection is a real answer for an RQ worker,
+unlike an unnamed project. `app_version` does warn, because `service.version: "0.0.0"` means a
+log line cannot be tied to a release.
+
+Settings are read lazily at log time and cached, never at import, so ecsctx still imports
+cleanly without Django and before the app registry is ready.
 
 ### .env Example
 
