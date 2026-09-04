@@ -37,12 +37,13 @@ import structlog
 from ecsctx import (
     ECSFormatter,
     callsite_ecs_fields,
-    error_ecs_fields,
     ecs_validator,
+    error_ecs_fields,
     mask_sensitive_data,
     namespace_ecs_fields,
 )
 from ecsctx.contrib.django.processors import contextvars_injector
+from ecsctx.events.validator import event_contract
 
 # =============================================================================
 # LOGGER PRESETS
@@ -105,6 +106,7 @@ CELERY_LOGGERS_DEBUG: dict = {
 # LOGGING CONFIGURATION
 # =============================================================================
 
+
 def get_logging_config(
     root_level: str = "INFO",
     handler_level: str = "DEBUG",
@@ -157,6 +159,7 @@ def get_logging_config(
                 "processors": [
                     structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                     structlog.processors.ExceptionRenderer(),
+                    event_contract,
                     namespace_ecs_fields,
                     mask_sensitive_data,
                     ecs_validator,
@@ -177,6 +180,7 @@ def get_logging_config(
                     callsite_ecs_fields,
                     error_ecs_fields,
                     contextvars_injector,
+                    event_contract,
                     namespace_ecs_fields,
                     mask_sensitive_data,
                     ecs_validator,

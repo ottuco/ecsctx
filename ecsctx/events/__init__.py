@@ -34,21 +34,37 @@ from ecsctx.events.registry import (
     resolve,
 )
 from ecsctx.events.spec import ECS_OUTCOMES, EventSpec
+from ecsctx.events.validator import (
+    MODE_REPAIR,
+    MODE_STRICT,
+    EventContractError,
+    configure_event_contract,
+    event_contract,
+    get_mode,
+    reset_event_contract,
+)
 
 __all__ = [
     "ECS_OUTCOMES",
     "FIELD_PATHS",
+    "MODE_REPAIR",
+    "MODE_STRICT",
     "RESERVED_PREFIXES",
+    "EventContractError",
     "EventSpec",
     "RegistryFrozenError",
     "UnknownEventError",
     "all_events",
+    "configure_event_contract",
     "domains",
     "emit",
+    "event_contract",
     "freeze",
+    "get_mode",
     "is_frozen",
     "register_aliases",
     "register_domain",
+    "reset_event_contract",
     "resolve",
     "route",
 ]
