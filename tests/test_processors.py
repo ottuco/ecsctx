@@ -604,6 +604,32 @@ class TestCardholderDataMasking:
         masked = _safe_dump_and_mask({key: "tok_live_9f3a"})
         assert "tok_live_9f3a" not in str(masked)
 
+    def test_a_path_exemption_reaches_list_elements_too(self, token_keyset_path):
+        """`_key_is_card_container` promises path exemptions as the escape hatch
+        for a service that hits a false positive. That promise held for dict
+        leaves and silently failed for list elements: the list branch decided on
+        `in_card` alone and never consulted the exempt patterns.
+
+        A guarantee that works for one shape and not the other is worse than no
+        guarantee, because a service configures it once and never re-checks.
+        """
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        configure_masking(exempt_paths=["card.tokens"])
+        try:
+            masked = _safe_dump_and_mask({"card": {"tokens": ["diagnostic-value"]}})
+            assert masked["card"]["tokens"] == ["diagnostic-value"]
+        finally:
+            configure_masking(exempt_paths=[])
+
+    def test_an_unexempted_list_under_a_card_container_is_still_masked(
+        self, token_keyset_path
+    ):
+        # The control: the exemption is what spares it, not the list shape.
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        configure_masking(exempt_paths=[])
+        masked = _safe_dump_and_mask({"card": {"tokens": ["diagnostic-value"]}})
+        assert masked["card"]["tokens"] != ["diagnostic-value"]
+
     def test_luhn_accepts_real_card_numbers(self):
         for pan in ("4111111111111111", "5555555555554444", "378282246310005"):
             assert _luhn_ok(pan), pan

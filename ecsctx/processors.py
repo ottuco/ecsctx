@@ -749,9 +749,18 @@ def _mask_structure(node, path: tuple, exempt: tuple, in_card=False):
             if isinstance(v, str):
                 # Array elements have no key. Inside a card container they are
                 # still card data, so mask rather than merely scrub.
+                #
+                # `_path_is_exempt` is checked here for the same reason it is
+                # checked in `_mask_leaf`: `_key_is_card_container`'s design
+                # note promises path exemptions as the escape hatch for a
+                # service that hits a false positive, and a promise that holds
+                # for dict leaves but silently fails for list elements is worse
+                # than no promise.
                 node[i] = (
                     safe_tokenize(v, "generic")
-                    if in_card and not v.startswith(_TOKEN_PREFIXES)
+                    if in_card
+                    and not v.startswith(_TOKEN_PREFIXES)
+                    and not _path_is_exempt(arr_path, exempt)
                     else _scrub_string_content(v)
                 )
             else:
