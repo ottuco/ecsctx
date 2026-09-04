@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.6.4 (2026-09-04)
+
+### Other
+- Merge pull request #39 from ottuco/fix/restore-http-boundary-events (209f7c5)
+- Say why a refusal carries no error.type (8ef8982)
+- Name the two boundary log lines, and time them (#159494) (be298ae)
+
+
 ## v0.6.3 (2026-09-04)
 
 ### Other
