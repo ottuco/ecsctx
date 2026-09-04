@@ -597,7 +597,17 @@ class TestCardholderDataMasking:
         assert "123" not in str(masked)
 
     @pytest.mark.parametrize(
-        "key", ["token", "card_token", "cardToken", "payment_token", "source_token"]
+        "key",
+        [
+            "token",
+            "cardtoken",
+            "card_token",
+            "cardToken",
+            "paymenttoken",
+            "payment_token",
+            "sourcetoken",
+            "source_token",
+        ],
     )
     def test_every_token_spelling_a_psp_uses_is_masked(self, key, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")

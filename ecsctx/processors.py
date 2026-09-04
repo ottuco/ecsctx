@@ -451,7 +451,10 @@ SENSITIVE_KEYWORDS = (
 )
 
 
-# Cardholder data. Matched EXACTLY, not as substrings like SENSITIVE_KEYWORDS:
+# Cardholder data, plus the saved-card token entries at the end of the set —
+# not CHD, but the credential that charges a stored card, so it is held to
+# the same standard. Matched EXACTLY, not as substrings like
+# SENSITIVE_KEYWORDS:
 # these are short, generic words, and a substring rule would swallow legitimate
 # diagnostics — "number" alone would mask `reference_number`, which is one of
 # ecsctx's own context fields, and `order_number`.
