@@ -487,6 +487,19 @@ CARD_KEYS = frozenset({
     "track1",
     "track2",
     "track_data",
+    # A saved-card token is not cardholder data, but it is the credential that
+    # charges a stored card — anyone who can read it from the index can replay a
+    # payment. Found by instrumenting Connect's submit-token endpoint, which
+    # ships `{"token": ..., "cvv": ...}` straight into http.request.body via the
+    # api_logging decorator (#159500). The cvv half is covered above; this is the
+    # other half.
+    "token",
+    "cardtoken",
+    "card_token",
+    "paymenttoken",
+    "payment_token",
+    "sourcetoken",
+    "source_token",
 })
 
 

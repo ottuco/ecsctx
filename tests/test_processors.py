@@ -1,5 +1,7 @@
 """Tests for PII masking and field reshaping in log processors."""
 
+import pytest
+
 from ecsctx import processors
 from ecsctx.pii import configure_pii, is_configured
 from ecsctx.processors import (
@@ -580,6 +582,27 @@ class TestCardholderDataMasking:
         # the check runs in — the precedence has to be forced to be tested.
         monkeypatch.setattr(processors, "SAFE_NAME_KEYS", frozenset({"number"}))
         assert _key_is_sensitive("number")
+
+    def test_a_saved_card_token_is_masked(self, token_keyset_path):
+        """Not cardholder data, but the credential that charges a stored card:
+        anyone who can read it from the index can replay a payment.
+
+        Found by instrumenting Connect's submit-token endpoint, which ships
+        `{"token": ..., "cvv": ...}` into http.request.body via api_logging
+        (#159500). The cvv half was already covered; this is the other half.
+        """
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _safe_dump_and_mask({"token": "tok_live_9f3a2b", "cvv": "123"})
+        assert "tok_live_9f3a2b" not in str(masked)
+        assert "123" not in str(masked)
+
+    @pytest.mark.parametrize(
+        "key", ["token", "card_token", "cardToken", "payment_token", "source_token"]
+    )
+    def test_every_token_spelling_a_psp_uses_is_masked(self, key, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _safe_dump_and_mask({key: "tok_live_9f3a"})
+        assert "tok_live_9f3a" not in str(masked)
 
     def test_luhn_accepts_real_card_numbers(self):
         for pan in ("4111111111111111", "5555555555554444", "378282246310005"):
