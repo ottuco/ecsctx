@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.6.3 (2026-09-04)
+
+### Other
+- Merge pull request #38 from ottuco/feature/159487 (9802e67)
+- Merge pull request #36 from ottuco/task/159492 (2717770)
+- Merge pull request #35 from ottuco/task/159491 (d5a7445)
+- Merge pull request #34 from ottuco/task/159490 (4d6e509)
+- Merge pull request #33 from ottuco/task/159489 (00a8c27)
+- Merge pull request #32 from ottuco/task/159488 (bceb5b3)
+- Say what CARD_KEYS holds, and test all seven token spellings (b8d58c7)
+- Honour path exemptions for list elements, not just dict leaves (1a34df2)
+- Mask the saved-card token too, not just the card (6b98f37)
+- Stop reserving `level`, which never collided (7b38fab)
+- Reject fields that collide with the ones emit_pair sets itself (93a8ffe)
+- Add timed() and emit_pair(), so event.duration is implementable (#159492) (c1d360e)
+- Pin the double-pass behaviour, and say in the README what is not repaired (d96a73d)
+- Add the log-contract processor, in strict and repair modes (#159491) (597f2cc)
+- Follow the live root allowlist, and reject a duplicated action (157a6a5)
+- Add ecsctx.events: declared events, a registry and one emit() (#159490) (740a30f)
+- Move the identity section out of the middle of the table (4394a87)
+- Update the docs this change invalidated (d1ebc66)
+- Resolve service identity from settings, not only the environment (13ecc55)
+- Note what the container propagation widens (1a8631c)
+- Sort imports and drop the one left unused (3a06ba5)
+- Propagate card sensitivity into nested containers (ead6442)
+- Teach the masker to recognise cardholder data (5bd4882)
+
+
 ## v0.6.2 (2026-08-11)
 
 ### Features
