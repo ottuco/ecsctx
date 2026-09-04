@@ -205,7 +205,7 @@ class TestReservedFields:
             ("outcome", "success"),
             ("reason", "declined"),
             ("duration_ns", 1),
-            ("level", "warning"),
+            ("exc_info", True),
         ],
     )
     def test_an_opening_field_that_clashes_is_rejected_before_anything_is_logged(
@@ -265,6 +265,24 @@ class TestReservedFields:
             raise RuntimeError("THE REAL FAILURE")
         assert ecs(log.calls[1])["outcome"] == "failure"
         assert ecs(log.calls[1])["reason"] == "timeout"
+
+    @pytest.mark.parametrize(
+        "field,value", [("level", "warning"), ("stacklevel", 2), ("stack_info", True)]
+    )
+    def test_names_that_do_not_collide_are_not_blocked(self, field, value):
+        # emit_pair never passes these, so they bind once to emit()'s own
+        # parameters. Reserving a name that does not collide would remove
+        # working behaviour and leave no replacement — there is no call.level.
+        log = Recorder()
+        with emit_pair(log, SENT, GOT, "msg", **{field: value}):
+            pass
+        assert len(log.calls) == 2
+
+    def test_an_explicit_level_applies_to_both_halves(self):
+        log = Recorder()
+        with emit_pair(log, SENT, GOT, "msg", level="warning"):
+            pass
+        assert [c[0] for c in log.calls] == ["warning", "warning"]
 
     def test_ordinary_fields_are_unaffected(self):
         log = Recorder()

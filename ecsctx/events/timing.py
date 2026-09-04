@@ -67,19 +67,23 @@ def timed():
         timer._stop()
 
 
-# `emit_pair` passes these to the closing `emit()` itself. A field of the same
-# name would arrive twice and raise TypeError from inside the except handler —
-# which on the failure path demotes the real exception to __context__ and
-# propagates a kwargs error instead, at exactly the moment the feature exists
-# to help. `reason` is the easy one to hit, because Call exposes `.reason` as
-# an attribute, so `call.set(reason=...)` is a natural thing to reach for.
+# Exactly the names `emit_pair` passes to the closing `emit()` itself, and no
+# more. A field of the same name arrives twice and raises TypeError from inside
+# the except handler — which on the failure path demotes the real exception to
+# __context__ and propagates a kwargs error instead, at exactly the moment the
+# feature exists to help. `reason` is the easy one to hit, because Call exposes
+# `.reason` as an attribute, so `call.set(reason=...)` reads like it works.
+#
+# `level`, `stack_info` and `stacklevel` are deliberately NOT here: emit_pair
+# never passes them, so they bind once to emit()'s own parameters and work.
+# Blocking a name that does not collide would remove working behaviour and
+# leave the caller no replacement for it.
 RESERVED_FIELDS = frozenset(
     {
         "outcome",
         "reason",
         "duration_ns",
         "exc_info",
-        "level",
     }
 )
 
