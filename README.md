@@ -30,6 +30,7 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
 20. [API Reference](#20-api-reference)
 21. [Log Output Example](#21-log-output-example)
 22. [Package Structure](#22-package-structure)
+23. [Declared Events (`ecsctx.events`)](#23-declared-events-ecsctxevents)
 
 ---
 
@@ -1664,6 +1665,12 @@ ecsctx/
 │   ├── keyset.py              # FileKeysetProvider (mtime-based hot-reload)
 │   ├── vault.py               # VaultKeysetProvider (AppRole auth)
 │   └── normalize.py           # Email/phone normalization for deterministic tokens
+├── events/
+│   ├── __init__.py            # Public API: EventSpec, register_domain, emit
+│   ├── spec.py                # EventSpec — what an event declares
+│   ├── registry.py            # Domain prefixes, aliases, freeze()
+│   ├── fields.py              # kwarg -> ECS path table
+│   └── emit.py                # emit() — build, route, choose level, log
 └── contrib/
     ├── django/
     │   ├── __init__.py        # Django exports
@@ -1679,6 +1686,99 @@ ecsctx/
         ├── __init__.py        # RQ exports
         └── log_context.py     # @with_log_context, capture_log_context
 ```
+
+---
+
+## 23. Declared Events (`ecsctx.events`)
+
+`event.action` is the field a reader looks at first to know what happened, and it
+is the easiest one to get wrong — writing a log line takes a string, and a string
+is always valid. Before this module, one service carried 34 hand-rolled names:
+88% with no namespace, two containing a literal space, one in SCREAMING_CASE.
+
+`ecsctx.events` ships the **mechanism** — how an event is declared, how a domain
+claims a prefix, where a field lands. It deliberately ships **no vocabulary**:
+your business events stay in your own codebase and register at startup.
+
+### Declaring and registering
+
+```python
+from ecsctx.events import EventSpec, register_domain
+
+PG_REQUEST_SENT = EventSpec(
+    action="pg.request_sent",
+    category=("network",),          # ECS closed set
+    type=("connection",),           # ECS closed set
+    required=("pg_code", "session_id"),
+)
+PG_RESPONSE_RECEIVED = EventSpec(
+    action="pg.response_received",
+    terminal=True,                  # must report an outcome
+    category=("network",),
+    type=("connection",),
+)
+
+register_domain("pg", [PG_REQUEST_SENT, PG_RESPONSE_RECEIVED])
+```
+
+Register from your Django `AppConfig.ready()`, then call `freeze()` once app
+loading is done — a domain registered after that is invisible to anything that
+already read the registry.
+
+`register_domain` rejects a prefix claimed twice, a prefix that is an ECS
+field-set name (`log`, `event`, `service`, `trace`, …), and any event whose action
+does not live under the prefix it registers with.
+
+### Emitting
+
+```python
+from ecsctx.events import emit
+
+emit(logger, PG_RESPONSE_RECEIVED, "Gateway replied in %s ms", elapsed_ms,
+     outcome="success", duration_ns=elapsed_ns,
+     pg_code="mpgs", session_id=sid, status_code=200)
+```
+
+`emit()` builds the `ecs_event=` payload, routes each field to its ECS path,
+picks the level, and calls the logger. Positional args pass through untouched, so
+lazy `%s` formatting still works.
+
+**Level** comes from the spec: `level` on the success path, `level_on_failure`
+when `outcome="failure"` (defaulting to `error` for terminal events). Pass
+`level=` to override.
+
+### Field placement
+
+`emit()` routes kwargs so placement stops being a per-developer decision:
+
+| kwarg | lands at |
+|---|---|
+| `session_id`, `merchant_id` | root (flat) |
+| `pg_code`, `order_id`, `orn`, `reference`, `amount`, `currency` | `payment.*` |
+| `method`, `status_code`, `request_bytes`, `response_bytes` | `http.request.*` / `http.response.*` |
+| `path`, `query` | `url.*` |
+| `target`, `target_type` | `service.target.*` |
+| `user_id` | `user.id` |
+| `error_type`, `error_message` | `error.*` |
+| any other scalar | `labels.<name>` |
+| any other structure | `extra.<name>` |
+
+An ECS namespace passed whole (`http={"response": {...}}`) still passes through
+at root and deep-merges with anything the table placed. The check reads the
+**live** allowlist, so a namespace your service claimed with
+`configure_root_fields(["wallet"])` or `ECSCTX_ROOT_FIELDS` passes through too —
+`wallet={...}` reaches root rather than `extra.wallet`.
+
+### Migrating existing names
+
+```python
+from ecsctx.events import register_aliases
+
+register_aliases({"PG_CALL": "pg.request_sent"})
+```
+
+`emit(logger, "PG_CALL", ...)` then resolves to the current spec and raises a
+`DeprecationWarning`, so old call sites migrate rather than break.
 
 ## License
 
