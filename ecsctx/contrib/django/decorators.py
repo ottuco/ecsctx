@@ -1,6 +1,14 @@
 import structlog
 from ipware import get_client_ip
+from rest_framework.exceptions import Throttled, ValidationError
 from rest_framework.response import Response
+
+from ecsctx.events.http import (
+    API_REQUEST_RECEIVED,
+    API_REQUEST_REJECTED,
+    API_RESPONSE_SENT,
+)
+from ecsctx.events.timing import Timer
 
 logger = structlog.get_logger(__name__)
 
@@ -62,7 +70,36 @@ def api_logging(view_cls):
                 return exception_status_map[exc_name]
         return 500
 
+    def _boundary_event(exc, status_code, duration_ns):
+        """The closing event: response_sent, or request_rejected if the request
+        never reached the view.
+
+        A throttled or invalid request was refused at the boundary, not answered
+        by the view, and separating the two makes "why are requests being
+        refused?" one aggregation instead of a scan of status codes.
+        """
+        if isinstance(exc, Throttled):
+            return API_REQUEST_REJECTED.ecs(
+                outcome="failure", reason="throttled", duration_ns=duration_ns
+            )
+        if isinstance(exc, ValidationError):
+            return API_REQUEST_REJECTED.ecs(
+                outcome="failure", reason="validation_failed", duration_ns=duration_ns
+            )
+        outcome = "success" if status_code < 400 else "failure"
+        return API_RESPONSE_SENT.ecs(outcome=outcome, duration_ns=duration_ns)
+
     class LoggedView(view_cls):
+        # DRF's handle_exception turns Throttled/ValidationError into ordinary
+        # responses inside dispatch, so they never reach the except clause
+        # below. Capturing here is the only place the refusal is still an
+        # exception object rather than a status code we would have to guess at.
+        _handled_exception = None
+
+        def handle_exception(self, exc):
+            self._handled_exception = exc
+            return super().handle_exception(exc)
+
         def initial(self, request, *args, **kwargs):
             if request.method == "OPTIONS":
                 return super().initial(request, *args, **kwargs)
@@ -73,11 +110,7 @@ def api_logging(view_cls):
             # Log INBOUND
             log_kwargs = {
                 "view": view_cls.__name__,
-                "ecs_event": {
-                    "kind": "event",
-                    "category": ["web"],
-                    "type": ["access"],
-                },
+                "ecs_event": API_REQUEST_RECEIVED.ecs(),
                 "http": {
                     "request": {
                         "method": request.method,
@@ -111,6 +144,7 @@ def api_logging(view_cls):
 
             response = None
             exc = None
+            timer = Timer()
 
             try:
                 response = super().dispatch(request, *args, **kwargs)
@@ -119,13 +153,35 @@ def api_logging(view_cls):
                 raise
             finally:
                 # This block runs regardless of whether the view succeeded or crashed
+                # Deliberately from `exc` only, not from the DRF-handled
+                # exception. A throttled or invalid request is the system
+                # working as designed, not an error condition — populating
+                # error.type for it would make every "count the errors"
+                # dashboard include successful rate limiting. The bounded
+                # event.reason already says which refusal it was, from a
+                # vocabulary we control, which error.type is not.
                 exception_type = exc.__class__.__name__ if exc else None
                 status_code = _resolve_status_code(response, exc)
-                self._log_outbound(request, response, status_code, exception_type)
+                self._log_outbound(
+                    request,
+                    response,
+                    status_code,
+                    exception_type,
+                    exc or self._handled_exception,
+                    timer.ns,
+                )
 
             return response
 
-        def _log_outbound(self, request, response, status_code, exception_type=None):
+        def _log_outbound(
+            self,
+            request,
+            response,
+            status_code,
+            exception_type=None,
+            exc=None,
+            duration_ns=None,
+        ):
             # Extract response details safely
             response_headers = (
                 dict(response.items())
@@ -134,25 +190,22 @@ def api_logging(view_cls):
             )
 
             response_body = None
-            if response and isinstance(response, Response) and hasattr(response, "data"):
+            if (
+                response
+                and isinstance(response, Response)
+                and hasattr(response, "data")
+            ):
                 response_body = response.data
                 # Exclude specific keys to protect PII or avoid huge blobs
                 ignore_keys = getattr(self, "logging_ignore_response_keys", None)
                 if ignore_keys and isinstance(response_body, dict):
                     response_body = {
-                        k: v
-                        for k, v in response_body.items()
-                        if k not in ignore_keys
+                        k: v for k, v in response_body.items() if k not in ignore_keys
                     }
 
             log_payload = {
                 "view": view_cls.__name__,
-                "ecs_event": {
-                    "kind": "event",
-                    "category": ["web"],
-                    "type": ["access"],
-                    "outcome": "success" if status_code < 400 else "failure",
-                },
+                "ecs_event": _boundary_event(exc, status_code, duration_ns),
                 "http": {
                     "request": {"method": request.method},
                     "response": {
