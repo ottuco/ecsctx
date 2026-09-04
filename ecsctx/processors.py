@@ -417,6 +417,12 @@ SAFE_NAME_KEYS = frozenset({
 EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
 # Phone: roughly 10-15 digits, optional +, spaces/dashes.
 # Avoids matching timestamps/IDs often.
+# 13-19 digits, optionally grouped by single spaces or hyphens — the PAN
+# lengths in ISO/IEC 7812. Deliberately NOT restricted to issuer BINs (2-6):
+# a missed PAN is a breach and a masked order reference is an inconvenience,
+# so the Luhn check alone decides, and it errs toward masking.
+CARD_NUMBER_PATTERN = re.compile(r"\b(?:\d[ -]?){12,18}\d\b")
+
 PHONE_PATTERN = re.compile(
     r"\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4,6}\b"
 )
@@ -445,11 +451,82 @@ SENSITIVE_KEYWORDS = (
 )
 
 
+# Cardholder data, plus the saved-card token entries at the end of the set —
+# not CHD, but the credential that charges a stored card, so it is held to
+# the same standard. Matched EXACTLY, not as substrings like
+# SENSITIVE_KEYWORDS:
+# these are short, generic words, and a substring rule would swallow legitimate
+# diagnostics — "number" alone would mask `reference_number`, which is one of
+# ecsctx's own context fields, and `order_number`.
+#
+# The names come from what PSP request builders actually emit. MPGS sends
+# sourceOfFunds.provided.card.{number,expiry,securityCode}; CyberSource sends
+# {number,expirationMonth,expirationYear,securityCode}. None of those keys
+# matched any existing keyword, so a logged PSP request carried the PAN in
+# clear (#159488).
+CARD_KEYS = frozenset({
+    "number",
+    "card",
+    "pan",
+    "cardnumber",
+    "card_number",
+    "accountnumber",
+    "account_number",
+    "cvv",
+    "cvv2",
+    "cvc",
+    "cvc2",
+    "securitycode",
+    "security_code",
+    "expiry",
+    "expirydate",
+    "expiry_date",
+    "expiration",
+    "expirationdate",
+    "expiration_date",
+    "expirationmonth",
+    "expirationyear",
+    "iban",
+    "track1",
+    "track2",
+    "track_data",
+    # A saved-card token is not cardholder data, but it is the credential that
+    # charges a stored card — anyone who can read it from the index can replay a
+    # payment. Found by instrumenting Connect's submit-token endpoint, which
+    # ships `{"token": ..., "cvv": ...}` straight into http.request.body via the
+    # api_logging decorator (#159500). The cvv half is covered above; this is the
+    # other half.
+    "token",
+    "cardtoken",
+    "card_token",
+    "paymenttoken",
+    "payment_token",
+    "sourcetoken",
+    "source_token",
+})
+
+
+def _key_is_card_container(key) -> bool:
+    """True if this key's whole subtree is cardholder data.
+
+    Note this widens the blunt-`number` trade-off by one level: a key literally
+    named `number` holding a dict (a hypothetical `tracking.number` with
+    `{"formatted": ..., "raw": ...}`) now has that subtree masked, where before
+    only a same-named string leaf was. An unusual shape, and the alternative is
+    letting `card.expiry.{year,month}` through, which is the case this exists
+    for. Path exemptions remain the escape hatch for a service that hits it.
+    """
+    return isinstance(key, str) and key.lower() in CARD_KEYS
+
+
 def _key_is_sensitive(key) -> bool:
-    """True if a dict key suggests PII (and is not whitelisted)."""
+    """True if a dict key suggests PII or cardholder data (and is not whitelisted)."""
     if not isinstance(key, str):
         return False
     low = key.lower()
+    if low in CARD_KEYS:
+        # Deliberately ahead of SAFE_NAME_KEYS: nothing may whitelist a PAN.
+        return True
     if low in SAFE_NAME_KEYS:
         return False
     return any(kw in low for kw in SENSITIVE_KEYWORDS)
@@ -507,12 +584,38 @@ def _mask_headers(headers: dict) -> dict:
     return result
 
 
+def _luhn_ok(digits: str) -> bool:
+    """Luhn check digit. Every real PAN satisfies it; most other numbers do not."""
+    total = 0
+    for index, char in enumerate(reversed(digits)):
+        value = int(char)
+        if index % 2:
+            value *= 2
+            if value > 9:
+                value -= 9
+        total += value
+    return total % 10 == 0
+
+
+def _scrub_card_number(match: re.Match) -> str:
+    raw = match.group()
+    digits = re.sub(r"[ -]", "", raw)
+    if not _luhn_ok(digits):
+        # Keep it. Order references and ids of this length are common, and
+        # tokenizing every long number would cost real diagnostics.
+        return raw
+    return safe_tokenize(digits, "card")
+
+
 def _scrub_string_content(text: str) -> str:
     """
     Scrub PII from a string using regex.
-    Handles Emails, Phones, Credit Cards.
+    Handles emails, phones and card numbers.
     """
     text = EMAIL_PATTERN.sub(lambda m: safe_tokenize(m.group(), "email"), text)
+    # Card numbers before phones: a 13-19 digit PAN can look like a long phone
+    # number, and tokenizing it as one would still leak its length and prefix.
+    text = CARD_NUMBER_PATTERN.sub(_scrub_card_number, text)
     # Only scrub phones that look like phones (length check is in regex)
     # But be careful with IDs.
     return PHONE_PATTERN.sub(lambda m: safe_tokenize(m.group(), "phone"), text)
@@ -603,41 +706,68 @@ def _path_is_exempt(path: tuple, patterns: tuple) -> bool:
     return any(_path_matches(path, p) for p in patterns)
 
 
-def _mask_leaf(value: str, key, path: tuple, exempt: tuple) -> str:
-    """Mask a single string leaf that has a known dict key."""
+def _mask_leaf(value: str, key, path: tuple, exempt: tuple, in_card=False) -> str:
+    """Mask a single string leaf that has a known dict key.
+
+    `in_card` is set when an ancestor key was a card container. MPGS sends
+    expiry as {"year": "27", "month": "01"} — neither sub-key is a card key or
+    a PII keyword, so judging each leaf on its own name alone let the expiry
+    date through in clear even though `expiry` itself is sensitive (#159488).
+    """
     # Idempotency: already tokenized/redacted -> leave alone.
     if value.startswith(_TOKEN_PREFIXES):
         return value
-    if _key_is_sensitive(key) and not _path_is_exempt(path, exempt):
+    if (in_card or _key_is_sensitive(key)) and not _path_is_exempt(path, exempt):
         return safe_tokenize(value, "generic")
     # Non-sensitive or exempted key: still catch emails/phones in the value.
     return _scrub_string_content(value)
 
 
-def _mask_structure(node, path: tuple, exempt: tuple):
+def _mask_structure(node, path: tuple, exempt: tuple, in_card=False):
     """Recursively mask a JSON-normalized structure, tracking the path.
 
     - dict: recurse per key (path += (key,))
     - list: recurse per element (path += ("[*]",))
     - str leaf with a key: tokenize if sensitive and not exempt, else scrub
     - other scalars (int/float/bool/None): unchanged
+
+    `in_card` carries sensitivity DOWN from a card container, so every leaf
+    beneath `card` or `expiry` is masked whatever its own key is called. It is
+    the inverse of `_path_is_exempt`, which already matches a whole subtree by
+    prefix; without it a nested value only had to avoid being named like a card
+    field to escape.
     """
     if isinstance(node, dict):
         for k, v in node.items():
             child_path = path + (k,)
+            child_in_card = in_card or _key_is_card_container(k)
             if isinstance(v, str):
-                node[k] = _mask_leaf(v, k, child_path, exempt)
+                node[k] = _mask_leaf(v, k, child_path, exempt, child_in_card)
             else:
-                node[k] = _mask_structure(v, child_path, exempt)
+                node[k] = _mask_structure(v, child_path, exempt, child_in_card)
         return node
     if isinstance(node, list):
         arr_path = path + ("[*]",)
         for i, v in enumerate(node):
             if isinstance(v, str):
-                # Array elements have no key -> email/phone scrub only.
-                node[i] = _scrub_string_content(v)
+                # Array elements have no key. Inside a card container they are
+                # still card data, so mask rather than merely scrub.
+                #
+                # `_path_is_exempt` is checked here for the same reason it is
+                # checked in `_mask_leaf`: `_key_is_card_container`'s design
+                # note promises path exemptions as the escape hatch for a
+                # service that hits a false positive, and a promise that holds
+                # for dict leaves but silently fails for list elements is worse
+                # than no promise.
+                node[i] = (
+                    safe_tokenize(v, "generic")
+                    if in_card
+                    and not v.startswith(_TOKEN_PREFIXES)
+                    and not _path_is_exempt(arr_path, exempt)
+                    else _scrub_string_content(v)
+                )
             else:
-                node[i] = _mask_structure(v, arr_path, exempt)
+                node[i] = _mask_structure(v, arr_path, exempt, in_card)
         return node
     return node
 
