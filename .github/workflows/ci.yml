@@ -25,6 +25,11 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
+          # uv 0.12.10 (2026-09-04) breaks setup-uv@v5's venv activation: every
+          # job dies in the action itself with "Activating python venv..." then
+          # exit 2, before a single test runs. Pinned to the last version that
+          # works with v5; drop the pin when the action is upgraded to v10.
+          version: "0.12.9"
       - run: uv sync --group test --extra django
       # The pip install overrides the lock's Django; every later step MUST
       # use --no-sync (a plain `uv run` or second `uv sync` re-syncs the
@@ -39,6 +44,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          version: "0.12.9"
       - run: uv build
       - uses: actions/upload-artifact@v4
         with:
