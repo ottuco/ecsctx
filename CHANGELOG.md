@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.6 (2026-09-05)
+
+### Other
+- Merge pull request #40 from ottuco/fix/service-target-clobber (2ebd7fd)
+- Remove the committed .venv symlink, and stop it recurring (8baa4ca)
+- CI: use setup-uv@v10.0.1 (no v10 major alias exists) (0976c6a)
+- CI: upgrade actions to Node 24 versions (b7741a1)
+- CI: pin uv to 0.12.9 (dbb3e8e)
+- Regenerate uv.lock for 0.6.5 (e32366f)
+- Stop clobbering caller-set service.* subfields, release 0.6.5 (514d4eb)
+
+
 ## v0.6.4 (2026-09-04)
 
 ### Other
