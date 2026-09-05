@@ -186,8 +186,16 @@ def contextvars_injector(_logger, _method_name, event_dict):
                     event_dict[key] = value
 
     # 4. Add service metadata (always injected)
+    #
+    # Merged, not assigned — see the same block in ecsctx/processors.py. We own
+    # `name` and `version`; `service.target.*` and `service.node.*` belong to the
+    # caller and must survive.
     service_name, service_version = _detect_service()
+    service = event_dict.get("service")
+    if not isinstance(service, dict):
+        service = {}
     event_dict["service"] = {
+        **service,
         "name": service_name,
         "version": service_version,
     }

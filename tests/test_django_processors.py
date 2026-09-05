@@ -91,6 +91,25 @@ class TestContextvarsInjectorUserSerialization:
         assert result["user"] == {"id": "manual"}
 
 
+class TestContextvarsInjectorServiceRoot:
+    def test_caller_supplied_service_subfields_survive(self):
+        """The Django chain must not drop `service.target` either.
+
+        This is the chain a Django app actually runs, so the gateway-boundary
+        case that motivated the fix is only covered here.
+        """
+        event_dict = {"event": "test", "service": {"target": {"name": "mpgs"}}}
+        result = contextvars_injector(None, None, event_dict)
+        assert result["service"]["target"] == {"name": "mpgs"}
+        assert result["service"]["name"]
+
+    def test_a_non_dict_service_is_replaced_not_merged(self):
+        event_dict = {"event": "test", "service": "app"}
+        result = contextvars_injector(None, None, event_dict)
+        assert isinstance(result["service"], dict)
+        assert result["service"]["name"]
+
+
 class TestLazyImport:
     def test_no_module_level_auth_import(self):
         """Regression: importing processors must not trigger AppRegistryNotReady."""

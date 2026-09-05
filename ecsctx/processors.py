@@ -339,8 +339,18 @@ def contextvars_injector(_logger, _method_name, event_dict):
                     event_dict[key] = value
 
     # 4. Add service metadata (always injected)
+    #
+    # Merged, not assigned: `service` is a shared ECS root. We own `name` and
+    # `version` and always win on those, but ECS also puts `service.target.*`
+    # ("the target service in case of an outgoing request") and `service.node.*`
+    # there, and a caller that sets them on an outbound boundary line has just as
+    # much right to the root as we do. Replacing the dict dropped them silently.
     service_name, service_version = _detect_service()
+    service = event_dict.get("service")
+    if not isinstance(service, dict):
+        service = {}
     event_dict["service"] = {
+        **service,
         "name": service_name,
         "version": service_version,
     }

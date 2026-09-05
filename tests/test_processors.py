@@ -171,6 +171,30 @@ class TestNamespaceEcsFields:
         assert "ecs_event" not in result
         assert result["merchant_id"] == "m1"
 
+    def test_caller_supplied_service_subfields_survive(self):
+        """`service.name`/`version` are ours; the rest of `service` is not.
+
+        ECS puts `service.target.name` — "the target service in case of an
+        outgoing request" — under the same root we stamp identity into. Assigning
+        the whole dict silently dropped it, so a gateway boundary line could name
+        the merchant's own MID but never the upstream it called.
+        """
+        event_dict = {
+            "event": "outbound response received",
+            "service": {"target": {"name": "mpgs"}, "node": {"name": "n1"}},
+        }
+        result = processors.contextvars_injector(None, None, event_dict)
+        assert result["service"]["target"] == {"name": "mpgs"}
+        assert result["service"]["node"] == {"name": "n1"}
+        # identity still wins for the two fields it owns
+        assert result["service"]["name"]
+        assert "version" in result["service"]
+
+    def test_identity_still_owns_service_name_and_version(self):
+        event_dict = {"event": "x", "service": {"name": "not-ours"}}
+        result = processors.contextvars_injector(None, None, event_dict)
+        assert result["service"]["name"] != "not-ours"
+
 
 class TestCompilePath:
     def test_array_wildcard(self):
