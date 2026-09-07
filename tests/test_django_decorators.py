@@ -55,14 +55,15 @@ def _info_user_payloads(mock_logger):
 
 
 class TestApiLoggingUser:
-    def test_authenticated_user_logged_inbound_and_outbound(self):
+    def test_authenticated_user_logged_on_both_boundary_lines(self):
         request = APIRequestFactory().get("/ping/")
         force_authenticate(request, user=_StubUser(7, "saif"))
 
         with patch("ecsctx.contrib.django.decorators.logger") as mock_logger:
             _PingView.as_view()(request)
 
-        # INBOUND (initial) and OUTBOUND (dispatch) each carry the user block.
+        # The request-received (initial) and response-sent (dispatch) lines each
+        # carry the user block.
         assert _info_user_payloads(mock_logger) == [
             {"id": "7", "name": "saif"},
             {"id": "7", "name": "saif"},

@@ -180,7 +180,7 @@ class TestNamespaceEcsFields:
         the merchant's own MID but never the upstream it called.
         """
         event_dict = {
-            "event": "outbound response received",
+            "event": "response received from mpgs (201)",
             "service": {"target": {"name": "mpgs"}, "node": {"name": "n1"}},
         }
         result = processors.contextvars_injector(None, None, event_dict)
