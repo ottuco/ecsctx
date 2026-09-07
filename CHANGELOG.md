@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.6.8 (2026-09-07)
+
+### Other
+- Merge pull request #41 from ottuco/fix/lowercase-boundary-messages (be9062e)
+- Stop the mpgs masking test failing on a random token (b5ec357)
+- Say what happened, not "inbound"/"outbound", on the API boundary (0.6.7) (0dce196)
+
+
 ## v0.6.6 (2026-09-05)
 
 ### Other
