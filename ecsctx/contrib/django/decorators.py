@@ -34,12 +34,18 @@ def _log_user(user):
 
 def api_logging(view_cls):
     """
-    Log INBOUND request and OUTBOUND response for DRF views.
+    Log the request this service received and the response it sent, for DRF views.
 
-    - INBOUND: Logged in initial() with request headers, body, client IP, user agent
-    - OUTBOUND: Logged in dispatch() with response status, headers, body
+    - request received: logged in initial() with request headers, body, client IP,
+      user agent
+    - response sent: logged in dispatch() with response status, headers, body
     - Masking/tokenization handled by mask_sensitive_data processor
     - Field explosion prevented by ES flattened type mapping
+
+    Neither message says "inbound" or "outbound". A service that logs this
+    boundary also calls out to third parties, and those calls are outbound too —
+    one word for both leaves a reader with no way to tell "we answered a caller"
+    from "a gateway answered us".
     """
 
     exception_status_map = {
@@ -135,7 +141,12 @@ def api_logging(view_cls):
             if fields := _log_user(user):
                 log_kwargs["user"] = fields
 
-            logger.info("INBOUND %s %s", request.method, request.path, **log_kwargs)
+            logger.info(
+                "api request received: %s %s",
+                request.method,
+                request.path,
+                **log_kwargs,
+            )
             return super().initial(request, *args, **kwargs)
 
         def dispatch(self, request, *args, **kwargs):
@@ -162,7 +173,7 @@ def api_logging(view_cls):
                 # vocabulary we control, which error.type is not.
                 exception_type = exc.__class__.__name__ if exc else None
                 status_code = _resolve_status_code(response, exc)
-                self._log_outbound(
+                self._log_response_sent(
                     request,
                     response,
                     status_code,
@@ -173,7 +184,7 @@ def api_logging(view_cls):
 
             return response
 
-        def _log_outbound(
+        def _log_response_sent(
             self,
             request,
             response,
@@ -232,7 +243,7 @@ def api_logging(view_cls):
                 log_level = logger.error
 
             log_level(
-                "OUTBOUND %s %s (%s)",
+                "api response sent: %s %s (%s)",
                 request.method,
                 request.path,
                 status_code,
