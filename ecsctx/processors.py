@@ -404,11 +404,12 @@ SAFE_NAME_KEYS = frozenset({
 EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
 # Phone: roughly 10-15 digits, optional +, spaces/dashes.
 # Avoids matching timestamps/IDs often.
-# 13-19 digits, optionally grouped by single spaces or hyphens — the PAN
-# lengths in ISO/IEC 7812. Deliberately NOT restricted to issuer BINs (2-6):
-# a missed PAN is a breach and a masked order reference is an inconvenience,
-# so the Luhn check alone decides, and it errs toward masking.
-CARD_NUMBER_PATTERN = re.compile(r"\b(?:\d[ -]?){12,18}\d\b")
+# 12-19 digits, optionally grouped by single spaces or hyphens — the PAN
+# lengths in ISO/IEC 7812 (Maestro issues from 12, Visa/UnionPay up to 19).
+# Deliberately NOT restricted to issuer BINs (2-6): a missed PAN is a
+# breach and a masked order reference is an inconvenience, so the Luhn
+# check alone decides, and it errs toward masking.
+CARD_NUMBER_PATTERN = re.compile(r"\b(?:\d[ -]?){11,18}\d\b")
 
 PHONE_PATTERN = re.compile(
     r"\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4,6}\b"
@@ -584,14 +585,39 @@ def _luhn_ok(digits: str) -> bool:
     return total % 10 == 0
 
 
+def mask_pan(number: str) -> str:
+    """Display-mask a PAN, keeping the first 6 and last 4 digits visible.
+
+    PCI DSS permits showing at most the first six (BIN) and last four of a
+    PAN; support and debugging rely on both to identify the card, where an
+    opaque token would force a vault lookup per log line. Separators are
+    stripped, so grouped input comes back as one contiguous masked value.
+    Values of 10 or fewer digits carry no BIN+last4 to preserve and are
+    fully starred: this path only receives PAN-length input, so anything
+    else is a caller bug, and starring fails closed.
+    """
+    digits = re.sub(r"[ -]", "", number)
+    if len(digits) > 10:
+        return f"{digits[:6]}{'*' * (len(digits) - 10)}{digits[-4:]}"
+    return "*" * len(digits)
+
+
+def _pan_like(value: str) -> str | None:
+    """Return the digit run if ``value`` looks like a PAN (12-19 digits)."""
+    digits = value.replace(" ", "").replace("-", "")
+    if digits.isdigit() and 12 <= len(digits) <= 19:
+        return digits
+    return None
+
+
 def _scrub_card_number(match: re.Match) -> str:
     raw = match.group()
     digits = re.sub(r"[ -]", "", raw)
     if not _luhn_ok(digits):
         # Keep it. Order references and ids of this length are common, and
-        # tokenizing every long number would cost real diagnostics.
+        # masking every long number would cost real diagnostics.
         return raw
-    return safe_tokenize(digits, "card")
+    return mask_pan(digits)
 
 
 def _scrub_string_content(text: str) -> str:
@@ -693,6 +719,29 @@ def _path_is_exempt(path: tuple, patterns: tuple) -> bool:
     return any(_path_matches(path, p) for p in patterns)
 
 
+def _mask_int_leaf(value: int, *, sensitive: bool, exempt: bool) -> int | str:
+    """Mask an int leaf that is, or sits where, cardholder data.
+
+    JSON has no int-shaped PAN convention, but hand-built PSP payloads (and
+    the stdlib-logging backstop this replaces) do carry bare numbers:
+    ``{"card": {"number": 378282246310005}}`` must not survive. Mirrors the
+    string rules: under a sensitive key (or card container) everything is
+    masked, with PAN-length runs display-masked; elsewhere only a Luhn-valid
+    12-19 digit run is masked, so counts, status codes and timestamps pass
+    through. ``bool`` never reaches here (callers check it first: ``True``
+    is an ``int`` instance). Floats are deliberately excluded — float64
+    cannot exactly represent a 12-19 digit PAN, so a float was never the PAN.
+    """
+    digits = str(abs(value))
+    if 12 <= len(digits) <= 19:
+        if (sensitive and not exempt) or _luhn_ok(digits):
+            return mask_pan(digits)
+        return value
+    if sensitive and not exempt:
+        return safe_tokenize(str(value), "generic")
+    return value
+
+
 def _mask_leaf(value: str, key, path: tuple, exempt: tuple, in_card=False) -> str:
     """Mask a single string leaf that has a known dict key.
 
@@ -705,6 +754,8 @@ def _mask_leaf(value: str, key, path: tuple, exempt: tuple, in_card=False) -> st
     if value.startswith(_TOKEN_PREFIXES):
         return value
     if (in_card or _key_is_sensitive(key)) and not _path_is_exempt(path, exempt):
+        if (digits := _pan_like(value)) is not None:
+            return mask_pan(digits)
         return safe_tokenize(value, "generic")
     # Non-sensitive or exempted key: still catch emails/phones in the value.
     return _scrub_string_content(value)
@@ -730,13 +781,29 @@ def _mask_structure(node, path: tuple, exempt: tuple, in_card=False):
             child_in_card = in_card or _key_is_card_container(k)
             if isinstance(v, str):
                 node[k] = _mask_leaf(v, k, child_path, exempt, child_in_card)
+            elif isinstance(v, bool):
+                node[k] = v
+            elif isinstance(v, int):
+                node[k] = _mask_int_leaf(
+                    v,
+                    sensitive=child_in_card or _key_is_sensitive(k),
+                    exempt=_path_is_exempt(child_path, exempt),
+                )
             else:
                 node[k] = _mask_structure(v, child_path, exempt, child_in_card)
         return node
     if isinstance(node, list):
         arr_path = path + ("[*]",)
         for i, v in enumerate(node):
-            if isinstance(v, str):
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, int):
+                node[i] = _mask_int_leaf(
+                    v,
+                    sensitive=in_card,
+                    exempt=_path_is_exempt(arr_path, exempt),
+                )
+            elif isinstance(v, str):
                 # Array elements have no key. Inside a card container they are
                 # still card data, so mask rather than merely scrub.
                 #
@@ -746,13 +813,17 @@ def _mask_structure(node, path: tuple, exempt: tuple, in_card=False):
                 # service that hits a false positive, and a promise that holds
                 # for dict leaves but silently fails for list elements is worse
                 # than no promise.
-                node[i] = (
-                    safe_tokenize(v, "generic")
-                    if in_card
+                if (
+                    in_card
                     and not v.startswith(_TOKEN_PREFIXES)
                     and not _path_is_exempt(arr_path, exempt)
-                    else _scrub_string_content(v)
-                )
+                ):
+                    if (digits := _pan_like(v)) is not None:
+                        node[i] = mask_pan(digits)
+                    else:
+                        node[i] = safe_tokenize(v, "generic")
+                else:
+                    node[i] = _scrub_string_content(v)
             else:
                 node[i] = _mask_structure(v, arr_path, exempt, in_card)
         return node
