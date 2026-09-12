@@ -37,6 +37,7 @@ from ecsctx.processors import (
     configure_root_fields,
     configure_root_fields_from_env,
     contextvars_injector,
+    mask_pan,
     mask_sensitive_data,
     error_ecs_fields,
     namespace_ecs_fields,
@@ -59,6 +60,7 @@ __all__ = [
     # Processors
     "callsite_ecs_fields",
     "contextvars_injector",
+    "mask_pan",
     "mask_sensitive_data",
     "error_ecs_fields",
     "namespace_ecs_fields",

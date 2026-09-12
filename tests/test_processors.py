@@ -1,5 +1,7 @@
 """Tests for PII masking and field reshaping in log processors."""
 
+import json
+
 import pytest
 
 from ecsctx import processors
@@ -15,6 +17,7 @@ from ecsctx.processors import (
     configure_masking,
     configure_root_fields,
     error_ecs_fields,
+    mask_pan,
     masking_is_configured,
     namespace_ecs_fields,
     reshape_log_event,
@@ -284,13 +287,21 @@ class TestMaskWalker:
 
     def test_non_string_values_untouched(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        out = _safe_dump_and_mask(
-            {"customer_name": 123, "amount": 10, "flag": True, "nope": None}
-        )
-        assert out["customer_name"] == 123
+        out = _safe_dump_and_mask({"amount": 10, "flag": True, "nope": None})
         assert out["amount"] == 10
         assert out["flag"] is True
         assert out["nope"] is None
+
+    def test_int_under_sensitive_key_is_masked_like_its_string_twin(
+        self, token_keyset_path
+    ):
+        # A string under a sensitive key is tokenized; an int there is the
+        # same secret in another JSON type (e.g. {"expiry": {"year": 27}}),
+        # so it must not survive while its string twin would not.
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        out = _safe_dump_and_mask({"customer_name": 123})
+        assert out["customer_name"] != 123
+        assert out["customer_name"].startswith("ptok:v1:")
 
     def test_idempotent_rerun(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
@@ -680,7 +691,9 @@ class TestCardholderDataMasking:
         ):
             scrubbed = _scrub_string_content(f"charging {raw} now")
             assert raw not in scrubbed, raw
-            assert "ptok:" in scrubbed
+            # PANs stay diagnosable: first 6 (BIN) and last 4 remain visible,
+            # the most PCI DSS permits in clear.
+            assert "411111******1111" in scrubbed, raw
 
     def test_a_non_luhn_number_of_card_length_is_left_alone(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
@@ -754,3 +767,101 @@ class TestCardholderDataMasking:
         )
         assert masked["order"]["reference"] == "deltabRKJ5X_0"
         assert masked["order"]["nested"]["id"] == "abc123"
+
+
+# Luhn-valid PANs per length (brand in comment).
+PAN_BY_LENGTH = {
+    12: "675964982093",  # Maestro
+    13: "4222222222222",  # Visa
+    14: "30569309025904",  # Diners
+    15: "378282246310005",  # Amex
+    16: "4111111111111111",  # Visa
+    19: "4111111111111111102",  # UnionPay length
+}
+
+NON_PANS = {
+    16: "1234567890123456",  # right length, fails Luhn
+    13: "1234567890123",  # right length, fails Luhn
+}
+
+
+def _display(pan: str) -> str:
+    return f"{pan[:6]}{'*' * (len(pan) - 10)}{pan[-4:]}"
+
+
+class TestPanDisplayMasking:
+    @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
+    def test_mask_pan_keeps_first_six_and_last_four(self, length, pan):
+        assert mask_pan(pan) == _display(pan)
+        assert pan not in mask_pan(pan)
+
+    def test_mask_pan_grouped_input_comes_back_contiguous(self):
+        assert mask_pan("4111 1111 1111 1111") == "411111******1111"
+        assert mask_pan("3782-822463-10005") == "378282*****0005"
+
+    def test_mask_pan_short_value_stars_fully(self):
+        assert mask_pan("123") == "***"
+
+    def test_twelve_digit_pan_is_caught_by_the_pattern(self):
+        # The pattern minimum: a 12-digit Maestro PAN must match at all.
+        assert "675964982093" not in _scrub_string_content("pay 675964982093 now")
+
+    @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
+    def test_pan_lengths_as_strings_dict_values_ints_and_json(self, length, pan):
+        expected = _display(pan)
+        assert expected in _scrub_string_content(f"charging {pan} now")
+        masked = _safe_dump_and_mask({"card": {"number": pan}})
+        assert masked["card"]["number"] == expected
+        masked_int = _safe_dump_and_mask({"card": {"number": int(pan)}})
+        assert masked_int["card"]["number"] == expected
+        assert pan not in _safe_dump_and_mask(json.dumps({"card": {"number": pan}}))
+
+    @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
+    def test_pan_with_space_and_dash_separators(self, length, pan):
+        grouped = " ".join(pan[i : i + 4] for i in range(0, len(pan), 4))
+        dashed = "-".join(pan[i : i + 4] for i in range(0, len(pan), 4))
+        assert _display(pan) in _scrub_string_content(f"pay {grouped} ok")
+        assert _display(pan) in _scrub_string_content(f"pay {dashed} ok")
+
+    @pytest.mark.parametrize("length,pan", sorted(NON_PANS.items()))
+    def test_non_luhn_numbers_are_left_alone(self, length, pan):
+        assert pan in _scrub_string_content(f"order {pan}")
+        assert _safe_dump_and_mask({"order": {"reference_id": int(pan)}}) == {
+            "order": {"reference_id": int(pan)}
+        }
+
+    def test_bare_luhn_int_outside_card_keys_is_masked(self):
+        # Mirrors the free-text rule: Luhn alone decides (a missed PAN is a
+        # breach, a masked order reference an inconvenience).
+        masked = _safe_dump_and_mask({"reference": 378282246310005})
+        assert masked == {"reference": "378282*****0005"}
+
+    def test_small_ints_bools_and_none_survive(self):
+        masked = _safe_dump_and_mask(
+            {"status_code": 200, "count": 100, "ok": True, "nothing": None}
+        )
+        assert masked == {"status_code": 200, "count": 100, "ok": True, "nothing": None}
+
+    def test_short_int_under_card_key_is_tokenized_not_displayed(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _safe_dump_and_mask({"card": {"securityCode": 123}})
+        assert masked["card"]["securityCode"] != 123
+        assert masked["card"]["securityCode"].startswith("ptok:")
+
+    def test_order_ids_and_timestamps_are_not_masked(self):
+        payload = {
+            "order": {"id": "deltabRKJ5X_0", "reference_number": "REF-2026-09187654"},
+            "timestamps": {"created": 1750000000},
+        }
+        assert _safe_dump_and_mask(payload) == payload
+
+    def test_masked_pan_is_stable_on_second_pass(self):
+        # Idempotency mirroring test_idempotent_rerun: a shared payload dict
+        # logged twice (decorator boundary, then http.request.body rebuild)
+        # must keep first6/last4, not degrade to an opaque token.
+        once = _safe_dump_and_mask({"card": {"number": "378282246310005"}})
+        assert once == {"card": {"number": "378282*****0005"}}
+        assert _safe_dump_and_mask(once) == once
+        listed = _safe_dump_and_mask({"card": {"tokens": ["4111111111111111"]}})
+        assert listed == {"card": {"tokens": ["411111******1111"]}}
+        assert _safe_dump_and_mask(listed) == listed

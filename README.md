@@ -272,7 +272,7 @@ configure_root_fields(extra_fields=["customer", "booking"])
 The built-in `ROOT_ALLOWLIST` is never reduced — configured fields only extend it.
 
 **PII handling** (see [section 13](#13-pii-masking--tokenization) for full details):
-- **Automatic log masking**: `mask_sensitive_data` processor applies HMAC-SHA-256 tokenization (`ptok:v1:...`) and key-based redaction
+- **Automatic log masking**: `mask_sensitive_data` processor applies HMAC-SHA-256 tokenization (`ptok:v1:...`), key-based redaction, and first6/last4 PAN display-masking (see [section 13](#13-pii-masking--tokenization))
 - **Explicit encryption API**: `protect()` encrypts (AES-256-GCM), `reveal()` decrypts, `tokenize()` produces deterministic HMAC tokens
 
 ---
@@ -808,6 +808,59 @@ ecsctx automatically detects and protects sensitive data in logs. The `mask_sens
 
 Keys are delivered via mounted keyset files or fetched from Vault.
 
+### PAN display-masking (`mask_pan`)
+
+PANs are **display-masked, not tokenized**: `mask_pan("378282246310005")` returns
+`"378282******0005"`. Rationale: support and debugging identify a card by BIN +
+last4, and PCI DSS explicitly permits showing at most the first six and last
+four — an opaque token would force a vault lookup per log line. Everything
+else PII keeps tokenization. Also exported for call sites that must mask a PAN
+before logging (e.g. replacing a hand-rolled helper): `from ecsctx import
+mask_pan`.
+
+### Network-boundary redaction (`ecsctx.contrib.net`)
+
+`mask_sensitive_data` covers PII in `payload`/`args`/`kwargs`/http bodies, but
+two boundary shapes need dedicated helpers — import them instead of copying
+them per service:
+
+```python
+from ecsctx.contrib.net import loggable_body, redact_body, redact_url
+```
+
+- `redact_url(url)` — masks credential-looking query params (`password`,
+  `api_key`, `access_code`, … incl. single-letter legacy keys) before logging.
+  Call it **before** shaping the URL for ECS: `ecs_url(redact_url(full_url))`,
+  otherwise the raw query survives in `url.full`.
+- `redact_body(text)` — masks credential values (`access_token`,
+  `client_secret`, …) in JSON and form-encoded bodies. A bare `token` key is
+  deliberately left alone: gateways reuse it for non-secret payment/session
+  identifiers that log readers rely on.
+- `loggable_body(response)` — the response body to log: capped text for
+  textual responses, else `None`. Redacts **before** capping, so a cap landing
+  mid-value cannot leave a token head exposed.
+
+Configure per deploy without code changes. Precedence: explicit call >
+Django settings > env vars > defaults (same lazy pattern as the masking
+settings bridge — settings are read via a guarded import, so there is no
+hard Django dependency; pure-Python/FastAPI consumers use the call/env path):
+
+```python
+from ecsctx.contrib.net import configure_redaction
+configure_redaction(extra_secret_keys=["merchant_pin"], body_log_cap=8192)
+```
+
+```python
+# Django settings.py (list or CSV string)
+ECSCTX_REDACT_EXTRA_SECRET_KEYS = ["merchant_pin", "terminal_secret"]
+ECSCTX_REDACT_BODY_LOG_CAP = 8192
+```
+
+```bash
+ECSCTX_REDACT_EXTRA_SECRET_KEYS="merchant_pin,terminal_secret"
+ECSCTX_REDACT_BODY_LOG_CAP=8192
+```
+
 ### What Gets Detected
 
 | Type | Detection | Output |
@@ -816,6 +869,7 @@ Keys are delivered via mounted keyset files or fetched from Vault.
 | **Phone numbers** | Regex: 10-15 digits with +/spaces/dashes | `"ptok:v1:x8Fp..."` |
 | **Names** | Keys containing: `name`, `customer`, `payer`, `billing`, `shipping`, `cardholder`, `email`, `phone`, `mobile`, `contact`, `recipient`, `beneficiary`, `address`, `udf` | `"ptok:v1:..."` |
 | **Auth headers** | `authorization`, `api-key`, `x-api-key` keys | `"Bearer <first4>****<last4>"` (masked, not tokenized; `"Bearer ****"` when the secret is ≤8 chars) |
+| **PANs** | 12–19 digit runs (spaces/dashes allowed) passing the Luhn check, or any digit string of that length under a card key (`number`, `securitycode`, `cvv`, …), including bare `int` values | `"411111******1111"` — first 6 (BIN) + last 4 visible, the most PCI DSS permits in clear; other card-key values are tokenized |
 
 ### Whitelist (NOT Masked)
 
@@ -1447,6 +1501,8 @@ If you use a `common-logs` ingest pipeline, it can enforce ECS field types so ma
 | `PII_VAULT_CACERT_PATH` | CA cert for Vault TLS (vault provider) | System CA | No |
 | `PII_REFRESH_SECONDS` | Keyset refresh interval in seconds (vault provider) | `300` | No |
 | `PII_VAULT_TIMEOUT` | HTTP timeout for Vault requests in seconds | `10` | No |
+| `ECSCTX_REDACT_EXTRA_SECRET_KEYS` | Extra body keys for `redact_body` (CSV, appended to the built-in credential list) | — | No |
+| `ECSCTX_REDACT_BODY_LOG_CAP` | Max logged response-body chars in `loggable_body` | `4096` | No |
 | `APP_VERSION` | Application version in `service.version`. Prefer `ECSCTX_APP_VERSION` in Django settings | `"0.0.0"` + one-time `RuntimeWarning` | No |
 | `ECSCTX_ROOT_FIELDS` | Extra root-level log fields (CSV), extends `ROOT_ALLOWLIST` | — | No |
 | `SERVICE_TYPE` | Service type: `app`, `rq`, `celery`. Prefer `ECSCTX_SERVICE_TYPE` in Django settings. A declared value beats argv detection | Auto-detected from argv | No |
@@ -1514,6 +1570,7 @@ from ecsctx import (
 
     # Processors
     contextvars_injector,   # Injects context into log events
+    mask_pan,               # First6/last4 PAN display-mask
     mask_sensitive_data,    # PII tokenization (HMAC-SHA-256)
     namespace_ecs_fields,   # Reshape fields + clean up flat ECS fields
     ecs_validator,          # Warn on ECS field violations
@@ -1655,7 +1712,7 @@ class LoggingContext:
 ecsctx/
 ├── __init__.py                # All public exports
 ├── context.py                 # LoggingContext, bind/reset/get, trace functions
-├── processors.py              # contextvars_injector, mask_sensitive_data, namespace_ecs_fields
+├── processors.py              # contextvars_injector, mask_pan, mask_sensitive_data, namespace_ecs_fields
 ├── formatters.py              # ECSFormatter (v1.12.0)
 ├── ecs_validator.py           # ECS field validation (warn on violations)
 ├── pii/

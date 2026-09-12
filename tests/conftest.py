@@ -6,6 +6,7 @@ import os
 
 import pytest
 
+from ecsctx.contrib.net import _reset_redaction
 from ecsctx.pii import _reset as _reset_pii
 from ecsctx.processors import _reset_masking, _reset_root_fields
 
@@ -85,3 +86,10 @@ def _reset_root_fields_module():
     """Reset configurable root-fields state between tests."""
     yield
     _reset_root_fields()
+
+
+@pytest.fixture(autouse=True)
+def _reset_redaction_module():
+    """Reset redaction config between tests."""
+    yield
+    _reset_redaction()
