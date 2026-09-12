@@ -1,5 +1,7 @@
 """Tests for network-boundary credential redaction (ecsctx.contrib.net)."""
 
+from django.test import override_settings
+
 from ecsctx.contrib.net import (
     configure_redaction,
     loggable_body,
@@ -105,3 +107,42 @@ class TestRedactionConfig:
         monkeypatch.setenv("ECSCTX_REDACT_BODY_LOG_CAP", "not-a-number")
         logged = loggable_body(_FakeResponse("x" * 5000, "text/plain"))
         assert len(logged) == 4096
+
+    def test_raising_text_property_returns_none(self):
+        # A body that can't be read is omitted, never raised nor logged raw.
+        class _Boom:
+            def __init__(self):
+                self.headers = {"Content-Type": "application/json"}
+
+            @property
+            def text(self):
+                raise ValueError("cannot decode")
+
+        assert loggable_body(_Boom()) is None
+
+
+class TestDjangoSettingsBridge:
+    def test_django_settings_override_keys(self):
+        with override_settings(ECSCTX_REDACT_EXTRA_SECRET_KEYS=["merchant_pin"]):
+            assert "1234" not in redact_body('{"merchant_pin": "1234"}')
+
+    def test_django_settings_accept_csv_string(self):
+        with override_settings(ECSCTX_REDACT_EXTRA_SECRET_KEYS="a_pin, b_pin"):
+            assert "1" not in redact_body('{"a_pin": "1"}')
+            assert "2" not in redact_body('{"b_pin": "2"}')
+
+    def test_explicit_call_wins_over_django_settings(self):
+        configure_redaction(extra_secret_keys=["svc_key"])
+        with override_settings(ECSCTX_REDACT_EXTRA_SECRET_KEYS=["merchant_pin"]):
+            assert "[REDACTED]" in redact_body('{"svc_key": "aaa"}')
+            assert redact_body('{"merchant_pin": "1234"}') == '{"merchant_pin": "1234"}'
+
+    def test_django_settings_win_over_env(self, monkeypatch):
+        monkeypatch.setenv("ECSCTX_REDACT_EXTRA_SECRET_KEYS", "env_key")
+        with override_settings(ECSCTX_REDACT_EXTRA_SECRET_KEYS=["dj_key"]):
+            assert "1" not in redact_body('{"dj_key": "1"}')
+            assert redact_body('{"env_key": "2"}') == '{"env_key": "2"}'
+
+    def test_django_settings_cap(self):
+        with override_settings(ECSCTX_REDACT_BODY_LOG_CAP=16):
+            assert loggable_body(_FakeResponse("x" * 100, "text/plain")) == "x" * 16

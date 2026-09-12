@@ -769,8 +769,7 @@ class TestCardholderDataMasking:
         assert masked["order"]["nested"]["id"] == "abc123"
 
 
-"""Luhn-valid PAN per length, keyed by digit count (brand in comment)."""
-
+# Luhn-valid PANs per length (brand in comment).
 PAN_BY_LENGTH = {
     12: "675964982093",  # Maestro
     13: "4222222222222",  # Visa
@@ -855,3 +854,14 @@ class TestPanDisplayMasking:
             "timestamps": {"created": 1750000000},
         }
         assert _safe_dump_and_mask(payload) == payload
+
+    def test_masked_pan_is_stable_on_second_pass(self):
+        # Idempotency mirroring test_idempotent_rerun: a shared payload dict
+        # logged twice (decorator boundary, then http.request.body rebuild)
+        # must keep first6/last4, not degrade to an opaque token.
+        once = _safe_dump_and_mask({"card": {"number": "378282246310005"}})
+        assert once == {"card": {"number": "378282*****0005"}}
+        assert _safe_dump_and_mask(once) == once
+        listed = _safe_dump_and_mask({"card": {"tokens": ["4111111111111111"]}})
+        assert listed == {"card": {"tokens": ["411111******1111"]}}
+        assert _safe_dump_and_mask(listed) == listed

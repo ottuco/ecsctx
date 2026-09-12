@@ -610,6 +610,23 @@ def _pan_like(value: str) -> str | None:
     return None
 
 
+_MASKED_PAN_RE = re.compile(r"^\d{6}\*+\d{4}$")
+
+
+def _is_masked_pan(value: str) -> bool:
+    """True if ``value`` is already a mask_pan() product (idempotency guard).
+
+    A shared payload dict can pass through mask_sensitive_data twice (logged
+    at a decorator boundary, then again when http.request.body is rebuilt
+    from the same object). Without this, the second pass falls through to
+    safe_tokenize — _pan_like rejects the ``*`` run — and silently converts
+    the display-masked PAN into an opaque token. A real PAN never contains
+    ``*``, and mask_pan always emits 6 digits + 2-9 stars + 4 digits, so the
+    shape is unambiguous.
+    """
+    return 12 <= len(value) <= 19 and _MASKED_PAN_RE.match(value) is not None
+
+
 def _scrub_card_number(match: re.Match) -> str:
     raw = match.group()
     digits = re.sub(r"[ -]", "", raw)
@@ -753,6 +770,8 @@ def _mask_leaf(value: str, key, path: tuple, exempt: tuple, in_card=False) -> st
     # Idempotency: already tokenized/redacted -> leave alone.
     if value.startswith(_TOKEN_PREFIXES):
         return value
+    if _is_masked_pan(value):
+        return value
     if (in_card or _key_is_sensitive(key)) and not _path_is_exempt(path, exempt):
         if (digits := _pan_like(value)) is not None:
             return mask_pan(digits)
@@ -816,6 +835,7 @@ def _mask_structure(node, path: tuple, exempt: tuple, in_card=False):
                 if (
                     in_card
                     and not v.startswith(_TOKEN_PREFIXES)
+                    and not _is_masked_pan(v)
                     and not _path_is_exempt(arr_path, exempt)
                 ):
                     if (digits := _pan_like(v)) is not None:

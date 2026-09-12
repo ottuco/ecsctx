@@ -85,21 +85,83 @@ def configure_redaction(
     _compiled_cache = None
 
 
+def _from_django(setting: str) -> Any:
+    """Read a Django setting, or None if Django is absent or not configured.
+
+    Mirrors ecsctx.identity._from_django: the import lives inside the
+    function, so pure-Python/FastAPI consumers (no Django installed) fall
+    through to env vars with no hard dependency and no import-time cost.
+    """
+    try:
+        from django.conf import settings
+    except ImportError:
+        return None
+    if not getattr(settings, "configured", False):
+        return None
+    return getattr(settings, setting, None)
+
+
+def _django_pending() -> bool:
+    """True if Django is installed but its settings aren't ready yet."""
+    try:
+        from django.conf import settings
+    except ImportError:
+        return False
+    return not getattr(settings, "configured", False)
+
+
+def _load_env() -> None:
+    """Resolve the env-var layer into the module globals."""
+    global _extra_secret_keys, _body_log_cap
+    if _extra_secret_keys is None:
+        raw_keys = os.environ.get("ECSCTX_REDACT_EXTRA_SECRET_KEYS", "")
+        _extra_secret_keys = tuple(k.strip() for k in raw_keys.split(",") if k.strip())
+    if _body_log_cap is None:
+        raw_cap = os.environ.get("ECSCTX_REDACT_BODY_LOG_CAP", "").strip()
+        if raw_cap:
+            with contextlib.suppress(ValueError):
+                if (cap := int(raw_cap)) > 0:
+                    _body_log_cap = cap
+
+
 def configure_redaction_from_env() -> None:
     """Load redaction overrides from env (idempotent)."""
-    global _extra_secret_keys, _body_log_cap, _redact_auto_configure_attempted
+    global _redact_auto_configure_attempted
     if _redact_auto_configure_attempted or (
         _extra_secret_keys is not None or _body_log_cap is not None
     ):
         return
     _redact_auto_configure_attempted = True
-    raw_keys = os.environ.get("ECSCTX_REDACT_EXTRA_SECRET_KEYS", "")
-    _extra_secret_keys = tuple(k.strip() for k in raw_keys.split(",") if k.strip())
-    raw_cap = os.environ.get("ECSCTX_REDACT_BODY_LOG_CAP", "").strip()
-    if raw_cap:
-        with contextlib.suppress(ValueError):
-            if (cap := int(raw_cap)) > 0:
-                _body_log_cap = cap
+    _load_env()
+
+
+def _ensure_configured() -> None:
+    """Resolve redaction config once: explicit call > Django settings > env.
+
+    Retries until Django settings are importable, so a first call during
+    settings.py import doesn't pin env values permanently (same lazy pattern
+    as the masking settings bridge). An explicit configure_redaction() call
+    wins wholesale — even a partial one — matching masking_is_configured().
+    """
+    global _redact_auto_configure_attempted, _extra_secret_keys, _body_log_cap
+    global _compiled_cache
+    if _redact_auto_configure_attempted:
+        return
+    django_keys = _from_django("ECSCTX_REDACT_EXTRA_SECRET_KEYS")
+    django_cap = _from_django("ECSCTX_REDACT_BODY_LOG_CAP")
+    if django_keys is None and django_cap is None and _django_pending():
+        return  # settings mid-import: retry at the next log call
+    _redact_auto_configure_attempted = True
+    if django_keys is not None:
+        if isinstance(django_keys, str):
+            django_keys = [k.strip() for k in django_keys.split(",") if k.strip()]
+        _extra_secret_keys = tuple(k for k in django_keys if k)
+    if django_cap is not None:
+        with contextlib.suppress(ValueError, TypeError):
+            if (parsed := int(django_cap)) > 0:
+                _body_log_cap = parsed
+    _load_env()
+    _compiled_cache = None
 
 
 def _reset_redaction() -> None:
@@ -113,14 +175,12 @@ def _reset_redaction() -> None:
 
 
 def _get_secret_keys() -> tuple[str, ...]:
-    if _extra_secret_keys is None and _body_log_cap is None:
-        configure_redaction_from_env()
+    _ensure_configured()
     return _DEFAULT_SECRET_BODY_KEYS + (_extra_secret_keys or ())
 
 
 def _get_body_log_cap() -> int:
-    if _extra_secret_keys is None and _body_log_cap is None:
-        configure_redaction_from_env()
+    _ensure_configured()
     return _body_log_cap or _DEFAULT_BODY_LOG_CAP
 
 
@@ -191,11 +251,15 @@ def loggable_body(response: Any) -> str | None:
     stays dependency-free — any ``requests``-like response works. Redacts
     before capping: a cap that lands mid-value would leave the head of a
     token exposed, since the JSON pattern needs the closing quote to match.
+    Never raises: a body that can't be read is omitted, not logged raw.
     """
-    content_type = response.headers.get("Content-Type", "").lower()
-    if not any(t in content_type for t in _TEXTUAL_CONTENT_TYPES):
+    try:
+        content_type = response.headers.get("Content-Type", "").lower()
+        if not any(t in content_type for t in _TEXTUAL_CONTENT_TYPES):
+            return None
+        return redact_body(response.text or "")[: _get_body_log_cap()]
+    except Exception:  # noqa: BLE001 - log path must never raise; omit the body instead
         return None
-    return redact_body(response.text or "")[: _get_body_log_cap()]
 
 
 __all__ = [

@@ -840,11 +840,20 @@ from ecsctx.contrib.net import loggable_body, redact_body, redact_url
   textual responses, else `None`. Redacts **before** capping, so a cap landing
   mid-value cannot leave a token head exposed.
 
-Configure per deploy without code changes (explicit call wins over env):
+Configure per deploy without code changes. Precedence: explicit call >
+Django settings > env vars > defaults (same lazy pattern as the masking
+settings bridge — settings are read via a guarded import, so there is no
+hard Django dependency; pure-Python/FastAPI consumers use the call/env path):
 
 ```python
 from ecsctx.contrib.net import configure_redaction
 configure_redaction(extra_secret_keys=["merchant_pin"], body_log_cap=8192)
+```
+
+```python
+# Django settings.py (list or CSV string)
+ECSCTX_REDACT_EXTRA_SECRET_KEYS = ["merchant_pin", "terminal_secret"]
+ECSCTX_REDACT_BODY_LOG_CAP = 8192
 ```
 
 ```bash

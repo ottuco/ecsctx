@@ -4,6 +4,10 @@
 
 - PANs are display-masked (`mask_pan`: first 6 + last 4, e.g. `411111******1111`) instead of tokenized, in free text and under card keys; coverage widened to 12–19 digits (Maestro–UnionPay) incl. bare `int` values
 - New `ecsctx.contrib.net`: `redact_url` / `redact_body` / `loggable_body` ported from ottu_backend's net boundary, with `configure_redaction()` + `ECSCTX_REDACT_EXTRA_SECRET_KEYS` / `ECSCTX_REDACT_BODY_LOG_CAP` overrides
+(explicit call > Django settings > env; no hard Django dependency)
+- PAN display-masking is idempotent: a second pass leaves `mask_pan()` output
+alone instead of degrading it to an opaque token
+- `loggable_body` never raises: an unreadable body is omitted (`None`)
 
 ## v0.6.8 (2026-09-07)
 
