@@ -4,7 +4,10 @@ from django.test import override_settings
 
 from ecsctx.contrib.net import (
     configure_redaction,
+    ecs_http,
+    ecs_url,
     loggable_body,
+    parse_json_or_raw,
     redact_body,
     redact_url,
 )
@@ -146,3 +149,32 @@ class TestDjangoSettingsBridge:
     def test_django_settings_cap(self):
         with override_settings(ECSCTX_REDACT_BODY_LOG_CAP=16):
             assert loggable_body(_FakeResponse("x" * 100, "text/plain")) == "x" * 16
+
+
+class TestBoundaryShapers:
+    def test_ecs_url_redacts_credentials_by_default(self):
+        shaped = ecs_url("https://gw.example.com/pay?password=s3cr3t&order_id=42")
+        assert shaped["domain"] == "gw.example.com"
+        assert shaped["path"] == "/pay"
+        assert "s3cr3t" not in shaped["full"]
+        assert "order_id=42" in shaped["full"]
+
+    def test_ecs_url_opt_out_keeps_raw_query(self):
+        url = "https://gw.example.com/pay?password=s3cr3t"
+        assert ecs_url(url, redact=False)["full"] == url
+
+    def test_ecs_url_malformed_never_raises(self):
+        shaped = ecs_url("not a url")
+        assert shaped["domain"] is None
+
+    def test_ecs_http_builds_only_passed_fields(self):
+        assert ecs_http(request_method="POST", response_status_code=200) == {
+            "request": {"method": "POST"},
+            "response": {"status_code": 200},
+        }
+        assert ecs_http() == {}
+
+    def test_parse_json_or_raw(self):
+        assert parse_json_or_raw(b'{"a": 1}') == {"a": 1}
+        assert parse_json_or_raw(b"<html>oops</html>") == b"<html>oops</html>"
+        assert parse_json_or_raw(None) is None

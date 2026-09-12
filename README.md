@@ -856,6 +856,25 @@ ECSCTX_REDACT_EXTRA_SECRET_KEYS = ["merchant_pin", "terminal_secret"]
 ECSCTX_REDACT_BODY_LOG_CAP = 8192
 ```
 
+### Shared ECS boundary shapers
+
+The same module holds the request/response shaping helpers every service
+needs, so call sites compose redaction + ECS in one place:
+
+```python
+from ecsctx.contrib.net import ecs_http, ecs_url, parse_json_or_raw
+
+url = ecs_url(full_url)  # {"full": ..., "domain": ..., "path": ...}, query redacted
+http = ecs_http(request_method="POST", response_status_code=200)
+payload = parse_json_or_raw(response.content)  # real JSON, or the raw body untouched
+```
+
+Two structlog processors apply the same normalization automatically when a
+call site logs a raw value (exported from `ecsctx`): `normalize_url_field`
+shapes a bare-string `url=`, `normalize_payload_field` parses a bytes
+`payload=` (bytes-only by design — auto-parsing `str` would silently change a
+plain-text payload's type via JSON's bare primitives).
+
 ```bash
 ECSCTX_REDACT_EXTRA_SECRET_KEYS="merchant_pin,terminal_secret"
 ECSCTX_REDACT_BODY_LOG_CAP=8192
