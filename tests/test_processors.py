@@ -20,6 +20,8 @@ from ecsctx.processors import (
     mask_pan,
     masking_is_configured,
     namespace_ecs_fields,
+    normalize_payload_field,
+    normalize_url_field,
     reshape_log_event,
     root_fields_are_configured,
     safe_tokenize,
@@ -865,3 +867,23 @@ class TestPanDisplayMasking:
         listed = _safe_dump_and_mask({"card": {"tokens": ["4111111111111111"]}})
         assert listed == {"card": {"tokens": ["411111******1111"]}}
         assert _safe_dump_and_mask(listed) == listed
+
+
+class TestNormalizeProcessors:
+    def test_url_string_is_shaped_and_redacted(self):
+        out = normalize_url_field(None, None, {"url": "https://gw.example.com/p?password=s3cr3t"})
+        assert out["url"]["domain"] == "gw.example.com"
+        assert "s3cr3t" not in out["url"]["full"]
+
+    def test_url_dict_passes_through(self):
+        shaped = {"full": "https://x.example/", "domain": "x.example", "path": "/"}
+        assert normalize_url_field(None, None, {"url": shaped}) == {"url": shaped}
+
+    def test_payload_bytes_are_parsed(self):
+        out = normalize_payload_field(None, None, {"payload": b'{"a": 1}'})
+        assert out == {"payload": {"a": 1}}
+
+    def test_payload_str_and_invalid_bytes_untouched(self):
+        assert normalize_payload_field(None, None, {"payload": "123"}) == {"payload": "123"}
+        raw = b"<html>oops</html>"
+        assert normalize_payload_field(None, None, {"payload": raw}) == {"payload": raw}

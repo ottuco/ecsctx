@@ -16,6 +16,7 @@ from structlog.contextvars import get_contextvars
 
 from ecsctx import identity
 from ecsctx.context import get_logging_context, get_trace_id
+from ecsctx.contrib.net import ecs_url, parse_json_or_raw
 from ecsctx.pii import tokenize as _pii_tokenize
 
 
@@ -876,6 +877,34 @@ def _safe_dump_and_mask(data):
             return _scrub_string_content(str(data))
         except Exception:
             return "LOG_MASKING_ERROR"
+
+
+def normalize_url_field(_logger, _method_name, event_dict: dict) -> dict:
+    """Auto-normalize a bare-string ``url=`` into the ECS url object.
+
+    Call sites log the raw string; the processor shapes it via ``ecs_url()``
+    (credential query redacted by default), so no call site imports helpers
+    itself. An already-shaped dict passes through unchanged.
+    """
+    url = event_dict.get("url")
+    if isinstance(url, str):
+        event_dict["url"] = ecs_url(url)
+    return event_dict
+
+
+def normalize_payload_field(_logger, _method_name, event_dict: dict) -> dict:
+    """Auto-parse a bytes ``payload=`` into real JSON for structured logging.
+
+    Deliberately bytes-only, not str: JSON also parses bare primitives
+    ("123" -> 123), so auto-parsing arbitrary strings risks silently changing
+    a plain-text payload's type. Bytes always means raw wire data, so the
+    intent there is unambiguous. Falls back to the original bytes unchanged
+    if it isn't valid JSON (e.g. an HTML error page).
+    """
+    payload = event_dict.get("payload")
+    if isinstance(payload, bytes):
+        event_dict["payload"] = parse_json_or_raw(payload)
+    return event_dict
 
 
 def mask_sensitive_data(_logger, _method_name, event_dict):

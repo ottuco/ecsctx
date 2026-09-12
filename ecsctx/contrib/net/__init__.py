@@ -17,10 +17,11 @@ keys may slip — those providers should move credentials out of the query.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 _REDACTED = "[REDACTED]"
 
@@ -262,10 +263,114 @@ def loggable_body(response: Any) -> str | None:
         return None
 
 
+def parse_json_or_raw(raw: bytes | str | None) -> Any:
+    """Parse a raw HTTP body as JSON for logging under ``payload=``.
+
+    Returns it unchanged when it isn't valid JSON (an HTML error page, a
+    non-JSON callback body). Logging raw bytes directly renders as their
+    Python repr (b'...'), a garbled, unsearchable string — this keeps the
+    body as real structured JSON when it is one, and never crashes the log
+    call when it isn't.
+    """
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+
+
+def ecs_url(url: str, *, redact: bool = True) -> dict:
+    """Build an ECS-compliant ``url`` object from a raw URL string.
+
+    Credential query params are redacted by default (``redact=True``), so
+    ``url.full`` — the field every dashboard shows — can never carry a
+    password or API key. Pass ``redact=False`` only when the URL is already
+    redacted. ``urlparse`` never raises on malformed input: hostname is
+    simply None if the URL can't be parsed.
+    """
+    if redact:
+        url = redact_url(url)
+    parsed = urlparse(url)
+    return {"full": url, "domain": parsed.hostname, "path": parsed.path}
+
+
+def _ecs_body(bytes_: int | None, content: str | None) -> dict | None:
+    if bytes_ is None and content is None:
+        return None
+    body: dict = {}
+    if bytes_ is not None:
+        body["bytes"] = bytes_
+    if content is not None:
+        body["content"] = content
+    return body
+
+
+def ecs_http(
+    *,
+    request_method: str | None = None,
+    request_mime_type: str | None = None,
+    request_referrer: str | None = None,
+    request_bytes: int | None = None,
+    request_id: str | None = None,
+    request_body_bytes: int | None = None,
+    request_body_content: str | None = None,
+    response_status_code: int | None = None,
+    response_mime_type: str | None = None,
+    response_bytes: int | None = None,
+    response_body_bytes: int | None = None,
+    response_body_content: str | None = None,
+    version: str | None = None,
+) -> dict:
+    """Build the ECS ``http`` field from named arguments only — never from an
+    object whose attributes get read blindly. Every parameter name is a real
+    ECS sub-field; a typo in a caller's kwarg is a Python TypeError, not a
+    silently wrong JSON key. Only the arguments actually passed end up in the
+    result. Body CONTENT params exist for completeness but should rarely be
+    used — the body belongs in the ``payload=`` kwarg (masked by
+    ``mask_sensitive_data``) or behind ``loggable_body()``.
+    """
+    request: dict = {}
+    if request_method is not None:
+        request["method"] = request_method
+    if request_mime_type is not None:
+        request["mime_type"] = request_mime_type
+    if request_referrer is not None:
+        request["referrer"] = request_referrer
+    if request_bytes is not None:
+        request["bytes"] = request_bytes
+    if request_id is not None:
+        request["id"] = request_id
+    request_body = _ecs_body(request_body_bytes, request_body_content)
+    if request_body is not None:
+        request["body"] = request_body
+
+    response: dict = {}
+    if response_status_code is not None:
+        response["status_code"] = response_status_code
+    if response_mime_type is not None:
+        response["mime_type"] = response_mime_type
+    if response_bytes is not None:
+        response["bytes"] = response_bytes
+    response_body = _ecs_body(response_body_bytes, response_body_content)
+    if response_body is not None:
+        response["body"] = response_body
+
+    http: dict = {}
+    if request:
+        http["request"] = request
+    if response:
+        http["response"] = response
+    if version is not None:
+        http["version"] = version
+    return http
+
+
 __all__ = [
     "configure_redaction",
     "configure_redaction_from_env",
+    "ecs_http",
+    "ecs_url",
     "loggable_body",
+    "parse_json_or_raw",
     "redact_body",
     "redact_url",
 ]
