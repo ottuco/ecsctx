@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.6.9 (2026-09-12)
+
+### Other
+- Merge pull request #42 from ottuco/feature/pan-display-and-net-redact (ebe24ef)
+- Review fixes: PAN idempotency, loggable_body fails closed, Django settings bridge (2813966)
+- Display-mask PANs (12-19, first6/last4) and add contrib.net redaction (c92206f)
+
+
 ## Unreleased
 
 - PANs are display-masked (`mask_pan`: first 6 + last 4, e.g. `411111******1111`) instead of tokenized, in free text and under card keys; coverage widened to 12–19 digits (Maestro–UnionPay) incl. bare `int` values
