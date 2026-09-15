@@ -402,10 +402,13 @@ class TestCheckMaskingConfiguredSystemCheck:
 
 
     @pytest.mark.parametrize("env", ["local", "test", "dev"])
-    def test_skipped_in_default_skip_envs(self, monkeypatch, env):
+    def test_not_skipped_in_local_test_or_dev_by_default(self, monkeypatch, env):
+        """No environment is skipped unless ECSCTX_MASKING_CHECK_SKIP_ENVS
+        lists it, so a masking gap fails the check before production."""
         monkeypatch.setenv("ENVIRONMENT", env)
         with override_settings(LOGGING=UNMASKED_CFG):
-            assert check_masking_configured(None) == []
+            errors = check_masking_configured(None)
+        assert [(e.id, e.msg) for e in errors] == [("ecsctx.E001", MISSING_FILTER_ERROR)]
 
     def test_not_skipped_when_environment_is_unset(self):
         """No ENVIRONMENT var at all must not read as "skip" — a box that
@@ -433,7 +436,9 @@ class TestCheckMaskingConfiguredSystemCheck:
 
     def test_env_var_value_is_matched_case_insensitively(self, monkeypatch):
         monkeypatch.setenv("ENVIRONMENT", "LOCAL")
-        with override_settings(LOGGING=UNMASKED_CFG):
+        with override_settings(
+            LOGGING=UNMASKED_CFG, ECSCTX_MASKING_CHECK_SKIP_ENVS=["local"]
+        ):
             assert check_masking_configured(None) == []
 
     def test_skip_envs_entries_are_matched_case_insensitively(self, monkeypatch):
