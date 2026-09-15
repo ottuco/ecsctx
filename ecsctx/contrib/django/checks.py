@@ -8,9 +8,9 @@ the MIDDLEWARE string "ecsctx.contrib.django.LoggingContextMiddleware").
 Refuses to boot cleanly (django.core.checks reports an Error) if LOGGING
 could ship unmasked logs off-host: mask_pii_filter must be defined with a
 '()' path that resolves to ecsctx.masking.filters.MaskPIIFilter (or a
-subclass), and every shipping handler (anything other than a console/no-op
-handler) must either carry it itself, or only be reached by loggers that
-carry it.
+subclass), and every handler must either carry it itself, or only be reached
+by loggers that carry it. Every handler counts as shipping, because even
+console output is usually collected and forwarded off-host.
 
 find_masking_errors() is the core every entry point goes through, summing the
 two halves: find_masking_config_errors() reads the declarative LOGGING dict
@@ -33,15 +33,8 @@ import os
 from importlib import import_module
 from typing import Any
 
-_NON_SHIPPING_CLASSES = frozenset({"logging.StreamHandler", "logging.NullHandler"})
-
 DEFAULT_SKIP_ENVS = frozenset({"local", "test", "dev"})
 DEFAULT_ENV_VAR = "ENVIRONMENT"
-
-
-def _is_shipping_handler(handler_config: dict) -> bool:
-    """A handler ships logs off-host unless it is a console StreamHandler or a no-op NullHandler."""
-    return handler_config.get("class") not in _NON_SHIPPING_CLASSES
 
 
 def _resolve_dotted_path(path: str) -> Any:
@@ -89,14 +82,13 @@ def _filter_used_in_live_object(logger_or_handler) -> bool:
     return any(isinstance(f, MaskPIIFilter) for f in logger_or_handler.filters)
 
 
-def _is_unmasked_shipping_logger(logger_config: dict, handlers_configs: dict) -> bool:
-    """True if this logger reaches a shipping handler without mask_pii_filter applied
+def _is_unmasked_logger(logger_config: dict, handlers_configs: dict) -> bool:
+    """True if this logger reaches a handler without mask_pii_filter applied
     anywhere between the logger itself and that handler."""
     if _filter_used_in_conf(logger_config):
         return False
     for handler_name in logger_config.get("handlers", []):
-        handler_config = handlers_configs.get(handler_name, {})
-        if _is_shipping_handler(handler_config) and not _filter_used_in_conf(handler_config):
+        if not _filter_used_in_conf(handlers_configs.get(handler_name, {})):
             return True
     return False
 
@@ -135,19 +127,17 @@ def find_masking_config_errors(logging_config: dict[str, Any]) -> list[str]:
     unmasked = [
         name
         for name, logger_config in loggers_configs.items()
-        if _is_unmasked_shipping_logger(logger_config, handlers_configs)
+        if _is_unmasked_logger(logger_config, handlers_configs)
     ]
-    if _is_unmasked_shipping_logger(logging_config.get("root", {}), handlers_configs):
+    if _is_unmasked_logger(logging_config.get("root", {}), handlers_configs):
         unmasked.append("root")
 
     if unmasked:
         errors.append(
             "mask_pii_filter is defined but not used by logger(s): "
             + ", ".join(sorted(unmasked))
-            + ". For PCI DSS compliance, every logger that reaches a shipping "
-            "handler (anything other than logging.StreamHandler/"
-            "logging.NullHandler) must carry mask_pii_filter itself, or only "
-            "use handlers that do."
+            + ". For PCI DSS compliance, every logger that has handlers must "
+            "carry mask_pii_filter itself, or only use handlers that do."
         )
     return errors
 
@@ -172,10 +162,9 @@ def find_unmasked_live_handlers(logging_config: dict[str, Any]) -> list[str]:
         if logger.disabled or _filter_used_in_live_object(logger):
             continue
         for handler in logger.handlers:
-            handler_class = _live_handler_class_path(handler)
-            if handler_class in _NON_SHIPPING_CLASSES or _filter_used_in_live_object(handler):
+            if _filter_used_in_live_object(handler):
                 continue
-            unmasked.append(f"{name} -> {handler_class}")
+            unmasked.append(f"{name} -> {_live_handler_class_path(handler)}")
 
     if not unmasked:
         return []
