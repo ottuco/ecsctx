@@ -121,7 +121,7 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
 7. error_ecs_fields                            # ← Consumes exc_info -> error.{type,message,stack_trace}
 8. contextvars_injector                        # ← Injects LoggingContext + trace + service
 9. namespace_ecs_fields                        # ← Reshape fields + clean up flat 'level' key
-10. mask_sensitive_data                        # ← PII tokenization (HMAC-SHA-256)
+10. mask_sensitive_data                        # ← PII/PCI mask + per-field-type tokenize
 11. ecs_validator                              # ← Warn on ECS field violations
 12. ECSFormatter                               # ← Format to ECS 1.12.0 JSON
 ```
@@ -270,8 +270,8 @@ configure_root_fields(extra_fields=["customer", "booking"])
 
 The built-in `ROOT_ALLOWLIST` is never reduced — configured fields only extend it.
 
-**PII handling** (see [section 13](#13-pii-masking--tokenization) for full details):
-- **Automatic log masking**: `mask_sensitive_data` processor applies HMAC-SHA-256 tokenization (`ptok:v1:...`) and key-based redaction
+**PII/PCI handling** (see [section 13](#13-pii-masking--tokenization) for full details):
+- **Automatic log masking**: `MaskPIIFilter` (a stdlib `logging.Filter`, wired in by default via `get_logging_config()`) masks PII and PCI-sensitive data everywhere — structlog, stdlib, third-party logs, `%s`-style args. Every masked value is `[LABEL]` or `[LABEL:token]` (HMAC-SHA-256 token when PII is configured).
 - **Explicit encryption API**: `protect()` encrypts (AES-256-GCM), `reveal()` decrypts, `tokenize()` produces deterministic HMAC tokens
 
 ---
@@ -324,6 +324,20 @@ CID_HEADER = "HTTP_TRACEPARENT"
 
 # PII is auto-configured from PII_TOKEN_KEYSET_PATH env var
 ```
+
+`get_logging_config()` masks every handler it builds, but Django attaches its own `django` and `django.server` handlers in a separate pass. Sweep them once the app registry is ready:
+
+```python
+# apps.py
+class MyAppConfig(AppConfig):
+    def ready(self):
+        from django.conf import settings
+        from ecsctx.masking import install_maskers
+
+        install_maskers(settings.LOGGING)
+```
+
+Without it the masking system check fails at boot — see [section 13](#13-pii-masking--tokenization).
 
 ### 3. Use in your code
 
@@ -796,40 +810,75 @@ This ensures the receiving service can correlate its logs with yours under the s
 
 ## 13. PII Masking & Tokenization
 
-ecsctx automatically detects and protects sensitive data in logs. The `mask_sensitive_data` processor walks payload structures recursively (path-aware) to find and tokenize PII, and scans every string value for email/phone patterns.
+ecsctx automatically detects and masks PII and PCI-sensitive data in logs. The engine is `MaskPIIFilter` (`ecsctx.masking`) — a stdlib `logging.Filter`, so it sees every record reaching a handler it is attached to, whoever produced it: structlog, plain stdlib logging, Django, `requests`, `urllib3`. That is strictly more reach than a structlog processor has, including `%s`-style args — `log.info("user %s", email)` keeps the email in `record.args` until interpolation, where only a filter can catch it.
 
-**Log processor path** (automatic via `mask_sensitive_data`):
-- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`) for fraud correlation. Same input always produces the same token.
-- When PII is not configured: detected values are replaced with `[PII_REDACTED]` — raw PII never appears in logs.
+Two paths drive that one engine, both on by default: the filter itself on handlers (wired in by `get_logging_config()`) and `mask_sensitive_data`, a structlog processor in the formatter's chain that covers pipelines never calling `get_logging_config()`. Records built by `get_logging_config()` pass both and are masked twice — idempotent by design, not a bug. See [Installing the maskers](#installing-the-maskers) for what each setup needs.
 
-**Explicit encryption API** (standalone, NOT part of the log processor pipeline):
+**Every masked value is `[LABEL]` or `[LABEL:token]`** — never a bare `ptok:v1:...` or `***`. The label says *what* was hidden (`[EMAIL-MASKED]`, `[CARD-MASKED]`, `[SECRET-MASKED]`, ...); the token, present only when PII is configured, lets you correlate repeat occurrences of a value without ever exposing it.
+
+Whether a value is merely masked or also tokenized is a property of its **field type** (`FieldRule.tokenizable` in `masking/fields_rules.py`), not of the caller:
+
+- Tokenizable types (email, phone, address, name, generic, card, IBAN, JWT, SSN, PEM key, secret, payment id) get `[LABEL:ptok:v1:...]` — a deterministic **HMAC-SHA-256** token — when PII is configured (`PII_PROVIDER=file|vault`). Same input always produces the same token.
+- The same types fall back to the bare `[LABEL]` when PII is not configured, or when tokenization fails. Raw PII never reaches the log either way.
+- **CVV is never tokenizable** — PCI forbids storing it in any form, so it is always the literal `[CVV-MASKED]`, configured or not.
+
+**Explicit encryption API** (standalone, NOT part of the masking pipeline):
 - `protect()` / `reveal()` use **AES-256-GCM** for randomized ciphertext (`penc:v1:<kid>:...`) when reversible encryption is needed. Requires `PII_ACCESS=full`.
 
 Keys are delivered via mounted keyset files or fetched from Vault.
 
 ### What Gets Detected
 
-| Type | Detection | Output |
-|------|-----------|--------|
-| **Emails** | Regex: `user@domain.com` patterns | `"ptok:v1:KeND..."` |
-| **Phone numbers** | Regex: 10-15 digits with +/spaces/dashes | `"ptok:v1:x8Fp..."` |
-| **Names** | Keys containing: `name`, `customer`, `payer`, `billing`, `shipping`, `cardholder`, `email`, `phone`, `mobile`, `contact`, `recipient`, `beneficiary`, `address`, `udf` | `"ptok:v1:..."` |
-| **Auth headers** | `authorization`, `api-key`, `x-api-key` keys | `"Bearer <first4>****<last4>"` (masked, not tokenized; `"Bearer ****"` when the secret is ≤8 chars) |
+Two independent strategies, both producing the same label/token output.
+
+**Content-based** — 17 ordered rules scanning every string the filter reaches:
+
+| Type | Label |
+|------|-------|
+| Email | `[EMAIL-MASKED]` |
+| Phone (local or `+`-prefixed international; `-`/space/`.` separators) | `[PHONE-MASKED]` |
+| Card number (PAN) — 12–19 digits, any leading digit | `[CARD-MASKED]` (always fully masked — no BIN/last4 reveal) |
+| IBAN | `[IBAN-MASKED]` |
+| SSN | `[SSN-MASKED]` |
+| JWT | `[JWT-MASKED]` |
+| PEM key block (`-----BEGIN ... KEY-----`) | `[PEM-KEY-MASKED]` |
+| Credential/token/secret/password, or a named key like `api_key` (see below), incl. `Authorization:` / `Bearer ...` | `[SECRET-MASKED]` |
+| Payment/transaction/auth id | `[PAYMENT-ID-MASKED]` |
+| CVV/CVC/security code — keyword-prefixed, or a bare 3–4 digit group | `[CVV-MASKED]` (never tokenized) |
+
+**Key-based** — in a dict, a sensitive key masks its **whole value outright**, regardless of type or nesting (a dict/list value is stringified and masked as one unit, never recursed into). This is what catches a bare structlog kwarg like `log.info(..., token="abcd1234")`, where key and value never share one string for a content rule to match:
+
+| Key contains | Label |
+|---|---|
+| `cvv`, `cvc`, `security_code` | `[CVV-MASKED]` |
+| `token`, `secret`, `password`, `passwd`, `credential`, `bearer`, `basic`, `digest`, `authorization`, or a named key like `api_key` | `[SECRET-MASKED]` |
+| `payment_id`, `transaction_id`, `auth_id` | `[PAYMENT-ID-MASKED]` |
+| `email` | `[EMAIL-MASKED]` |
+| `phone`, `mobile`, `tel` | `[PHONE-MASKED]` |
+| `address` | `[ADDRESS-MASKED]` |
+| `name`, `cardholder`, `beneficiary`, `recipient`, `payer` | `[NAME-MASKED]` |
+| `billing`, `shipping`, `customer`, `contact`, `udf` | `[GENERIC-MASKED]` |
+
+Only named `*_key`s count as secrets: `api`, `access`, `secret`, `private`, `public`, `session`, `master`, `root`, `signing`, `encryption` or `decryption`, followed by `key` (separator optional — `apikey`, `api-key`). Any other `*_key`, like `cache_key` or `sort_key`, stays visible.
+
+For a key matching more than one row, first match wins: `customer_name` → `[NAME-MASKED]`, while a bare `customer` key (no more specific keyword in it) falls to `[GENERIC-MASKED]` and masks its whole value, nested dicts included.
 
 ### Whitelist (NOT Masked)
 
-These keys are safe even though they contain "name":
+`SAFE_KEYS` — checked before every key rule, so these stay readable even though they contain a sensitive keyword:
 
 ```
 gateway_name, vendor_name, module_name, func_name, task_name, service_name,
 app_name, project_name, class_name, method_name, view_name, username,
 site_name, domain_name, bank_name, display_name, install_name,
-installation_name, event_name, customer_id, id, pk
+installation_name, event_name, pathname, customer_id, id, pk
 ```
 
 ### Path exemptions
 
-Some non-PII fields share a name with a sensitive key — e.g. a payment catalog's `payment_methods[*].name` ("KNET") would otherwise be tokenized. The whitelist above is key-name based and global; for finer control, exempt specific **JSON paths** from key-based tokenization. (Email/phone scrubbing still runs on exempted paths, so a real email never slips through.)
+Some non-PII fields share a name with a sensitive key — a payment catalog's `payment_methods[*].name` ("KNET") would otherwise be masked. `SAFE_KEYS` is global and key-name based; for finer control, exempt specific **JSON paths** from key-based masking.
+
+Two hard limits: exemptions apply only to the exemptable field types (email/phone/address/name/generic) — **secrets are never exemptable** (cvv, credential, payment-id, card, PEM, IBAN, JWT, SSN mask on every path) — and content rules still scan an exempted value, so a real email in an exempted field is still masked.
 
 Configure exemptions in any of three ways (precedence: explicit call > Django setting > env var):
 
@@ -845,7 +894,7 @@ from ecsctx import configure_masking
 configure_masking(exempt_paths=["payment_methods[*].name", "audit"])
 ```
 
-**Path syntax** (matched relative to the masked container, e.g. inside `payload`):
+**Path syntax** (matched relative to the whole log record):
 
 | Segment | Meaning |
 |---------|---------|
@@ -858,6 +907,114 @@ Matching is a **prefix match**, so a pattern also exempts everything nested belo
 - `payment_methods[*].name` — exempts just that field in every array element
 - `payment_methods` — exempts the entire `payment_methods` subtree
 - `order.customer.name`, `items[*].tags[*].name` — arbitrary nesting works
+
+### Configuring the rules
+
+The rules are code, not settings — deliberately, so no config change can silently widen what leaks. What a project can change:
+
+| Knob | Where | Effect |
+|---|---|---|
+| `exempt_paths` | `configure_masking()` / `ECSCTX_MASK_EXEMPT_PATHS` / `PII_MASK_EXEMPT_PATHS` | Skip key-based masking on those JSON paths (above) |
+| `skip_keys` | `MaskPIIFilter(skip_keys=[...])` | Top-level keys passed through untouched — not even content-scanned. Defaults to `STRUCTURAL_ECS_KEYS` (`service`, `project`, `log`): ecsctx's own metadata, each holding a literal `name` child key. Pass `skip_keys=()` for a fully generic filter |
+| Anything else | subclass `MaskPIIFilter` | `SAFE_KEYS`, `REGEX_MASKER` and the keyword map are module constants in `ecsctx.masking.patterns` |
+
+```python
+from ecsctx import MaskPIIFilter
+
+# Handler whose records carry your own structural wrapper key
+handler.addFilter(MaskPIIFilter(skip_keys=["service", "project", "log", "my_envelope"]))
+```
+
+Before reaching for a subclass, know that `REGEX_MASKER`'s 17 rules run in a **fixed order** several of them depend on — keyword rules first, IBAN and phone before the card rule, email before the numeric rules, and the loose bare-3–4-digit CVV rule last. `patterns.py` documents each dependency; don't reorder it.
+
+### Installing the maskers
+
+Pick the row that matches your setup:
+
+| Scenario | What you do |
+|---|---|
+| Django, `LOGGING = get_logging_config()` | Covers every handler it builds. Django's own loggers still need the sweep below |
+| structlog-only, `configure_structlog()` with your own formatter | **Nothing** — `mask_sensitive_data` is in the chain and delegates to the same engine |
+| You build the `LOGGING` dict yourself | `install_maskers_in_config(LOGGING)` before it reaches `dictConfig()` |
+| Handlers no config dict of yours mentions — Django's `django` / `django.server` loggers, a package that calls `addHandler()` on import | `install_maskers(settings.LOGGING)` from `AppConfig.ready()` |
+| A handler attached later still, at runtime | `install_maskers_on_handlers()`, or `handler.addFilter(MaskPIIFilter())` directly |
+| Non-Django (FastAPI, plain script) | Same two calls — the engine is framework-agnostic |
+
+Every Django project needs the sweep, and `AppConfig.ready()` is where it belongs — late enough that Django has applied both logging passes and imported every app:
+
+```python
+# apps.py
+class MyAppConfig(AppConfig):
+    def ready(self):
+        from django.conf import settings
+        from ecsctx.masking import install_maskers
+
+        install_maskers(settings.LOGGING)
+```
+
+`install_maskers()` does both halves: it wires the filter into the dict and sweeps every live handler. On a dict from `get_logging_config()` the first half is already done, so only the sweep has anything to do.
+
+Why it's needed at all, when `get_logging_config()` already wired the filter: Django applies its own `DEFAULT_LOGGING` in an earlier `dictConfig` pass, and `get_logging_config()` sets `disable_existing_loggers: False` without redefining the `django` logger. So that logger keeps `DEFAULT_LOGGING`'s `console` and `AdminEmailHandler` handlers, and `django.server` keeps its console handler. They sit in no dict you own, so `install_maskers_in_config()` cannot reach them. Same for any package attaching a handler at import time — `sentry_sdk` and `urllib3` both do. Without the sweep, a stock Django project reports exactly these:
+
+```
+django -> logging.StreamHandler, django -> django.utils.log.AdminEmailHandler,
+django.server -> logging.StreamHandler, sentry_sdk.errors -> logging.StreamHandler,
+urllib3 -> logging.NullHandler
+```
+
+Do **not** put the sweep in `settings.py`: it would run while the settings module is still importing, before Django applies `settings.LOGGING` and before your apps are imported, so it would find almost nothing to sweep.
+
+`ecsctx.masking` exports each half on its own too — `install_maskers_in_config(logging_config)` for a dict that hasn't reached `dictConfig()` yet, `install_maskers_on_handlers()` for the live tree alone — plus the three `uninstall_*` counterparts.
+
+All are idempotent: no handler ever gets the filter twice. None patch the standard library — `install_maskers_on_handlers()` sweeps only the handlers alive at call time, so a handler built afterwards needs another call. Miss one and the boot check below names it.
+
+### Boot-time enforcement
+
+Importing `ecsctx.contrib.django` registers a Django system check that fails `manage.py check` / `check --deploy` / `runserver` / `migrate` if any handler could send unmasked logs off-host. Every handler counts, `logging.StreamHandler` and `logging.NullHandler` included, because console output is usually collected and forwarded off-host too. No `AppConfig` or `INSTALLED_APPS` entry needed. `get_logging_config()` satisfies the `LOGGING` half by itself, but not the live tree: Django's own `django` and `django.server` loggers always carry handlers from its `DEFAULT_LOGGING` pass, so every project also needs the sweep from [Installing the maskers](#installing-the-maskers).
+
+It reads **two** sources, because `settings.LOGGING` is not the whole picture:
+
+| Half | Reads | Catches |
+|---|---|---|
+| `find_masking_config_errors()` | the `LOGGING` dict | `mask_pii_filter` missing, defined but unused by a logger that has handlers, or pointing at a class that isn't a `MaskPIIFilter` |
+| `find_unmasked_live_handlers()` | the live logging tree | unmasked handlers on loggers `LOGGING` never mentions |
+
+`find_masking_errors()` sums both; every entry point goes through it.
+
+The second half matters because Django applies its own `DEFAULT_LOGGING` via `dictConfig` **before** `settings.LOGGING` — two passes, not a merge — and configures logging before `apps.populate()`. So Django's `django` logger keeps the `console` and `AdminEmailHandler` handlers from that first pass (unmasked tracebacks by email in production, in no config dict), `django.server` keeps its console handler, and any package attaching a handler at import time is invisible to `LOGGING` too. `disable_existing_loggers` does not rescue you: it only marks pre-existing loggers disabled, their handlers stay attached.
+
+To clear a finding, either name the logger in `LOGGING["loggers"]` so the second pass rebuilds it with `mask_pii_filter`, or sweep it with `install_maskers_on_handlers()` from `AppConfig.ready()`.
+
+**Configuring the check.** It runs in every environment by default, `local`, `test` and `dev` included, so a masking gap is caught before it reaches production. To skip it somewhere, list that environment in `ECSCTX_MASKING_CHECK_SKIP_ENVS`; values are matched against the `ENVIRONMENT` env var, case-insensitively. Each part is a Django setting:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `ECSCTX_MASKING_CHECK_ENV_VAR` | `"ENVIRONMENT"` | Which env var holds the environment name |
+| `ECSCTX_MASKING_CHECK_SKIP_ENVS` | `[]` | Which values skip the check |
+| `ECSCTX_SKIP_MASKING_CHECK` | `False` | `True` turns the check off outright |
+
+```python
+# settings.py
+ECSCTX_MASKING_CHECK_ENV_VAR = "APP_ENV"
+ECSCTX_MASKING_CHECK_SKIP_ENVS = ["local", "dev"]
+```
+
+**Enforcing it yourself.** Two direct-call entry points. Neither is skipped by environment, so they still hold where you silenced the system check with `ECSCTX_MASKING_CHECK_SKIP_ENVS` or `ECSCTX_SKIP_MASKING_CHECK`:
+
+```python
+# In your test suite — raises AssertionError
+from ecsctx.contrib.django.checks import assert_no_masking_errors
+
+def test_logging_is_masked(settings):
+    assert_no_masking_errors(settings.LOGGING)
+
+# In AppConfig.ready() or similar — raises ValueError
+from ecsctx.contrib.django.checks import validate_masking_config
+
+validate_masking_config(settings.LOGGING)
+```
+
+Both read the live tree as well as the dict, so call them once Django has finished booting. In a test suite that means the sweep your `AppConfig.ready()` does must have run too — without it they report Django's own `django` / `django.server` handlers and the test fails. Loggers named in `LOGGING` (including `root`) are left to the dict half, so handlers pytest attaches to `root` are not reported.
 
 ### Configuration
 
@@ -899,25 +1056,26 @@ PII_VAULT_TIMEOUT=10                                 # HTTP timeout for Vault ca
 
 ### How It Works
 
-1. Each masked container (`payload`, `args`, `kwargs`, request/response bodies) is normalized via a JSON round-trip (`default=str` handles UUIDs, Decimals, model instances)
-2. The structure is walked recursively, tracking each value's JSON path
-3. A sensitive-key string value is tokenized (HMAC-SHA-256) — unless its key is whitelisted or its path is exempted (see [Path exemptions](#path-exemptions))
-4. Every string value is also scanned for email/phone patterns and tokenized (defense in depth, even on exempted paths)
-5. Auth header values are masked (truncated, not encrypted)
-6. Values are normalized before tokenization (emails lowercased, phones to E.164)
+1. `MaskPIIFilter.filter()` runs on the `LogRecord` before its handler emits it — covering `record.msg` (string or dict) and `record.args`, so `log.info("user %s", email)` is masked before interpolation
+2. Dicts and lists are walked recursively, tracking each value's path; top-level `skip_keys` pass through untouched
+3. Per dict key: `SAFE_KEYS` wins first, then a sensitive key masks its **whole value** as one unit — unless the path is exempted and the field type is exemptable
+4. Every remaining string runs through the 17 content rules, in their fixed order
+5. A hit becomes `[LABEL]`, or `[LABEL:ptok:v1:...]` when PII is configured. Values are normalized first — emails lowercased, phones to E.164, cards and SSNs digits-only, PEM reduced to its base64 body — so one value always yields one token, however it was written
+6. The record is marked masked, so extra handlers skip the re-walk. `mask_sensitive_data` still re-walks the dict, but `already_masked()` leaves already-masked values alone
 
 ### Example Output
 
 ```json
 {
-  "customer_name": "ptok:v1:KeNDkDCY0cXCg3VJU4xf...",
-  "email": "ptok:v1:x8FpQm2kL9nR7vBwYzA3...",
+  "customer_name": "[NAME-MASKED:ptok:v1:KeNDkDCY0cXCg3VJU4xf...]",
+  "email": "[EMAIL-MASKED:ptok:v1:x8FpQm2kL9nR7vBwYzA3...]",
+  "cvv": "[CVV-MASKED]",
   "amount": 100,
   "gateway_name": "knet"
 }
 ```
 
-`amount` is untouched (not a sensitive key). `gateway_name` is whitelisted. `customer_name` and `email` are tokenized.
+`customer_name` and `email` are masked with a correlatable token. `cvv` never gets one. `amount` isn't a sensitive key; `gateway_name` is whitelisted. Without PII configured the same record reads `[NAME-MASKED]` / `[EMAIL-MASKED]` — label only, no token.
 
 ---
 
@@ -1253,13 +1411,15 @@ Expected stdout:
 ```json
 {
   "message": "test_pii",
-  "customer_name": "ptok:v1:...",
-  "email": "ptok:v1:...",
+  "customer_name": "[NAME-MASKED:ptok:v1:...]",
+  "email": "[EMAIL-MASKED:ptok:v1:...]",
   "amount": 100
 }
 ```
 
-If `customer_name` shows `"John Doe"` in plain text, check that `mask_sensitive_data` is in the processor chain.
+Without PII configured the same line reads `[NAME-MASKED]` / `[EMAIL-MASKED]` — masked, just not correlatable.
+
+If `customer_name` shows `"John Doe"` in plain text, check that `mask_sensitive_data` is in the processor chain and that the handler carries `mask_pii_filter`.
 
 ### Step 4: Verify Context Propagation (Celery/RQ)
 
@@ -1296,7 +1456,7 @@ docker compose logs vector
 2. Select the data stream: `logs-{PROJECT_NAME}-{ENVIRONMENT}`
 3. Search: `message: "test_pii"`
 4. Verify fields are nested correctly (`trace.id`, not flat `trace_id`)
-5. Verify PII is tokenized (`ptok:v1:...`, not plain text)
+5. Verify PII is masked (`[EMAIL-MASKED:ptok:v1:...]` or `[EMAIL-MASKED]`, never plain text)
 
 ---
 
@@ -1446,11 +1606,12 @@ If you use a `common-logs` ingest pipeline, it can enforce ECS field types so ma
 | `PII_VAULT_CACERT_PATH` | CA cert for Vault TLS (vault provider) | System CA | No |
 | `PII_REFRESH_SECONDS` | Keyset refresh interval in seconds (vault provider) | `300` | No |
 | `PII_VAULT_TIMEOUT` | HTTP timeout for Vault requests in seconds | `10` | No |
+| `PII_MASK_EXEMPT_PATHS` | JSON paths exempt from key-based masking (CSV) | — | No |
 | `APP_VERSION` | Application version in `service.version` | `"0.0.0"` | No |
 | `ECSCTX_ROOT_FIELDS` | Extra root-level log fields (CSV), extends `ROOT_ALLOWLIST` | — | No |
 | `SERVICE_TYPE` | Service type: `app`, `rq`, `celery` | Auto-detected from argv | No |
 | `PROJECT_NAME` | Project name in `project.name` + Vector data stream | `"connect"` | **Yes** |
-| `ENVIRONMENT` | Environment name for Vector data stream namespace | - | **Yes** |
+| `ENVIRONMENT` | Environment name for the Vector data stream namespace; also decides whether the masking system check runs (skipped only on values listed in `ECSCTX_MASKING_CHECK_SKIP_ENVS`) | - | **Yes** |
 | `ES_URL` | Elasticsearch endpoint | `https://your-elasticsearch-host/` | **Yes (production)** |
 | `ES_API_KEY` | Elasticsearch API key for Vector auth | - | **Yes (production)** |
 
@@ -1492,9 +1653,17 @@ from ecsctx import (
 
     # Processors
     contextvars_injector,   # Injects context into log events
-    mask_sensitive_data,    # PII tokenization (HMAC-SHA-256)
+    mask_sensitive_data,    # Structlog processor: masks, and tokenizes per field type
     namespace_ecs_fields,   # Reshape fields + clean up flat ECS fields
     ecs_validator,          # Warn on ECS field violations
+
+    # Masking
+    MaskPIIFilter,          # The engine — a stdlib logging.Filter
+    install_maskers,        # Wire the filter into a LOGGING dict + every live handler
+    uninstall_maskers,      # Remove it from both
+    configure_masking,      # Set path exemptions programmatically
+    configure_masking_from_env,  # Load exemptions from PII_MASK_EXEMPT_PATHS
+    safe_tokenize,          # Log-safe tokenize wrapper ([PII_REDACTED] when unconfigured)
 
     # PII
     configure_pii,          # Configure PII keyset provider
@@ -1525,6 +1694,13 @@ from ecsctx.contrib.django import (
 
     # Processors
     contextvars_injector,   # Django-aware version (serializes User objects passed in log kwargs)
+)
+
+# Masking boot check (the system check registers itself on import)
+from ecsctx.contrib.django.checks import (
+    assert_no_masking_errors,   # Raises AssertionError — for a project's test suite
+    validate_masking_config,    # Raises ValueError — for AppConfig.ready() and similar
+    find_masking_errors,        # Returns the list of problems, raises nothing
 )
 
 # Decorators
@@ -1643,12 +1819,21 @@ ecsctx/
 │   ├── keyset.py              # FileKeysetProvider (mtime-based hot-reload)
 │   ├── vault.py               # VaultKeysetProvider (AppRole auth)
 │   └── normalize.py           # Email/phone normalization for deterministic tokens
+├── masking/
+│   ├── __init__.py            # MaskPIIFilter, install/uninstall_maskers*, configure_masking
+│   ├── filters.py             # MaskPIIFilter — the engine (stdlib logging.Filter)
+│   ├── patterns.py            # 17 content rules, key-name map, SAFE_KEYS
+│   ├── tokens.py              # safe_tokenize, mask_by_field_type, [LABEL] formatting
+│   ├── fields_rules.py        # FieldRule: tokenizable/exemptable per field type
+│   ├── exemptions.py          # configure_masking(), path-exemption matching
+│   └── install.py             # install_maskers* / uninstall_maskers*
 └── contrib/
     ├── django/
     │   ├── __init__.py        # Django exports
     │   ├── middleware.py      # LoggingContextMiddleware
     │   ├── processors.py     # Django-aware contextvars_injector
     │   ├── logging.py        # get_logging_config, setup_logging, presets
+    │   ├── checks.py         # Masking boot check (Django system check, auto-registered)
     │   ├── decorators.py     # @api_logging
     │   └── context_binder.py # LogContextBinder (auditlog, import explicitly)
     ├── celery/
