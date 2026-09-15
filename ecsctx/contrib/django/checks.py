@@ -21,9 +21,9 @@ that no config mentions. validate_masking_config() raises ValueError for direct
 calls (e.g. from a project's own AppConfig.ready(), matching the original
 ottu_pg pattern); assert_no_masking_errors() raises AssertionError for use
 in a project's own test suite — unlike the system check below, it is never
-skipped by environment, since the system check specifically skips itself in
-local/test/dev environments where a test suite runs; check_masking_configured()
-is the registered Django system check.
+skipped by environment, while the system check skips itself in any environment
+listed in ECSCTX_MASKING_CHECK_SKIP_ENVS (none by default);
+check_masking_configured() is the registered Django system check.
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ import os
 from importlib import import_module
 from typing import Any
 
-DEFAULT_SKIP_ENVS = frozenset({"local", "test", "dev"})
 DEFAULT_ENV_VAR = "ENVIRONMENT"
 
 
@@ -213,7 +212,8 @@ def assert_no_masking_errors(logging_config: dict[str, Any]) -> None:
 
     This mirrors check_masking_configured() below, but is never skipped by
     environment — use it when you want the same guarantee enforced in CI
-    even where the system check silences itself (local/test/dev).
+    even where a project has told the system check to skip itself
+    (ECSCTX_MASKING_CHECK_SKIP_ENVS).
     """
     errors = find_masking_errors(logging_config)
     assert not errors, " ".join(errors)
@@ -223,7 +223,7 @@ def _should_skip(settings) -> bool:
     if getattr(settings, "ECSCTX_SKIP_MASKING_CHECK", False):
         return True
     env_var = getattr(settings, "ECSCTX_MASKING_CHECK_ENV_VAR", DEFAULT_ENV_VAR)
-    skip_envs = getattr(settings, "ECSCTX_MASKING_CHECK_SKIP_ENVS", DEFAULT_SKIP_ENVS)
+    skip_envs = getattr(settings, "ECSCTX_MASKING_CHECK_SKIP_ENVS", [])
     current_env = os.environ.get(env_var, "").lower()
     skip_envs = {str(e).lower() for e in skip_envs}
     return current_env in skip_envs
@@ -231,8 +231,8 @@ def _should_skip(settings) -> bool:
 
 def check_masking_configured(app_configs, **kwargs) -> list:
     """Django system check: runs on manage.py check / check --deploy /
-    runserver / migrate. Skipped in local/test/dev environments (see
-    _should_skip) so it never blocks day-to-day development.
+    runserver / migrate, in every environment unless
+    ECSCTX_MASKING_CHECK_SKIP_ENVS lists the current one (see _should_skip).
     """
     from django.conf import settings
     from django.core.checks import Error
