@@ -69,10 +69,8 @@ def unused_filter_error(*logger_names):
     return (
         "mask_pii_filter is defined but not used by logger(s): "
         + ", ".join(sorted(logger_names))
-        + ". For PCI DSS compliance, every logger that reaches a shipping "
-        "handler (anything other than logging.StreamHandler/"
-        "logging.NullHandler) must carry mask_pii_filter itself, or only "
-        "use handlers that do."
+        + ". For PCI DSS compliance, every logger that has handlers must "
+        "carry mask_pii_filter itself, or only use handlers that do."
     )
 
 
@@ -119,16 +117,16 @@ class TestFindMaskingConfigErrors:
         }
         assert find_masking_config_errors(cfg) == [unused_filter_error("app")]
 
-    def test_console_stream_handler_never_flagged_unmasked(self):
-        """logging.StreamHandler/NullHandler are non-shipping — a logger
-        reaching only those never needs the filter."""
+    def test_console_stream_handler_is_flagged_unmasked(self):
+        """logging.StreamHandler counts as shipping, because console output
+        is usually collected and forwarded off-host."""
         cfg = {
             "filters": {"mask_pii_filter": {"()": "ecsctx.masking.filters.MaskPIIFilter"}},
             "handlers": {"console": {"class": "logging.StreamHandler", "filters": []}},
             "loggers": {"app": {"handlers": ["console"]}},
             "root": {"handlers": ["console"]},
         }
-        assert find_masking_config_errors(cfg) == []
+        assert find_masking_config_errors(cfg) == [unused_filter_error("app", "root")]
 
     def test_filter_class_must_resolve_to_maskpiifilter(self):
         cfg = {"filters": {"mask_pii_filter": {"()": "logging.Filter"}}, "handlers": {}}
@@ -166,14 +164,14 @@ class TestFindMaskingConfigErrors:
         }
         assert find_masking_config_errors(cfg) == []
 
-    def test_null_handler_is_non_shipping(self):
+    def test_null_handler_is_flagged_unmasked(self):
         cfg = {
             "filters": {"mask_pii_filter": {"()": "ecsctx.masking.filters.MaskPIIFilter"}},
             "handlers": {"null": {"class": "logging.NullHandler", "filters": []}},
             "loggers": {"app": {"handlers": ["null"]}},
             "root": {"handlers": ["null"]},
         }
-        assert find_masking_config_errors(cfg) == []
+        assert find_masking_config_errors(cfg) == [unused_filter_error("app", "root")]
 
     def test_filter_carried_by_the_logger_itself_is_enough(self):
         """The filter may sit on the logger instead of the handler — the
@@ -267,10 +265,15 @@ class TestFindUnmaskedLiveHandlers:
         cfg = dict(MASKED_CFG, loggers={"ecsctx-live-listed": {}})
         assert find_unmasked_live_handlers(cfg) == []
 
-    def test_ignores_non_shipping_handler(self, isolated_logging_tree):
+    def test_flags_console_and_null_handlers(self, isolated_logging_tree):
         logging.getLogger("ecsctx-live-console").addHandler(logging.StreamHandler())
         logging.getLogger("ecsctx-live-null").addHandler(logging.NullHandler())
-        assert find_unmasked_live_handlers(MASKED_CFG) == []
+        assert find_unmasked_live_handlers(MASKED_CFG) == [
+            live_handlers_error(
+                "ecsctx-live-console -> logging.StreamHandler",
+                "ecsctx-live-null -> logging.NullHandler",
+            )
+        ]
 
     def test_ignores_handler_that_already_carries_the_masker(self, isolated_logging_tree):
         handler = self._shipping_handler("ecsctx-live-masked")
@@ -290,10 +293,11 @@ class TestFindUnmaskedLiveHandlers:
     def test_clean_tree_reports_nothing(self, isolated_logging_tree):
         assert find_unmasked_live_handlers(MASKED_CFG) == []
 
-    def test_catches_djangos_admin_email_handler(self, isolated_logging_tree):
+    def test_catches_djangos_default_handlers(self, isolated_logging_tree):
         """The case this exists for: Django configures DEFAULT_LOGGING first,
-        and with disable_existing_loggers off its 'django' logger survives
-        with AdminEmailHandler attached, invisible to settings.LOGGING."""
+        and with disable_existing_loggers off its 'django' and 'django.server'
+        loggers survive with their console and AdminEmailHandler handlers
+        attached, invisible to settings.LOGGING."""
         import logging.config
 
         from django.utils.log import DEFAULT_LOGGING
@@ -303,7 +307,11 @@ class TestFindUnmaskedLiveHandlers:
         logging.config.dictConfig(cfg)
 
         assert find_unmasked_live_handlers(cfg) == [
-            live_handlers_error("django -> django.utils.log.AdminEmailHandler")
+            live_handlers_error(
+                "django -> logging.StreamHandler",
+                "django -> django.utils.log.AdminEmailHandler",
+                "django.server -> logging.StreamHandler",
+            )
         ]
 
 
