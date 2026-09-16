@@ -4,16 +4,13 @@ Conventions mirror tests/test_events.py: the registry is process-global,
 so an autouse fixture resets it around every test.
 """
 
-import warnings
-
 import pytest
-from ecsctx.contrib.ottu import ALL_DOMAINS, aliases, yaml_render
+from ecsctx.contrib.ottu import ALL_DOMAINS, yaml_render
 from ecsctx.contrib.ottu import crypto as crypto_events
 from ecsctx.contrib.ottu import pg as pg_events
 from ecsctx.events import (
     UnknownEventError,
     emit,
-    register_aliases,
     register_domain,
     registry,
     resolve,
@@ -31,7 +28,6 @@ def _clean_registry():
 def _register_all():
     for prefix, specs in ALL_DOMAINS.items():
         register_domain(prefix, specs)
-    register_aliases(aliases.ALIASES)
 
 
 class _StubLogger:
@@ -59,21 +55,6 @@ def test_every_spec_resolves_to_itself() -> None:
     for specs in ALL_DOMAINS.values():
         for spec in specs:
             assert resolve(spec.action) is spec
-
-
-def test_every_alias_target_is_registered() -> None:
-    _register_all()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        for old, new in aliases.ALIASES.items():
-            assert resolve(old) is not None, f"{old} points at unregistered {new}"
-            assert resolve(old).action == new
-
-
-def test_retired_name_warns_once_per_resolve() -> None:
-    _register_all()
-    with pytest.warns(DeprecationWarning, match="cs.request_sent"):
-        resolve("cs.request_sent")
 
 
 def test_typo_is_attribute_error_at_import() -> None:
