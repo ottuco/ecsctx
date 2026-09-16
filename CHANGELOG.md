@@ -1,5 +1,68 @@
 # Changelog
 
+## v0.7.0 (2026-09-16)
+
+### Features
+- Merge pull request #29 from ottuco/task/158598-masking-filter (82319d5)
+- feat(django): extend the masking check to the live logging tree (ab2eb8c)
+- feat: expose MaskPIIFilter and install/uninstall_maskers at package root (614ffbc)
+- feat(django): export validate_masking_config (0f5d6fc)
+- feat(django): validate mask_pii_filter resolves to MaskPIIFilter (0b999f6)
+- feat(django): add system check for PII masking configuration (39e3a22)
+- feat(masking): tokenization, content/key rules, and MaskPIIFilter (e553341)
+
+### Fixes
+- test(django): cover the masking boot check (31d931d)
+- test(masking): cover ecsctx.masking.install (89fdb3f)
+- fix(django): wire mask_pii_filter into get_logging_config() by default (9ae7427)
+- fix(masking): use tuples instead of dicts for pattern/keyword maps (fae01be)
+- fix(pii): strip quotes and whitespace before AND after normalization (ac2a8e4)
+
+### Other
+- Merge pull request #45 from ottuco/chore/sync-init-version (0849dd2)
+- Merge pull request #44 from ottuco/feature/shared-ottu-vocabulary (b409de7)
+- Sync __version__ with pyproject (0.6.9) (4e7f81b)
+- Merge origin/main (PR #43) into task/158598-masking-filter (bf19c6e)
+- Merge pull request #43 from ottuco/feature/centralize-boundary-shapers (e4890da)
+- Merge origin/main into task/158598-masking-filter + review fixes (4a4f0d4)
+- Review fixes: UnicodeDecodeError catch, processor-order docs (496aa1d)
+- Address review: outcome in required, auth mix note, renderer test (fda96be)
+- Catalogue slice 3: threeds, net, task, cache, api, webhook, auth (8c45d63)
+- Catalogue slice 2: payment + card domains (9eca7ec)
+- Drop service legacy aliases from shared package (273c364)
+- Add shared Ottu event catalogue (contrib.ottu), slice 1: pg + crypto (0e5f14c)
+- Centralize ECS boundary shapers and normalizer processors (b52f8d0)
+- docs(core): describe the masking engine and its submodules (1928a4c)
+- docs(django): document the masking wiring and boot check (df4fe96)
+- test(django): pin the callsite attribution assertions (da26844)
+- test: assert whole values across the masking suites (f67b979)
+- docs: describe the MaskPIIFilter masking setup (71f93d3)
+- test: move the logging_state fixture into conftest (4698fca)
+- refactor(masking): drop the unused _enabled flag (551b7e8)
+- test(masking): port the full MaskPIIFilter case suite from ottu_pg (afc8bde)
+- test(pii): cover ecsctx.pii.normalize (0961f57)
+- test(masking): cover configure_masking_from_env, move normalize tests out (b64b11b)
+- test(django): add end-to-end masking pipeline coverage, fix missing import (fb8a466)
+- test(django): update test_django_processors.py for the MaskPIIFilter refactor (db08964)
+- test(masking): drop stale _IS_MASKED_ expectation from empty-dict test (0639005)
+- test(sentry): match masked auth-header assertion to current label format (237bf53)
+- refactor(masking): drop the dict-level _IS_MASKED_ marker (9f57dfe)
+- test(masking): update test_processors.py for the MaskPIIFilter refactor (315d5eb)
+- refactor(django): move assert_masking_configured into contrib.django.checks (1696ffc)
+- refactor(masking): unify already-masked marker for dicts and objects (bddb899)
+- refactor(masking): move exemptions.py under masking/ (3d01d3f)
+- refactor(masking): drop masking_is_disabled export (06b6fff)
+- refactor(masking): split install_maskers()/uninstall_maskers() into config + handler variants (23beba9)
+- refactor(masking): simplify install_maskers()/uninstall_maskers() (f7bcf7f)
+- refactor(masking): delegate mask_sensitive_data processor to MaskPIIFilter (f0cbbe6)
+- refactor(masking): move STRUCTURAL_ECS_KEYS to MaskPIIFilter as skip_keys default (1f8e2a2)
+- refactor(masking): drop partial PAN reveal, always fully mask card numbers (a69c35f)
+- refactor(masking): rename tokenize/mask/apply_all_patterns_masking for clarity (add4793)
+- refactor(masking): centralize field-type rules via FieldRule, key detection via regex map (c7eda0b)
+- chore: ignore __IGNORED__ directory (ec69ae2)
+- refactor(processors): extract PII mask exemptions into ecsctx.exemptions (56043f0)
+
+
 ## Unreleased
 
 - `ecsctx.contrib.net` gains the shared ECS boundary shapers: `ecs_url()`
