@@ -16,6 +16,7 @@ from structlog.contextvars import get_contextvars
 
 from ecsctx import identity
 from ecsctx.context import get_logging_context, get_trace_id
+from ecsctx.contrib.net import ecs_url, parse_json_or_raw
 from ecsctx.pii import tokenize as _pii_tokenize
 
 
@@ -519,6 +520,7 @@ def _key_is_sensitive(key) -> bool:
         return False
     return any(kw in low for kw in SENSITIVE_KEYWORDS)
 
+
 # Token prefixes for idempotency checks
 _TOKEN_PREFIXES = ("ptok:", '"ptok:')
 _REDACTED = "[PII_REDACTED]"
@@ -720,7 +722,7 @@ def _path_matches(path: tuple, pattern: tuple) -> bool:
     """
     if len(pattern) > len(path):
         return False
-    for pat_seg, path_seg in zip(pattern, path):
+    for pat_seg, path_seg in zip(pattern, path, strict=False):
         if pat_seg == "[*]":
             if path_seg != "[*]":
                 return False
@@ -878,6 +880,39 @@ def _safe_dump_and_mask(data):
             return "LOG_MASKING_ERROR"
 
 
+def normalize_url_field(_logger, _method_name, event_dict: dict) -> dict:
+    """Auto-normalize a bare-string ``url=`` into the ECS url object.
+
+    Call sites log the raw string; the processor shapes it via ``ecs_url()``
+    (credential query redacted by default), so no call site imports helpers
+    itself. An already-shaped dict passes through unchanged.
+    """
+    url = event_dict.get("url")
+    if isinstance(url, str):
+        event_dict["url"] = ecs_url(url)
+    return event_dict
+
+
+def normalize_payload_field(_logger, _method_name, event_dict: dict) -> dict:
+    """Auto-parse a bytes ``payload=`` into real JSON for structured logging.
+
+    Deliberately bytes-only, not str: JSON also parses bare primitives
+    ("123" -> 123), so auto-parsing arbitrary strings risks silently changing
+    a plain-text payload's type. Bytes always means raw wire data, so the
+    intent there is unambiguous. Falls back to the original bytes unchanged
+    if it isn't valid JSON (e.g. an HTML error page).
+
+    Must run BEFORE ``mask_sensitive_data`` in the processor chain: the
+    masker only walks parsed structures, so a bytes payload reaching it
+    first gets regex-only scrubbing, then parses here into an unmasked
+    dict with no second masking pass.
+    """
+    payload = event_dict.get("payload")
+    if isinstance(payload, bytes):
+        event_dict["payload"] = parse_json_or_raw(payload)
+    return event_dict
+
+
 def mask_sensitive_data(_logger, _method_name, event_dict):
     """
     Structlog processor for surgical masking and tokenization.
@@ -888,6 +923,8 @@ def mask_sensitive_data(_logger, _method_name, event_dict):
     string leaf regardless.
     - Headers: mask Authorization/Api-Key values
     - Payload/Http bodies: normalize -> recursive path-aware mask
+    (Bytes ``payload=`` must be parsed by ``normalize_payload_field``
+    earlier in the chain — this processor never parses raw bytes itself.)
     """
     # Mask top-level headers
     if "headers" in event_dict and isinstance(event_dict["headers"], dict):

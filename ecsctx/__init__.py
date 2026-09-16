@@ -41,6 +41,8 @@ from ecsctx.processors import (
     mask_sensitive_data,
     error_ecs_fields,
     namespace_ecs_fields,
+    normalize_payload_field,
+    normalize_url_field,
     safe_tokenize,
 )
 
@@ -64,6 +66,8 @@ __all__ = [
     "mask_sensitive_data",
     "error_ecs_fields",
     "namespace_ecs_fields",
+    "normalize_payload_field",
+    "normalize_url_field",
     "ecs_validator",
     # Masking config
     "configure_masking",
