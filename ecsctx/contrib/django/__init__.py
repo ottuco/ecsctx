@@ -1,5 +1,6 @@
 """Django-specific integrations for ecsctx."""
 
+from ecsctx.contrib.django.checks import validate_masking_config  # also registers the masking system check
 from ecsctx.contrib.django.decorators import api_logging
 from ecsctx.contrib.django.logging import (
     CELERY_LOGGERS,
@@ -32,4 +33,6 @@ __all__ = [
     "CELERY_LOGGERS_DEBUG",
     # Decorators
     "api_logging",
+    # Masking validation
+    "validate_masking_config",
 ]

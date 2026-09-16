@@ -21,6 +21,11 @@ from ecsctx.context import (
 )
 from ecsctx.ecs_validator import ecs_validator
 from ecsctx.formatters import ECSFormatter
+from ecsctx.masking import (
+    MaskPIIFilter,
+    install_maskers,
+    uninstall_maskers,
+)
 from ecsctx.pii import (
     PIIAccessDeniedError,
     configure_pii,
@@ -69,7 +74,10 @@ __all__ = [
     "normalize_payload_field",
     "normalize_url_field",
     "ecs_validator",
-    # Masking config
+    # Masking
+    "MaskPIIFilter",
+    "install_maskers",
+    "uninstall_maskers",
     "configure_masking",
     "configure_masking_from_env",
     "safe_tokenize",
