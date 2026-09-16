@@ -6,8 +6,11 @@ so an autouse fixture resets it around every test.
 
 import pytest
 from ecsctx.contrib.ottu import ALL_DOMAINS, yaml_render
+from ecsctx.contrib.ottu import auth as auth_events
+from ecsctx.contrib.ottu import cache as cache_events
 from ecsctx.contrib.ottu import card as card_events
 from ecsctx.contrib.ottu import crypto as crypto_events
+from ecsctx.contrib.ottu import net as net_events
 from ecsctx.contrib.ottu import payment as payment_events
 from ecsctx.contrib.ottu import pg as pg_events
 from ecsctx.events import (
@@ -80,6 +83,10 @@ def test_failure_levels_match_ticket() -> None:
     assert payment_events.PAYMENT_ELIGIBILITY_REJECTED.level == "warning"
     assert payment_events.PAYMENT_STATE_CHANGED.level == "info"
     assert card_events.CARD_TOKEN_LOOKUP_FAILED.level == "warning"
+    assert auth_events.AUTH_REQUEST_REJECTED.level == "warning"
+    assert auth_events.AUTH_IDENTITY_SYNC_FAILED.level == "error"
+    assert cache_events.CACHE_READ.level == "debug"
+    assert net_events.NET_REQUEST_FAILED.level == "error"
 
 
 def test_emit_routes_level_from_outcome() -> None:
