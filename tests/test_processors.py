@@ -3,7 +3,6 @@
 import json
 
 import pytest
-
 from ecsctx import processors
 from ecsctx.masking.exemptions import _compile_path, _path_is_exempt
 from ecsctx.masking.filters import MaskPIIFilter
@@ -15,8 +14,11 @@ from ecsctx.processors import (
     configure_root_fields,
     error_ecs_fields,
     mask_pan,
+    mask_sensitive_data,
     masking_is_configured,
     namespace_ecs_fields,
+    normalize_payload_field,
+    normalize_url_field,
     reshape_log_event,
     root_fields_are_configured,
     safe_tokenize,
@@ -755,3 +757,31 @@ class TestPanDisplayMasking:
             "timestamps": {"created": 1750000000},
         }
         assert _mask(payload) == payload
+
+
+class TestNormalizeProcessors:
+    def test_url_string_is_shaped_and_redacted(self):
+        out = normalize_url_field(None, None, {"url": "https://gw.example.com/p?password=s3cr3t"})
+        assert out["url"]["domain"] == "gw.example.com"
+        assert "s3cr3t" not in out["url"]["full"]
+
+    def test_url_dict_passes_through(self):
+        shaped = {"full": "https://x.example/", "domain": "x.example", "path": "/"}
+        assert normalize_url_field(None, None, {"url": shaped}) == {"url": shaped}
+
+    def test_payload_bytes_are_parsed(self):
+        out = normalize_payload_field(None, None, {"payload": b'{"a": 1}'})
+        assert out == {"payload": {"a": 1}}
+
+    def test_payload_str_and_invalid_bytes_untouched(self):
+        assert normalize_payload_field(None, None, {"payload": "123"}) == {"payload": "123"}
+        raw = b"<html>oops</html>"
+        assert normalize_payload_field(None, None, {"payload": raw}) == {"payload": raw}
+
+    def test_bytes_payload_masked_when_normalize_runs_first(self):
+        # Under the unified engine the name key yields a [NAME-MASKED]
+        # label (unconfigured PII); the point pinned here is the ORDER:
+        # normalize first so the masker sees a parsed dict, not bytes.
+        event = {"payload": b'{"customer_name": "John"}'}
+        out = mask_sensitive_data(None, None, normalize_payload_field(None, None, event))
+        assert out["payload"] == {"customer_name": "[NAME-MASKED]"}

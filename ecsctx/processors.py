@@ -14,6 +14,7 @@ import traceback
 from structlog.contextvars import get_contextvars
 
 from ecsctx import identity
+from ecsctx.contrib.net import ecs_url, parse_json_or_raw
 from ecsctx.context import get_logging_context, get_trace_id
 from ecsctx.masking.exemptions import (
     _reset_masking,
@@ -403,6 +404,39 @@ def mask_pan(number: str) -> str:
     return "*" * len(digits)
 
 
+def normalize_url_field(_logger, _method_name, event_dict: dict) -> dict:
+    """Auto-normalize a bare-string ``url=`` into the ECS url object.
+
+    Call sites log the raw string; the processor shapes it via ``ecs_url()``
+    (credential query redacted by default), so no call site imports helpers
+    itself. An already-shaped dict passes through unchanged.
+    """
+    url = event_dict.get("url")
+    if isinstance(url, str):
+        event_dict["url"] = ecs_url(url)
+    return event_dict
+
+
+def normalize_payload_field(_logger, _method_name, event_dict: dict) -> dict:
+    """Auto-parse a bytes ``payload=`` into real JSON for structured logging.
+
+    Deliberately bytes-only, not str: JSON also parses bare primitives
+    ("123" -> 123), so auto-parsing arbitrary strings risks silently changing
+    a plain-text payload's type. Bytes always means raw wire data, so the
+    intent there is unambiguous. Falls back to the original bytes unchanged
+    if it isn't valid JSON (e.g. an HTML error page).
+
+    Must run BEFORE ``mask_sensitive_data`` in the processor chain: the
+    masker only walks parsed structures, so a bytes payload reaching it
+    first gets regex-only scrubbing, then parses here into an unmasked
+    dict with no second masking pass.
+    """
+    payload = event_dict.get("payload")
+    if isinstance(payload, bytes):
+        event_dict["payload"] = parse_json_or_raw(payload)
+    return event_dict
+
+
 def mask_sensitive_data(_logger, _method_name, event_dict):
     """Structlog processor for PII/PCI masking and tokenization.
 
@@ -411,6 +445,9 @@ def mask_sensitive_data(_logger, _method_name, event_dict):
     recursively, masking sensitive content and dict keys. Idempotent: a
     record already masked by MaskPIIFilter (e.g. via install_maskers() on
     the same handler chain) is not re-processed.
+
+    Bytes ``payload=`` must be parsed by ``normalize_payload_field``
+    earlier in the chain — this processor never parses raw bytes itself.
     """
     to_mask = {k: v for k, v in event_dict.items() if not (isinstance(k, str) and k.startswith("event."))}
     masked = _default_filter._mask_dict(to_mask)

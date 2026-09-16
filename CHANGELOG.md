@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `ecsctx.contrib.net` gains the shared ECS boundary shapers: `ecs_url()`
+(credential query redacted by default), `ecs_http()`, `parse_json_or_raw()`
+- New structlog processors `normalize_url_field` / `normalize_payload_field`
+(auto-shape `url=` / auto-parse bytes `payload=`), exported from `ecsctx`
+
 ## v0.6.9 (2026-09-12)
 
 ### Other
