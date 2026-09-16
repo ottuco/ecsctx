@@ -1050,6 +1050,22 @@ class TestMaskPIIFilterAsLoggingFilter:
         MaskPIIFilter().filter(record)
         assert record.args == ("[EMAIL-MASKED]",)
 
+    def test_masked_like_fragment_does_not_suppress_masking(self):
+        """Regression: a coincidental -MASKED] fragment (e.g. user-controlled
+        text) must not skip content-regex masking for real PII in the same
+        string."""
+        record = self._record("ha-MASKED] contact me at attacker@evil.com")
+        MaskPIIFilter().filter(record)
+        assert record.msg == "ha-MASKED] contact me at [EMAIL-MASKED]"
+
+    def test_second_regex_pass_over_masked_markers_is_a_noop(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        record = self._record("contact victim@example.com, card 4111111111111111")
+        MaskPIIFilter().filter(record)
+        once = record.msg
+        assert "victim@example.com" not in once
+        assert mask_by_all_patterns(once) == once
+
     def test_filter_marks_record_and_is_idempotent(self):
         record = self._record({"customer_name": "Jane Doe"})
         flt = MaskPIIFilter()

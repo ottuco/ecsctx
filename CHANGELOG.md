@@ -1,5 +1,78 @@
 # Changelog
 
+## v0.6.9 (2026-09-12)
+
+### Other
+- Merge pull request #42 from ottuco/feature/pan-display-and-net-redact (ebe24ef)
+- Review fixes: PAN idempotency, loggable_body fails closed, Django settings bridge (2813966)
+- Display-mask PANs (12-19, first6/last4) and add contrib.net redaction (c92206f)
+
+
+## Unreleased
+
+- PANs are display-masked (`mask_pan`: first 6 + last 4, e.g. `411111******1111`) instead of tokenized, in free text and under card keys; coverage widened to 12–19 digits (Maestro–UnionPay) incl. bare `int` values
+- New `ecsctx.contrib.net`: `redact_url` / `redact_body` / `loggable_body` ported from ottu_backend's net boundary, with `configure_redaction()` + `ECSCTX_REDACT_EXTRA_SECRET_KEYS` / `ECSCTX_REDACT_BODY_LOG_CAP` overrides
+(explicit call > Django settings > env; no hard Django dependency)
+- PAN display-masking is idempotent: a second pass leaves `mask_pan()` output
+alone instead of degrading it to an opaque token
+- `loggable_body` never raises: an unreadable body is omitted (`None`)
+
+## v0.6.8 (2026-09-07)
+
+### Other
+- Merge pull request #41 from ottuco/fix/lowercase-boundary-messages (be9062e)
+- Stop the mpgs masking test failing on a random token (b5ec357)
+- Say what happened, not "inbound"/"outbound", on the API boundary (0.6.7) (0dce196)
+
+
+## v0.6.6 (2026-09-05)
+
+### Other
+- Merge pull request #40 from ottuco/fix/service-target-clobber (2ebd7fd)
+- Remove the committed .venv symlink, and stop it recurring (8baa4ca)
+- CI: use setup-uv@v10.0.1 (no v10 major alias exists) (0976c6a)
+- CI: upgrade actions to Node 24 versions (b7741a1)
+- CI: pin uv to 0.12.9 (dbb3e8e)
+- Regenerate uv.lock for 0.6.5 (e32366f)
+- Stop clobbering caller-set service.* subfields, release 0.6.5 (514d4eb)
+
+
+## v0.6.4 (2026-09-04)
+
+### Other
+- Merge pull request #39 from ottuco/fix/restore-http-boundary-events (209f7c5)
+- Say why a refusal carries no error.type (8ef8982)
+- Name the two boundary log lines, and time them (#159494) (be298ae)
+
+
+## v0.6.3 (2026-09-04)
+
+### Other
+- Merge pull request #38 from ottuco/feature/159487 (9802e67)
+- Merge pull request #36 from ottuco/task/159492 (2717770)
+- Merge pull request #35 from ottuco/task/159491 (d5a7445)
+- Merge pull request #34 from ottuco/task/159490 (4d6e509)
+- Merge pull request #33 from ottuco/task/159489 (00a8c27)
+- Merge pull request #32 from ottuco/task/159488 (bceb5b3)
+- Say what CARD_KEYS holds, and test all seven token spellings (b8d58c7)
+- Honour path exemptions for list elements, not just dict leaves (1a34df2)
+- Mask the saved-card token too, not just the card (6b98f37)
+- Stop reserving `level`, which never collided (7b38fab)
+- Reject fields that collide with the ones emit_pair sets itself (93a8ffe)
+- Add timed() and emit_pair(), so event.duration is implementable (#159492) (c1d360e)
+- Pin the double-pass behaviour, and say in the README what is not repaired (d96a73d)
+- Add the log-contract processor, in strict and repair modes (#159491) (597f2cc)
+- Follow the live root allowlist, and reject a duplicated action (157a6a5)
+- Add ecsctx.events: declared events, a registry and one emit() (#159490) (740a30f)
+- Move the identity section out of the middle of the table (4394a87)
+- Update the docs this change invalidated (d1ebc66)
+- Resolve service identity from settings, not only the environment (13ecc55)
+- Note what the container propagation widens (1a8631c)
+- Sort imports and drop the one left unused (3a06ba5)
+- Propagate card sensitivity into nested containers (ead6442)
+- Teach the masker to recognise cardholder data (5bd4882)
+
+
 ## v0.6.2 (2026-08-11)
 
 ### Features

@@ -23,7 +23,7 @@ from typing import Any
 from ecsctx.masking.exemptions import _get_exempt_patterns, _path_is_exempt
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import check_if_sensitive_keyword, mask_by_all_patterns
-from ecsctx.masking.tokens import already_masked, mask_by_field_type
+from ecsctx.masking.tokens import mask_by_field_type
 
 _IS_MASKED_ = "_IS_MASKED_"
 
@@ -64,9 +64,13 @@ class MaskPIIFilter(logging.Filter):
         self._skip_keys = frozenset(skip_keys)
 
     def _mask_string(self, text: str) -> str:
-        if not already_masked(text):
-            text = mask_by_all_patterns(text)
-        return text
+        # No already_masked() early-exit here: that helper is a whole-string
+        # substring check, so a coincidental "-MASKED]"/"-MASKED:" fragment
+        # (e.g. user-controlled text) would suppress content-regex masking
+        # for real PII elsewhere in the same string. A second regex pass
+        # over already-masked markers is a noop (pinned by test), and
+        # leaf-level idempotency still lives in mask_by_field_type.
+        return mask_by_all_patterns(text)
 
     def _mask_dict(self, data: dict, path: tuple = ()) -> dict:
         exempt = _get_exempt_patterns()

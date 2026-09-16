@@ -6,10 +6,10 @@ using bind_logging_context(extra={"merchant_id": "..."})
 """
 
 import contextlib
-import os
 
 from structlog.contextvars import get_contextvars
 
+from ecsctx import identity
 from ecsctx.context import get_trace_id
 from ecsctx.pii import configure_pii_from_env
 from ecsctx.processors import _detect_service, _inject_logging_context
@@ -186,13 +186,21 @@ def contextvars_injector(_logger, _method_name, event_dict):
                     event_dict[key] = value
 
     # 4. Add service metadata (always injected)
+    #
+    # Merged, not assigned — see the same block in ecsctx/processors.py. We own
+    # `name` and `version`; `service.target.*` and `service.node.*` belong to the
+    # caller and must survive.
     service_name, service_version = _detect_service()
+    service = event_dict.get("service")
+    if not isinstance(service, dict):
+        service = {}
     event_dict["service"] = {
+        **service,
         "name": service_name,
         "version": service_version,
     }
     event_dict["project"] = {
-        "name": os.environ.get("PROJECT_NAME", "connect"),
+        "name": identity.get_project_name(),
     }
 
     # 5. Serialize Django User objects

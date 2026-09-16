@@ -7,11 +7,13 @@ For Django integration, use ecsctx.contrib.django.processors which reads from se
 
 import contextlib
 import os
+import re
 import sys
 import traceback
 
 from structlog.contextvars import get_contextvars
 
+from ecsctx import identity
 from ecsctx.context import get_logging_context, get_trace_id
 from ecsctx.masking.exemptions import (
     _reset_masking,
@@ -24,37 +26,13 @@ from ecsctx.masking.filters import MaskPIIFilter
 
 
 def _get_app_version() -> str:
-    """Get application version from environment."""
-    return os.environ.get("APP_VERSION", "0.0.0")
+    """Application version. Kept as a name other modules import."""
+    return identity.get_app_version()
 
 
 def _detect_service():
-    """Detect service name and version from environment or process name.
-
-    Returns tuple of (name, version).
-    """
-    service_type = os.environ.get("SERVICE_TYPE")
-    if service_type:
-        if service_type == "rq":
-            import rq  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
-
-            return "rq", rq.VERSION
-        if service_type == "rqscheduler":
-            import rq_scheduler  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
-
-            return "rqscheduler", ".".join(map(str, rq_scheduler.VERSION))
-        return service_type, _get_app_version()
-
-    # Auto-detect from command line
-    if any("rqworker" in arg for arg in sys.argv):
-        import rq  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
-
-        return "rq", rq.VERSION
-    if any("rqscheduler" in arg for arg in sys.argv):
-        import rq_scheduler  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
-
-        return "rqscheduler", ".".join(map(str, rq_scheduler.VERSION))
-    return "app", _get_app_version()
+    """(service.name, service.version). See ecsctx.identity for the order."""
+    return identity.detect_service()
 
 
 # ECS-compliant root allowlist for log events.
@@ -367,13 +345,23 @@ def contextvars_injector(_logger, _method_name, event_dict):
                     event_dict[key] = value
 
     # 4. Add service metadata (always injected)
+    #
+    # Merged, not assigned: `service` is a shared ECS root. We own `name` and
+    # `version` and always win on those, but ECS also puts `service.target.*`
+    # ("the target service in case of an outgoing request") and `service.node.*`
+    # there, and a caller that sets them on an outbound boundary line has just as
+    # much right to the root as we do. Replacing the dict dropped them silently.
     service_name, service_version = _detect_service()
+    service = event_dict.get("service")
+    if not isinstance(service, dict):
+        service = {}
     event_dict["service"] = {
+        **service,
         "name": service_name,
         "version": service_version,
     }
     event_dict["project"] = {
-        "name": os.environ.get("PROJECT_NAME", "connect"),
+        "name": identity.get_project_name(),
     }
 
     return event_dict
@@ -395,6 +383,24 @@ def contextvars_injector(_logger, _method_name, event_dict):
 # STRUCTURAL_ECS_KEYS (service/project) is skipped by MaskPIIFilter's
 # default skip_keys — see ecsctx.masking.filters for why.
 _default_filter = MaskPIIFilter()
+
+
+def mask_pan(number: str) -> str:
+    """Display-mask a PAN, keeping the first 6 and last 4 digits visible.
+
+    Explicit opt-in helper for call sites that need BIN/last4 (support,
+    debugging) — the masking engine itself always fully masks card numbers.
+    PCI DSS permits showing at most the first six (BIN) and last four of a
+    PAN, where an opaque token would force a vault lookup per log line.
+    Separators are stripped, so grouped input comes back as one contiguous
+    masked value. Values of 10 or fewer digits carry no BIN+last4 to preserve
+    and are fully starred: this path only receives PAN-length input, so
+    anything else is a caller bug, and starring fails closed.
+    """
+    digits = re.sub(r"[ -]", "", number)
+    if len(digits) > 10:
+        return f"{digits[:6]}{'*' * (len(digits) - 10)}{digits[-4:]}"
+    return "*" * len(digits)
 
 
 def mask_sensitive_data(_logger, _method_name, event_dict):

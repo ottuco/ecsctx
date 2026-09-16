@@ -151,11 +151,19 @@ class TestMaskingPipelineIntegration:
         lines = [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
         return json.loads(lines[-1])
 
-    def test_service_and_project_name_survive_unmasked(self, capsys):
+    def test_service_and_project_name_survive_unmasked(self, capsys, monkeypatch):
         """service.name / project.name are ecsctx's own injected metadata,
         not user payload — they must never be masked, even though both
         contain a literal "name" child key."""
         import structlog
+
+        from ecsctx import identity
+
+        # The project default is "unknown" since #159489 (an unconfigured
+        # service must not claim to be Connect), so declare it: this test
+        # pins the masking exemption, not the default.
+        monkeypatch.setenv("PROJECT_NAME", "connect")
+        identity.reset_cache()
 
         doc = self._formatted(
             lambda: structlog.get_logger("test").info("hello"), capsys

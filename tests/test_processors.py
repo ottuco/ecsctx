@@ -1,19 +1,25 @@
 """Tests for PII masking and field reshaping in log processors."""
 
+import json
+
+import pytest
+
+from ecsctx import processors
 from ecsctx.masking.exemptions import _compile_path, _path_is_exempt
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.pii import configure_pii, is_configured
 from ecsctx.processors import (
     callsite_ecs_fields,
-    error_ecs_fields,
-    safe_tokenize,
     configure_masking,
     configure_masking_from_env,
     configure_root_fields,
+    error_ecs_fields,
+    mask_pan,
     masking_is_configured,
-    root_fields_are_configured,
     namespace_ecs_fields,
     reshape_log_event,
+    root_fields_are_configured,
+    safe_tokenize,
 )
 
 # MaskPIIFilter._mask_value is the direct engine entry point the old
@@ -171,6 +177,30 @@ class TestNamespaceEcsFields:
         result = namespace_ecs_fields(None, None, event_dict)
         assert "ecs_event" not in result
         assert result["merchant_id"] == "m1"
+
+    def test_caller_supplied_service_subfields_survive(self):
+        """`service.name`/`version` are ours; the rest of `service` is not.
+
+        ECS puts `service.target.name` — "the target service in case of an
+        outgoing request" — under the same root we stamp identity into. Assigning
+        the whole dict silently dropped it, so a gateway boundary line could name
+        the merchant's own MID but never the upstream it called.
+        """
+        event_dict = {
+            "event": "response received from mpgs (201)",
+            "service": {"target": {"name": "mpgs"}, "node": {"name": "n1"}},
+        }
+        result = processors.contextvars_injector(None, None, event_dict)
+        assert result["service"]["target"] == {"name": "mpgs"}
+        assert result["service"]["node"] == {"name": "n1"}
+        # identity still wins for the two fields it owns
+        assert result["service"]["name"]
+        assert "version" in result["service"]
+
+    def test_identity_still_owns_service_name_and_version(self):
+        event_dict = {"event": "x", "service": {"name": "not-ours"}}
+        result = processors.contextvars_injector(None, None, event_dict)
+        assert result["service"]["name"] != "not-ours"
 
 
 class TestCompilePath:
@@ -582,3 +612,146 @@ class TestStandalonePipelineSafety:
         assert event["error"]["stack_trace"].startswith("Traceback")
         assert "exc_info" not in event
         assert "exc_info" not in event.get("extra", {})
+
+
+class TestCardholderDataMasking:
+    """Ported from the pre-unification engine suite (#159488, #159500).
+
+    The unified engine fully masks card numbers (no BIN/last-4 reveal) and
+    has no Luhn gate, so the display / Luhn / key-predicate assertions from
+    the old engine do not apply here. Pinned below against the new engine:
+    PSP card/token key spellings mask, order diagnostics pass through.
+    """
+
+    def test_a_saved_card_token_is_masked(self, token_keyset_path):
+        """Not cardholder data, but the credential that charges a stored card:
+        anyone who can read it from the index can replay a payment.
+
+        Found by instrumenting Connect's submit-token endpoint, which ships
+        `{"token": ..., "cvv": ...}` into http.request.body via api_logging
+        (#159500). The cvv half was already covered; this is the other half.
+        """
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _mask({"token": "tok_live_9f3a2b", "cvv": "123"})
+        assert "tok_live_9f3a2b" not in str(masked)
+        assert masked["cvv"] == "[CVV-MASKED]"
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "token",
+            "cardtoken",
+            "card_token",
+            "cardToken",
+            "paymenttoken",
+            "payment_token",
+            "sourcetoken",
+            "source_token",
+        ],
+    )
+    def test_every_token_spelling_a_psp_uses_is_masked(self, key, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _mask({key: "tok_live_9f3a"})
+        assert "tok_live_9f3a" not in str(masked)
+
+    def test_the_real_mpgs_payload_number_cvv_masked_order_survives(
+        self, token_keyset_path
+    ):
+        """End-to-end over a real MPGS sourceOfFunds payload (#159488).
+
+        The PAN is caught by the content rule and the CVV by its keyword;
+        order diagnostics must survive. NOTE: expiry year/month values are
+        NOT masked by the unified engine — it has no card-container
+        propagation, and neither the keys nor the bare 2-digit values match
+        any rule. Flagged on the PR; deliberately unasserted here so this
+        test does not enshrine the gap.
+        """
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        payload = {
+            "sourceOfFunds": {
+                "provided": {
+                    "card": {
+                        "number": "4111111111111111",
+                        "expiry": {"year": "27", "month": "01"},
+                        "securityCode": "123",
+                    }
+                }
+            },
+            "order": {"reference": "deltabRKJ5X_0", "amount": 20},
+        }
+        masked = _mask(payload)
+        card = masked["sourceOfFunds"]["provided"]["card"]
+        assert "4111111111111111" not in str(masked)
+        assert card["number"].startswith("[CARD-MASKED")
+        assert card["securityCode"] == "[CVV-MASKED]"
+        assert masked["order"] == {"reference": "deltabRKJ5X_0", "amount": 20}
+
+    def test_nothing_outside_a_card_container_is_newly_masked(self, token_keyset_path):
+        """An `order` subtree keeps its diagnostics."""
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _mask(
+            {"order": {"reference": "deltabRKJ5X_0", "nested": {"id": "abc123"}}}
+        )
+        assert masked["order"]["reference"] == "deltabRKJ5X_0"
+        assert masked["order"]["nested"]["id"] == "abc123"
+
+    def test_a_reference_with_letters_is_untouched(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        assert "deltabRKJ5X_0" in _mask("ref deltabRKJ5X_0")
+
+
+# Luhn-valid PANs per length (brand in comment).
+PAN_BY_LENGTH = {
+    12: "675964982093",  # Maestro
+    13: "4222222222222",  # Visa
+    14: "30569309025904",  # Diners
+    15: "378282246310005",  # Amex
+    16: "4111111111111111",  # Visa
+    19: "4111111111111111102",  # UnionPay length
+}
+
+def _display(pan: str) -> str:
+    return f"{pan[:6]}{'*' * (len(pan) - 10)}{pan[-4:]}"
+
+
+class TestPanDisplayMasking:
+    @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
+    def test_mask_pan_keeps_first_six_and_last_four(self, length, pan):
+        assert mask_pan(pan) == _display(pan)
+        assert pan not in mask_pan(pan)
+
+    def test_mask_pan_grouped_input_comes_back_contiguous(self):
+        assert mask_pan("4111 1111 1111 1111") == "411111******1111"
+        assert mask_pan("3782-822463-10005") == "378282*****0005"
+
+    def test_mask_pan_short_value_stars_fully(self):
+        assert mask_pan("123") == "***"
+
+    @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
+    def test_pans_masked_in_every_grouping(self, length, pan):
+        grouped = " ".join(pan[i : i + 4] for i in range(0, len(pan), 4))
+        dashed = "-".join(pan[i : i + 4] for i in range(0, len(pan), 4))
+        for body in (grouped, dashed):
+            masked = _mask(f"pay {body} ok")
+            assert body not in masked
+            assert "[CARD-MASKED]" in masked
+
+    def test_small_ints_bools_and_none_survive(self):
+        masked = _mask(
+            {"status_code": 200, "count": 100, "ok": True, "nothing": None}
+        )
+        assert masked == {"status_code": 200, "count": 100, "ok": True, "nothing": None}
+
+    def test_short_int_under_cvv_key_is_masked(self):
+        # The CVV rule is not tokenizable: any int under a CVV key becomes
+        # the bare label, never a token and never the raw value.
+        assert _mask({"card": {"securityCode": 123}}) == {
+            "card": {"securityCode": "[CVV-MASKED]"}
+        }
+
+    def test_order_ids_and_timestamps_are_not_masked(self):
+        payload = {
+            "order": {"id": "deltabRKJ5X_0", "reference_number": "REF-2026-09187654"},
+            "timestamps": {"created": 1750000000},
+        }
+        assert _mask(payload) == payload

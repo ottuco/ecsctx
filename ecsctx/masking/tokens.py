@@ -12,12 +12,12 @@ from ecsctx.pii import tokenize as _pii_tokenize
 from ecsctx.masking.fields_rules import get_field_rule
 
 
-_TOKEN_PREFIXE = "ptok:"
+_TOKEN_PREFIX = "ptok:"
 _REDACTED = "[PII_REDACTED]"
 
 
 def already_tokenized(text: str) -> bool:
-    return text.startswith(_TOKEN_PREFIXE)
+    return text.startswith(_TOKEN_PREFIX)
 
 
 def safe_tokenize(value: str, field_type: str = "generic") -> str:

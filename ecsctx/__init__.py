@@ -42,13 +42,14 @@ from ecsctx.processors import (
     configure_root_fields,
     configure_root_fields_from_env,
     contextvars_injector,
+    mask_pan,
     mask_sensitive_data,
     error_ecs_fields,
     namespace_ecs_fields,
     safe_tokenize,
 )
 
-__version__ = "0.6.2"
+__version__ = "0.6.4"
 
 __all__ = [
     # Context
@@ -64,6 +65,7 @@ __all__ = [
     # Processors
     "callsite_ecs_fields",
     "contextvars_injector",
+    "mask_pan",
     "mask_sensitive_data",
     "error_ecs_fields",
     "namespace_ecs_fields",
