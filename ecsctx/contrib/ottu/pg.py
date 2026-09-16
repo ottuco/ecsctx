@@ -72,7 +72,7 @@ PG_CALLBACK_SKIPPED = EventSpec(
     action="pg.callback_skipped",
     terminal=True,
     category=("network",),
-    required=("event.reason", "payment.reference"),
+    required=("event.outcome", "event.reason", "payment.reference"),
 )
 
 PG_SIGNATURE_VERIFICATION_SKIPPED = EventSpec(
@@ -80,7 +80,7 @@ PG_SIGNATURE_VERIFICATION_SKIPPED = EventSpec(
     level="warning",
     terminal=True,
     category=("network",),
-    required=("payment.pg_code",),
+    required=("event.outcome", "payment.pg_code"),
 )
 
 PG_CREDENTIALS_UNAVAILABLE = EventSpec(

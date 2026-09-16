@@ -22,7 +22,7 @@ API_REQUEST_REJECTED = EventSpec(
     action="api.request_rejected",
     level="warning",
     terminal=True,
-    required=("event.reason", "http.response.status_code"),
+    required=("event.outcome", "event.reason", "http.response.status_code"),
 )
 
 SPECS: tuple[EventSpec, ...] = (

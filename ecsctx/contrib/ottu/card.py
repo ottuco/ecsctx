@@ -17,13 +17,13 @@ CARD_TOKENIZATION_COMPLETED = EventSpec(
 CARD_TOKENIZATION_SKIPPED = EventSpec(
     action="card.tokenization_skipped",
     terminal=True,
-    required=("event.reason", "session_id"),
+    required=("event.outcome", "event.reason", "session_id"),
 )
 
 CARD_TOKEN_UPDATED = EventSpec(
     action="card.token_updated",
     terminal=True,
-    required=("labels.change", "labels.card_id"),
+    required=("event.outcome", "labels.change", "labels.card_id"),
 )
 
 CARD_TOKEN_DELETED = EventSpec(

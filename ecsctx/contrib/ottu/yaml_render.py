@@ -20,6 +20,9 @@ def _scalar(value: Any) -> str:
 
 
 def _list(values: Sequence[str]) -> str:
+    # No quoting or escaping: assumes no value contains ","/"="/"#".
+    # Every rendered value today is a plain dotted identifier; if that ever
+    # changes, this must quote — test_yaml_round_trip covers a list field.
     return "[" + ", ".join(values) + "]"
 
 

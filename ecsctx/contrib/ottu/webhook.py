@@ -31,7 +31,7 @@ WEBHOOK_DELIVERY_RETRIED = EventSpec(
 WEBHOOK_DELIVERY_SKIPPED = EventSpec(
     action="webhook.delivery_skipped",
     terminal=True,
-    required=("event.reason", "payment.reference"),
+    required=("event.outcome", "event.reason", "payment.reference"),
 )
 
 SPECS: tuple[EventSpec, ...] = (

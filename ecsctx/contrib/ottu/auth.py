@@ -2,7 +2,9 @@
 
 Transcribed from ticket #159487 (Event catalogue, ``auth`` table). Shape
 is shared; values differ per service (Connect user sessions vs PG merchant
-API-key auth).
+API-key auth). The ``user.id``/``user.name`` split is verbatim from the
+ticket: auth/session flows identify by id, provisioning and role changes
+by name.
 """
 
 from ecsctx.events.spec import EventSpec
@@ -17,7 +19,7 @@ AUTH_REQUEST_REJECTED = EventSpec(
     action="auth.request_rejected",
     level="warning",
     terminal=True,
-    required=("event.reason", "labels.auth_method"),
+    required=("event.outcome", "event.reason", "labels.auth_method"),
 )
 
 AUTH_TOKEN_ISSUED = EventSpec(
@@ -29,21 +31,21 @@ AUTH_TOKEN_ISSUED = EventSpec(
 AUTH_TOKEN_REVOKED = EventSpec(
     action="auth.token_revoked",
     terminal=True,
-    required=("user.id",),
+    required=("event.outcome", "user.id"),
 )
 
 AUTH_SESSION_TERMINATED = EventSpec(
     action="auth.session_terminated",
     level="warning",
     terminal=True,
-    required=("event.reason", "user.id"),
+    required=("event.outcome", "event.reason", "user.id"),
 )
 
 AUTH_SESSION_CHECK_SKIPPED = EventSpec(
     action="auth.session_check_skipped",
     level="warning",
     terminal=True,
-    required=("event.reason", "labels.fail_mode"),
+    required=("event.outcome", "event.reason", "labels.fail_mode"),
 )
 
 AUTH_IDENTITY_PROVISIONED = EventSpec(
@@ -55,14 +57,14 @@ AUTH_IDENTITY_PROVISIONED = EventSpec(
 AUTH_ROLES_CHANGED = EventSpec(
     action="auth.roles_changed",
     terminal=True,
-    required=("user.name", "labels.roles_added", "labels.roles_removed"),
+    required=("event.outcome", "user.name", "labels.roles_added", "labels.roles_removed"),
 )
 
 AUTH_PRIVILEGE_GRANTED = EventSpec(
     action="auth.privilege_granted",
     level="warning",
     terminal=True,
-    required=("user.name", "labels.privilege", "labels.source"),
+    required=("event.outcome", "user.name", "labels.privilege", "labels.source"),
 )
 
 AUTH_IDENTITY_SYNC_FAILED = EventSpec(

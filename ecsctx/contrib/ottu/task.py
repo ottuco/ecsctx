@@ -24,7 +24,7 @@ TASK_COMPLETED = EventSpec(
 TASK_CANCELLED = EventSpec(
     action="task.cancelled",
     terminal=True,
-    required=("labels.job_id", "labels.action"),
+    required=("event.outcome", "labels.job_id", "labels.action"),
 )
 
 SPECS: tuple[EventSpec, ...] = (

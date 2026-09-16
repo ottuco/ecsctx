@@ -23,7 +23,7 @@ CRYPTO_CREDENTIAL_RESOLVED = EventSpec(
 CRYPTO_CREDENTIAL_ROTATED = EventSpec(
     action="crypto.credential_rotated",
     terminal=True,
-    required=("labels.credential_kind", "labels.version"),
+    required=("event.outcome", "labels.credential_kind", "labels.version"),
 )
 
 CRYPTO_TOKENIZATION_UNAVAILABLE = EventSpec(

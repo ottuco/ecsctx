@@ -9,20 +9,20 @@ CACHE_READ = EventSpec(
     action="cache.read",
     level="debug",
     terminal=True,
-    required=("labels.store", "labels.result"),
+    required=("event.outcome", "labels.store", "labels.result"),
 )
 
 CACHE_WRITTEN = EventSpec(
     action="cache.written",
     level="debug",
     terminal=True,
-    required=("labels.store",),
+    required=("event.outcome", "labels.store"),
 )
 
 CACHE_INVALIDATED = EventSpec(
     action="cache.invalidated",
     terminal=True,
-    required=("labels.store", "labels.scope"),
+    required=("event.outcome", "labels.store", "labels.scope"),
 )
 
 CACHE_OPERATION_FAILED = EventSpec(

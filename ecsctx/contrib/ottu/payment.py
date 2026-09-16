@@ -12,33 +12,39 @@ from ecsctx.events.spec import EventSpec
 PAYMENT_SESSION_CREATED = EventSpec(
     action="payment.session_created",
     terminal=True,
-    required=("session_id", "merchant_id", "payment.orn"),
+    required=("event.outcome", "session_id", "merchant_id", "payment.orn"),
 )
 
 PAYMENT_ELIGIBILITY_REJECTED = EventSpec(
     action="payment.eligibility_rejected",
     level="warning",
     terminal=True,
-    required=("event.reason", "session_id"),
+    required=("event.outcome", "event.reason", "session_id"),
 )
 
 PAYMENT_ATTEMPT_CREATED = EventSpec(
     action="payment.attempt_created",
     terminal=True,
-    required=("session_id", "payment.reference", "payment.pg_code"),
+    required=("event.outcome", "session_id", "payment.reference", "payment.pg_code"),
 )
 
 PAYMENT_STATE_CHANGED = EventSpec(
     action="payment.state_changed",
     terminal=True,
-    required=("session_id", "labels.transition", "labels.state_from", "labels.state_to"),
+    required=(
+        "event.outcome",
+        "session_id",
+        "labels.transition",
+        "labels.state_from",
+        "labels.state_to",
+    ),
 )
 
 PAYMENT_STATE_CHANGE_SKIPPED = EventSpec(
     action="payment.state_change_skipped",
     level="warning",
     terminal=True,
-    required=("event.reason", "labels.transition", "labels.state_current"),
+    required=("event.outcome", "event.reason", "labels.transition", "labels.state_current"),
 )
 
 PAYMENT_OUTCOME_RESOLVED = EventSpec(
@@ -73,7 +79,7 @@ PAYMENT_DUPLICATE_SUPPRESSED = EventSpec(
     action="payment.duplicate_suppressed",
     level="warning",
     terminal=True,
-    required=("event.reason", "labels.guard"),
+    required=("event.outcome", "event.reason", "labels.guard"),
 )
 
 PAYMENT_INQUIRY_COMPLETED = EventSpec(

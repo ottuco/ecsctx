@@ -75,6 +75,17 @@ def test_terminal_events_require_outcome() -> None:
     assert pg_events.PG_REQUEST_SENT.ecs()["action"] == "pg.request_sent"
 
 
+def test_terminal_specs_list_outcome_in_required() -> None:
+    """`required` mirrors the runtime invariant: terminal => outcome listed."""
+    missing = [
+        spec.action
+        for specs in ALL_DOMAINS.values()
+        for spec in specs
+        if spec.terminal and "event.outcome" not in spec.required
+    ]
+    assert missing == []
+
+
 def test_failure_levels_match_ticket() -> None:
     assert pg_events.PG_REQUEST_FAILED.level == "warning"
     assert pg_events.PG_REQUEST_FAILED.level_on_failure == "error"
@@ -104,6 +115,12 @@ def test_emit_unknown_name_raises() -> None:
         emit(_StubLogger(), "nope.nothing_happened", "Ghost")
 
 
+def _parse_list(value: str) -> list[str]:
+    """Parse exactly what yaml_render._list emits: `[a, b]` or `[]`."""
+    inner = value.strip()[1:-1].strip()
+    return list(inner.split(", ")) if inner else []
+
+
 def _parse_rendered(text: str) -> dict[str, dict[str, str]]:
     """Minimal parser for exactly what yaml_render emits (2-space mapping)."""
     documents: dict[str, dict[str, str]] = {}
@@ -129,3 +146,6 @@ def test_yaml_round_trip_preserves_action_set() -> None:
     assert parsed["pg.request_failed"]["level"] == "warning"
     assert "labels.operation" in parsed["pg.request_sent"]["required"]
     assert parsed["crypto.payload_decrypted"]["terminal"] == "true"
+    assert _parse_list(parsed["pg.request_sent"]["required"]) == list(
+        pg_events.PG_REQUEST_SENT.required
+    )
