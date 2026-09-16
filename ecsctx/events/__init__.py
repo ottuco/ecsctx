@@ -1,8 +1,10 @@
 """Declared log events: the mechanism, not a vocabulary.
 
 ecsctx is public and MIT licensed, so it ships how an event is declared, how a
-domain registers, and where a field lands. Ottu's business vocabulary — `pg.*`,
-`payment.*`, `wallet.*` — stays private to its services and registers at startup:
+domain registers, and where a field lands. Vendor vocabularies live under
+`ecsctx.contrib` (e.g. `ecsctx.contrib.ottu` for the shared Ottu
+catalogue); the core stays noun-free. A service registers its domains at
+startup:
 
     from ecsctx.events import EventSpec, register_domain
 
