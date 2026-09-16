@@ -1,7 +1,6 @@
 """Tests for network-boundary credential redaction (ecsctx.contrib.net)."""
 
 from django.test import override_settings
-
 from ecsctx.contrib.net import (
     configure_redaction,
     ecs_http,
@@ -178,3 +177,7 @@ class TestBoundaryShapers:
         assert parse_json_or_raw(b'{"a": 1}') == {"a": 1}
         assert parse_json_or_raw(b"<html>oops</html>") == b"<html>oops</html>"
         assert parse_json_or_raw(None) is None
+
+    def test_parse_json_or_raw_non_utf8_bytes_returned_untouched(self):
+        raw = b"\xff\xfe\x00binary-body"
+        assert parse_json_or_raw(raw) is raw

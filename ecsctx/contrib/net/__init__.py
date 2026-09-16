@@ -267,14 +267,14 @@ def parse_json_or_raw(raw: bytes | str | None) -> Any:
     """Parse a raw HTTP body as JSON for logging under ``payload=``.
 
     Returns it unchanged when it isn't valid JSON (an HTML error page, a
-    non-JSON callback body). Logging raw bytes directly renders as their
-    Python repr (b'...'), a garbled, unsearchable string — this keeps the
-    body as real structured JSON when it is one, and never crashes the log
-    call when it isn't.
+    non-JSON callback body, binary/non-UTF-8 bytes). Logging raw bytes
+    directly renders as their Python repr (b'...'), a garbled,
+    unsearchable string — this keeps the body as real structured JSON when
+    it is one, and never crashes the log call when it isn't.
     """
     try:
         return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
         return raw
 
 

@@ -3,7 +3,6 @@
 import json
 
 import pytest
-
 from ecsctx import processors
 from ecsctx.pii import configure_pii, is_configured
 from ecsctx.processors import (
@@ -18,6 +17,7 @@ from ecsctx.processors import (
     configure_root_fields,
     error_ecs_fields,
     mask_pan,
+    mask_sensitive_data,
     masking_is_configured,
     namespace_ecs_fields,
     normalize_payload_field,
@@ -887,3 +887,8 @@ class TestNormalizeProcessors:
         assert normalize_payload_field(None, None, {"payload": "123"}) == {"payload": "123"}
         raw = b"<html>oops</html>"
         assert normalize_payload_field(None, None, {"payload": raw}) == {"payload": raw}
+
+    def test_bytes_payload_masked_when_normalize_runs_first(self):
+        event = {"payload": b'{"customer_name": "John"}'}
+        out = mask_sensitive_data(None, None, normalize_payload_field(None, None, event))
+        assert out["payload"] == {"customer_name": "[PII_REDACTED]"}

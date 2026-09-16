@@ -520,6 +520,7 @@ def _key_is_sensitive(key) -> bool:
         return False
     return any(kw in low for kw in SENSITIVE_KEYWORDS)
 
+
 # Token prefixes for idempotency checks
 _TOKEN_PREFIXES = ("ptok:", '"ptok:')
 _REDACTED = "[PII_REDACTED]"
@@ -721,7 +722,7 @@ def _path_matches(path: tuple, pattern: tuple) -> bool:
     """
     if len(pattern) > len(path):
         return False
-    for pat_seg, path_seg in zip(pattern, path):
+    for pat_seg, path_seg in zip(pattern, path, strict=False):
         if pat_seg == "[*]":
             if path_seg != "[*]":
                 return False
@@ -900,6 +901,11 @@ def normalize_payload_field(_logger, _method_name, event_dict: dict) -> dict:
     a plain-text payload's type. Bytes always means raw wire data, so the
     intent there is unambiguous. Falls back to the original bytes unchanged
     if it isn't valid JSON (e.g. an HTML error page).
+
+    Must run BEFORE ``mask_sensitive_data`` in the processor chain: the
+    masker only walks parsed structures, so a bytes payload reaching it
+    first gets regex-only scrubbing, then parses here into an unmasked
+    dict with no second masking pass.
     """
     payload = event_dict.get("payload")
     if isinstance(payload, bytes):
@@ -917,6 +923,8 @@ def mask_sensitive_data(_logger, _method_name, event_dict):
     string leaf regardless.
     - Headers: mask Authorization/Api-Key values
     - Payload/Http bodies: normalize -> recursive path-aware mask
+    (Bytes ``payload=`` must be parsed by ``normalize_payload_field``
+    earlier in the chain — this processor never parses raw bytes itself.)
     """
     # Mask top-level headers
     if "headers" in event_dict and isinstance(event_dict["headers"], dict):
