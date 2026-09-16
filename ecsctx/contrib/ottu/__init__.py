@@ -12,11 +12,13 @@ only where the ticket or the ecsctx precedent pins them; taxonomy enrichment
 is a follow-up once o11y confirms the ECS mappings.
 """
 
-from . import crypto, pg, yaml_render
+from . import card, crypto, payment, pg, yaml_render
 
 ALL_DOMAINS: dict[str, tuple] = {
     "pg": pg.SPECS,
     "crypto": crypto.SPECS,
+    "payment": payment.SPECS,
+    "card": card.SPECS,
 }
 
-__all__ = ["ALL_DOMAINS", "crypto", "pg", "yaml_render"]
+__all__ = ["ALL_DOMAINS", "card", "crypto", "payment", "pg", "yaml_render"]
