@@ -22,4 +22,5 @@ ECS-compliant structured logging with W3C Trace Context support. Framework-agnos
 - Django's `LogContextBinder` must be imported explicitly (not in `__init__.py`) to avoid circular imports
 - `LoggingContextMiddleware` must be placed AFTER auth middleware to capture user_id
 - CVV never carries a token, even when PII is configured — PCI forbids storing CVV in any form, so `[CVV-MASKED]` is always the literal, final output
+- Card numbers truncate to first 6 + last 4 (`[CARD-MASKED:411111******1111]`, #159795, PCI DSS 3.4.1) — no token alongside, independent of PII configuration, and a second masking pass is a noop
 - `install_maskers()` only sweeps handlers that exist at call time (no stdlib patching) — a handler built after the call needs another call

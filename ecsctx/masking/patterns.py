@@ -13,15 +13,17 @@ ecsctx's own PII key-name list. Two independent detection strategies:
    to match.
 
 Every masked value becomes `[LABEL]` or `[LABEL:token]` via mask_by_field_type —
-never a bare `***`. CVV is the one exception: it must never carry a token,
-not even an HMAC digest, because PCI forbids storing CVV in any form.
+never a bare `***`. Two exceptions: CVV must never carry a token, not even
+an HMAC digest, because PCI forbids storing CVV in any form; card numbers
+are truncated to first 6 + last 4 (`[CARD-MASKED:411111******1111]`, PCI DSS
+3.4.1) with no token alongside.
 """
 
 from __future__ import annotations
 
 import re
 
-from ecsctx.masking.tokens import mask_by_field_type
+from ecsctx.masking.tokens import make_label, mask_by_field_type
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -122,8 +124,25 @@ def _digits_only(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _mask_full_card(match: re.Match) -> str:
-    return mask_by_field_type(_digits_only(match.group(0)), "card")
+def _truncate_pan(digits: str) -> str:
+    """Keep at most the first 6 (BIN) and last 4 digits of a PAN.
+
+    PCI DSS 3.4.1 permits showing at most the BIN + last 4 when a PAN is
+    displayed — enough to identify the card for support without ever storing
+    the full number. Separators are already stripped by the caller, so
+    grouped input comes back as one contiguous masked value. No token is
+    emitted alongside: an unkeyed hash next to a truncated PAN would itself
+    be a finding, and a keyed one buys nothing over BIN/last-4.
+    """
+    return f"{digits[:6]}{'*' * (len(digits) - 10)}{digits[-4:]}"
+
+
+def _mask_truncated_card(match: re.Match) -> str:
+    # The content rule only matches 12-19 digit runs, so digits always
+    # carries a BIN and a last-4 to preserve — no short-input path needed.
+    # Deliberately not mask_by_field_type: that would tokenize (or, with
+    # PII unconfigured, collapse to a bare label), losing the truncation.
+    return f"[{make_label('card')}:{_truncate_pan(_digits_only(match.group(0)))}]"
 
 
 def _mask_pem(match: re.Match) -> str:
@@ -303,10 +322,15 @@ REGEX_MASKER = (
         r"\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{3,}\.[A-Za-z0-9_\-]{3,}",
         _jwt,
     ),
-    # 15. Card number — always fully masked (4111111111111111).
+    # 15. Card number — truncated to first 6 + last 4
+    # ([CARD-MASKED:411111******1111]). PCI DSS 3.4.1 allows at most the
+    # BIN + last 4 on display; the middle never survives, starred or not.
+    # The output stays inside the [LABEL…] convention so already_masked()
+    # idempotency holds, and the stars break the digit run so a second
+    # pass cannot re-match it.
     (
         _CARD_LEAD_GUARD + r"\d" + _CARD_BODY + _CARD_TAIL_GUARD,
-        _mask_full_card,
+        _mask_truncated_card,
     ),
     # 16. SSN (123-45-6789).
     (
