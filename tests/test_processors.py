@@ -736,7 +736,8 @@ class TestPanDisplayMasking:
         for body in (grouped, dashed):
             masked = _mask(f"pay {body} ok")
             assert body not in masked
-            assert "[CARD-MASKED]" in masked
+            assert pan not in masked
+            assert masked == f"pay [CARD-MASKED:{_display(pan)}] ok"
 
     def test_small_ints_bools_and_none_survive(self):
         masked = _mask(

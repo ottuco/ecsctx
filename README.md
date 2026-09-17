@@ -802,6 +802,7 @@ ecsctx automatically detects and protects sensitive data in logs. The `mask_sens
 **Log processor path** (automatic via `mask_sensitive_data`):
 - When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`) for fraud correlation. Same input always produces the same token.
 - When PII is not configured: detected values are replaced with `[PII_REDACTED]` — raw PII never appears in logs.
+- Two types bypass tokenization: PANs truncate to first 6 + last 4 (`[CARD-MASKED:411111******1111]`, no token alongside, regardless of PII configuration) and CVV is always the bare `[CVV-MASKED]`.
 
 **Explicit encryption API** (standalone, NOT part of the log processor pipeline):
 - `protect()` / `reveal()` use **AES-256-GCM** for randomized ciphertext (`penc:v1:<kid>:...`) when reversible encryption is needed. Requires `PII_ACCESS=full`.
@@ -810,13 +811,15 @@ Keys are delivered via mounted keyset files or fetched from Vault.
 
 ### PAN display-masking (`mask_pan`)
 
-PANs are **display-masked, not tokenized**: `mask_pan("378282246310005")` returns
-`"378282******0005"`. Rationale: support and debugging identify a card by BIN +
+PANs are **display-masked, not tokenized**: the engine emits
+`[CARD-MASKED:411111******1111]` for any 12–19 digit run (spaces/dashes
+allowed), and `mask_pan("378282246310005")` returns the bare core
+`"378282*****0005"`. Rationale: support and debugging identify a card by BIN +
 last4, and PCI DSS explicitly permits showing at most the first six and last
 four — an opaque token would force a vault lookup per log line. Everything
-else PII keeps tokenization. Also exported for call sites that must mask a PAN
-before logging (e.g. replacing a hand-rolled helper): `from ecsctx import
-mask_pan`.
+else PII keeps tokenization. `mask_pan` is also exported for call sites that
+must mask a PAN before logging (e.g. replacing a hand-rolled helper):
+`from ecsctx import mask_pan`.
 
 ### Network-boundary redaction (`ecsctx.contrib.net`)
 
@@ -903,7 +906,7 @@ ECSCTX_REDACT_BODY_LOG_CAP=8192
 | **Phone numbers** | Regex: 10-15 digits with +/spaces/dashes | `"ptok:v1:x8Fp..."` |
 | **Names** | Keys containing: `name`, `customer`, `payer`, `billing`, `shipping`, `cardholder`, `email`, `phone`, `mobile`, `contact`, `recipient`, `beneficiary`, `address`, `udf` | `"ptok:v1:..."` |
 | **Auth headers** | `authorization`, `api-key`, `x-api-key` keys | `"Bearer <first4>****<last4>"` (masked, not tokenized; `"Bearer ****"` when the secret is ≤8 chars) |
-| **PANs** | 12–19 digit runs (spaces/dashes allowed) passing the Luhn check, or any digit string of that length under a card key (`number`, `securitycode`, `cvv`, …), including bare `int` values | `"411111******1111"` — first 6 (BIN) + last 4 visible, the most PCI DSS permits in clear; other card-key values are tokenized |
+| **PANs** | 12–19 digit runs (spaces/dashes allowed); no Luhn gate, no card-key propagation — detection is shape-only | `"[CARD-MASKED:411111******1111]"` — first 6 (BIN) + last 4 visible, the most PCI DSS permits in clear; no token alongside; a second pass is a noop |
 
 ### Whitelist (NOT Masked)
 
