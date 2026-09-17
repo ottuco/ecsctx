@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.1 (2026-09-17)
+
+### Fixes
+- fix(masking): truncate PANs to first6/last4 instead of full mask (07f80ed)
+
+### Other
+- Merge pull request #46 from ottuco/fix/159795-pan-truncation (ecd7800)
+
+
 ## v0.7.0 (2026-09-16)
 
 ### Features
