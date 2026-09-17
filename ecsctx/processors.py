@@ -24,6 +24,7 @@ from ecsctx.masking.exemptions import (
 )
 from ecsctx.masking.tokens import safe_tokenize
 from ecsctx.masking.filters import MaskPIIFilter
+from ecsctx.masking.patterns import _truncate_pan
 
 
 def _get_app_version() -> str:
@@ -389,8 +390,11 @@ _default_filter = MaskPIIFilter()
 def mask_pan(number: str) -> str:
     """Display-mask a PAN, keeping the first 6 and last 4 digits visible.
 
-    Explicit opt-in helper for call sites that need BIN/last4 (support,
-    debugging) — the masking engine itself always fully masks card numbers.
+    Bare-core counterpart of the engine's card rule, which emits the same
+    truncation label-wrapped (`[CARD-MASKED:411111******1111]`): use this
+    helper at call sites that must mask a PAN before logging (e.g.
+    replacing a hand-rolled helper). The core truncation is shared with
+    `ecsctx.masking.patterns._truncate_pan` so the two can never drift.
     PCI DSS permits showing at most the first six (BIN) and last four of a
     PAN, where an opaque token would force a vault lookup per log line.
     Separators are stripped, so grouped input comes back as one contiguous
@@ -400,7 +404,7 @@ def mask_pan(number: str) -> str:
     """
     digits = re.sub(r"[ -]", "", number)
     if len(digits) > 10:
-        return f"{digits[:6]}{'*' * (len(digits) - 10)}{digits[-4:]}"
+        return _truncate_pan(digits)
     return "*" * len(digits)
 
 

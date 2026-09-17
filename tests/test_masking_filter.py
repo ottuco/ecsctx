@@ -636,7 +636,7 @@ CARD_NUMBER_CASES = [
     ("card-17d-9-dash", "9123-4567-8912-34567", "[CARD-MASKED:912345*******4567]"),
     ("card-18d-9-dash", "9123-4567-8912-345678", "[CARD-MASKED:912345********5678]"),
     ("card-19d-9-dash", "9123-4567-8912-3456789", "[CARD-MASKED:912345*********6789]"),
-    # continuous, other leading digit — fully masked too (no BIN reveal)
+    # continuous, other leading digit — truncated too (BIN + last 4 visible)
     ("card-12d-other-continuous", "112345678912", "[CARD-MASKED:112345**8912]"),
     ("card-13d-other-continuous", "1123456789123", "[CARD-MASKED:112345***9123]"),
     ("card-14d-other-continuous", "11234567891234", "[CARD-MASKED:112345****1234]"),
