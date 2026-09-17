@@ -619,7 +619,7 @@ class TestStandalonePipelineSafety:
 class TestCardholderDataMasking:
     """Ported from the pre-unification engine suite (#159488, #159500).
 
-    The unified engine fully masks card numbers (no BIN/last-4 reveal) and
+    The unified engine truncates card numbers to BIN + last 4 (#159795) and
     has no Luhn gate, so the display / Luhn / key-predicate assertions from
     the old engine do not apply here. Pinned below against the new engine:
     PSP card/token key spellings mask, order diagnostics pass through.
@@ -728,6 +728,12 @@ class TestPanDisplayMasking:
 
     def test_mask_pan_short_value_stars_fully(self):
         assert mask_pan("123") == "***"
+
+    @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
+    def test_engine_output_contains_mask_pan_core(self, length, pan):
+        """The engine rule and mask_pan share _truncate_pan: the labeled
+        engine output always embeds the helper's bare core."""
+        assert mask_pan(pan) in _mask(f"pay {pan} ok")
 
     @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
     def test_pans_masked_in_every_grouping(self, length, pan):
