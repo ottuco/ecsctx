@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.2 (2026-09-17)
+
+### Fixes
+- Merge pull request #47 from ottuco/fix/159795-review-followup (a7415e2)
+- fix(masking): address PR #46 review — doc drift and shared truncation (0f3a857)
+
+
 ## v0.7.1 (2026-09-17)
 
 ### Fixes
