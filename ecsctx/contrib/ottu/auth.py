@@ -28,13 +28,15 @@ class AuthRejection(Reason):
     SERVICE_NOT_ALLOWED = "service_not_allowed"
     USER_DEACTIVATED = "user_deactivated"
     USER_DEACTIVATED_CACHE = "user_deactivated_cache"
+    ACCOUNT_LOCKED = "account_locked"  # too many failed attempts; in cool-off
+    INVALID_CREDENTIALS = "invalid_credentials"
 
 
 AUTH_REQUEST_REJECTED = EventSpec(
     action="auth.request_rejected",
     description=(
-        "A request was refused during authentication for a policy reason, such as a "
-        "deactivated user or a service that may not call."
+        "A request was refused during authentication: wrong credentials, a locked or "
+        "deactivated account, or a service that may not call."
     ),
     level="warning",
     terminal=True,
@@ -45,24 +47,44 @@ AUTH_REQUEST_REJECTED = EventSpec(
     required=("event.outcome", "event.reason", "labels.auth_method"),
 )
 
+class TokenIssueFailure(Reason):
+    """Why this service could not get an access token."""
+
+    CONNECTION_FAILED = "connection_failed"  # the identity provider was unreachable
+    REJECTED = "rejected"  # it answered, and refused
+
+
 AUTH_TOKEN_ISSUED = EventSpec(
     action="auth.token_issued",
     description=(
         "This service obtained or minted an access token; labels.grant_type says how "
-        "and labels.cache whether it came from cache."
+        "and labels.cache whether it came from cache. A failure says why no token "
+        "came back."
     ),
     terminal=True,
     category=("authentication",),
     type=("creation",),
+    reasons=TokenIssueFailure,
     required=("event.outcome", "labels.grant_type", "labels.cache"),
 )
 
+
+class TokenRevocation(Reason):
+    """Why a user's token was revoked."""
+
+    USER_DEACTIVATED = "user_deactivated"
+
+
 AUTH_TOKEN_REVOKED = EventSpec(
     action="auth.token_revoked",
-    description="A user's token was revoked, e.g. on logout or a password change.",
+    description=(
+        "A user's token was revoked, e.g. on logout, a password change or the "
+        "account being deactivated; the reason says why."
+    ),
     terminal=True,
     category=("authentication",),
     type=("deletion",),
+    reasons=TokenRevocation,
     required=("event.outcome", "user.id"),
 )
 

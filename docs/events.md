@@ -122,11 +122,11 @@ A caller's credentials were accepted; user.id says who and labels.auth_method ho
 
 `from ecsctx.contrib.ottu.auth import AUTH_REQUEST_REJECTED`
 
-A request was refused during authentication for a policy reason, such as a deactivated user or a service that may not call.
+A request was refused during authentication: wrong credentials, a locked or deactivated account, or a service that may not call.
 
 - **Level:** warning; on failure warning. Terminal: `.ecs()` needs an outcome.
 - **ECS:** kind `event`, category `authentication`, type `denied`
-- **Reasons:** `AuthRejection` (`from ecsctx.contrib.ottu.auth import AuthRejection`): `service_not_allowed`, `user_deactivated`, `user_deactivated_cache`
+- **Reasons:** `AuthRejection` (`from ecsctx.contrib.ottu.auth import AuthRejection`): `service_not_allowed`, `user_deactivated`, `user_deactivated_cache`, `account_locked`, `invalid_credentials`
 - **Carries:** `event.outcome`, `event.reason`, `labels.auth_method`
 
 ### `auth.roles_changed`
@@ -165,20 +165,22 @@ A user session was ended by the system rather than by logout; the reason says wh
 
 `from ecsctx.contrib.ottu.auth import AUTH_TOKEN_ISSUED`
 
-This service obtained or minted an access token; labels.grant_type says how and labels.cache whether it came from cache.
+This service obtained or minted an access token; labels.grant_type says how and labels.cache whether it came from cache. A failure says why no token came back.
 
 - **Level:** info; on failure error. Terminal: `.ecs()` needs an outcome.
 - **ECS:** kind `event`, category `authentication`, type `creation`
+- **Reasons:** `TokenIssueFailure` (`from ecsctx.contrib.ottu.auth import TokenIssueFailure`): `connection_failed`, `rejected`
 - **Carries:** `event.outcome`, `labels.grant_type`, `labels.cache`
 
 ### `auth.token_revoked`
 
 `from ecsctx.contrib.ottu.auth import AUTH_TOKEN_REVOKED`
 
-A user's token was revoked, e.g. on logout or a password change.
+A user's token was revoked, e.g. on logout, a password change or the account being deactivated; the reason says why.
 
 - **Level:** info; on failure error. Terminal: `.ecs()` needs an outcome.
 - **ECS:** kind `event`, category `authentication`, type `deletion`
+- **Reasons:** `TokenRevocation` (`from ecsctx.contrib.ottu.auth import TokenRevocation`): `user_deactivated`
 - **Carries:** `event.outcome`, `user.id`
 
 ## `cache`

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Reasons Connect logs on shared auth events, declared in the catalogue so
+  every service uses the same values: `AuthRejection.ACCOUNT_LOCKED` and
+  `INVALID_CREDENTIALS` (login refusals), `TokenRevocation.USER_DEACTIVATED` on
+  `auth.token_revoked`, and `TokenIssueFailure.CONNECTION_FAILED` / `REJECTED`
+  on `auth.token_issued`.
+
 ## v0.8.0 (2026-09-18)
 
 ### Features
