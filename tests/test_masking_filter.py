@@ -111,13 +111,14 @@ class TestCheckIfSensitiveKeyword:
 
 
 class TestFieldRules:
-    def test_cvv_not_tokenizable_not_exemptable(self):
-        rule = get_field_rule("cvv")
+    @pytest.mark.parametrize("field_type", ["cvv", "card", "expiry"])
+    def test_cardholder_data_is_neither_tokenized_nor_exemptable(self, field_type):
+        rule = get_field_rule(field_type)
         assert rule.tokenizable is False
         assert rule.exemptable is False
 
     @pytest.mark.parametrize(
-        "field_type", ["secret", "payment_id", "card", "pem_key", "iban", "jwt", "ssn"]
+        "field_type", ["secret", "payment_id", "pem_key", "iban", "jwt", "ssn"]
     )
     def test_secrets_tokenizable_not_exemptable(self, field_type):
         rule = get_field_rule(field_type)
@@ -929,9 +930,9 @@ class TestObjectAndPrimitiveHandling:
         embedded PAN would render unmasked downstream."""
         # the PAN is replaced; the already-masked portion of the repr is
         # left as-is
-        assert _mask({"event": "decrypted payment data", "card": _FakeCard()}) == {
+        assert _mask({"event": "decrypted payment data", "source": _FakeCard()}) == {
             "event": "decrypted payment data",
-            "card": "<Card(VISA, 512345******0008, [CARD-MASKED:958418******4802])>",
+            "source": "<Card(VISA, 512345******0008, [CARD-MASKED:958418******4802])>",
         }
 
     def test_masks_object_nested_in_list_and_dict(self):

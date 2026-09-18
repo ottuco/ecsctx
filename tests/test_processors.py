@@ -663,12 +663,8 @@ class TestCardholderDataMasking:
     ):
         """End-to-end over a real MPGS sourceOfFunds payload (#159488).
 
-        The PAN is caught by the content rule and the CVV by its keyword;
-        order diagnostics must survive. NOTE: expiry year/month values are
-        NOT masked by the unified engine — it has no card-container
-        propagation, and neither the keys nor the bare 2-digit values match
-        any rule. Flagged on the PR; deliberately unasserted here so this
-        test does not enshrine the gap.
+        `card` is a card key, so the whole card object — number, expiry and
+        security code — is one label; order diagnostics survive.
         """
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         payload = {
@@ -683,11 +679,8 @@ class TestCardholderDataMasking:
             },
             "order": {"reference": "deltabRKJ5X_0", "amount": 20},
         }
-        masked = _mask_pci(payload)
-        card = masked["sourceOfFunds"]["provided"]["card"]
-        assert "4111111111111111" not in str(masked)
-        assert card["number"].startswith("[CARD-MASKED")
-        assert card["securityCode"] == "[CVV-MASKED]"
+        masked = _mask(payload)
+        assert masked["sourceOfFunds"]["provided"]["card"] == "[CARD-MASKED]"
         assert masked["order"] == {"reference": "deltabRKJ5X_0", "amount": 20}
 
     def test_nothing_outside_a_card_container_is_newly_masked(self, token_keyset_path):
@@ -756,8 +749,8 @@ class TestPanDisplayMasking:
     def test_short_int_under_cvv_key_is_masked(self):
         # The CVV rule is not tokenizable: any int under a CVV key becomes
         # the bare label, never a token and never the raw value.
-        assert _mask({"card": {"securityCode": 123}}) == {
-            "card": {"securityCode": "[CVV-MASKED]"}
+        assert _mask({"source": {"securityCode": 123}}) == {
+            "source": {"securityCode": "[CVV-MASKED]"}
         }
 
     def test_order_ids_and_timestamps_are_not_masked(self):

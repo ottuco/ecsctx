@@ -17,7 +17,7 @@ from ecsctx.masking.config import (
     get_masking_packs,
 )
 from ecsctx.masking.filters import MaskPIIFilter
-from ecsctx.masking.patterns import ALL_PACKS
+from ecsctx.masking.patterns import ALL_PACKS, classify_key
 
 
 @pytest.fixture(autouse=True)
@@ -90,3 +90,83 @@ class TestPackSelection:
     def test_filter_without_packs_follows_the_configuration(self):
         configure_masking_packs(["pci"])
         assert _mask("cvv 123") == "cvv [CVV-MASKED]"
+
+
+class TestKeyNames:
+    """Key names match by whole word (or a known glued spelling), never by a
+    substring of an unrelated word, and the decision is cached per key."""
+
+    DEFAULT = frozenset({"default"})
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "namespace",
+            "hostname",
+            "filename",
+            "telemetry",
+            "hotel",
+            "tokenization_status",
+            "token_type",
+            "card_id",
+            "ip_address",
+            "expires_in",
+            "cache_key",
+            "operation",
+        ],
+    )
+    def test_unrelated_words_are_not_sensitive(self, key):
+        assert classify_key(key, self.DEFAULT) is None
+
+    @pytest.mark.parametrize(
+        "key,expected",
+        [
+            ("first_name", "name"),
+            ("cardHolderName", "name"),
+            ("firstname", "name"),
+            ("access_token", "secret"),
+            ("cardtoken", "secret"),
+            ("x-api-key", "secret"),
+            ("apiKey", "secret"),
+            ("Authorization", "secret"),
+            ("client_secret", "secret"),
+            ("cvv", "cvv"),
+            ("cvv2", "cvv"),
+            ("securityCode", "cvv"),
+            ("security_code", "cvv"),
+            ("card", "card"),
+            ("pan", "card"),
+            ("card_number", "card"),
+            ("cardNumber", "card"),
+            ("expiry", "expiry"),
+            ("exp_month", "expiry"),
+            ("expirationDate", "expiry"),
+            ("cardExpiry", "expiry"),
+            ("telephone", "phone"),
+            ("mobile", "phone"),
+            ("customer_email", "email"),
+            ("billing_address", "address"),
+            ("customer_ref", "generic"),
+        ],
+    )
+    def test_sensitive_keys(self, key, expected):
+        assert classify_key(key, self.DEFAULT) == expected
+
+    def test_payment_id_keys_follow_the_financial_ids_pack(self):
+        assert classify_key("transaction_id", self.DEFAULT) is None
+        assert classify_key("transaction_id", self.DEFAULT | {"financial_ids"}) == "payment_id"
+
+    def test_card_fields_are_masked_by_key_in_every_service(self):
+        masked = _mask({"card_number": "4111 1111 1111 1111", "expiry": "12/27", "cvv": "123"})
+        assert masked == {
+            "card_number": "[CARD-MASKED:411111******1111]",
+            "expiry": "[EXPIRY-MASKED]",
+            "cvv": "[CVV-MASKED]",
+        }
+
+    def test_a_card_object_under_a_card_key_is_masked_whole(self):
+        masked = _mask({"card": {"number": "4111111111111111", "expiry": {"month": "01", "year": "27"}}})
+        assert masked == {"card": "[CARD-MASKED]"}
+
+    def test_a_card_key_holding_no_pan_is_labelled_not_truncated(self):
+        assert _mask({"pan": "n/a"}) == {"pan": "[CARD-MASKED]"}

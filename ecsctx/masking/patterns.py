@@ -25,7 +25,7 @@ import re
 from functools import lru_cache
 from typing import Callable, NamedTuple
 
-from ecsctx.masking.tokens import make_label, mask_by_field_type
+from ecsctx.masking.tokens import already_masked, make_label, mask_by_field_type
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -55,6 +55,10 @@ SAFE_KEYS = frozenset({
     "customer_id",
     "id",
     "pk",
+    # OAuth token metadata and network addresses, not secrets or postal addresses.
+    "token_type",
+    "ip_address",
+    "mac_address",
 })
 
 # Sensitive credential keywords / auth schemes. Matched case-insensitively.
@@ -76,16 +80,6 @@ _CVV_KEYWORD = r"(?:cvv|cvc|security[_\s]?code)"
 
 # Payment/transaction/auth id keywords.
 _PAYMENT_ID_KEYWORD = r"(?:payment|transaction|auth)[_\s-]?id"
-
-_EMAIL_KEY_WORDS = r"email"
-
-_PHONE_KEY_WORDS = r"phone|mobile|tel"
-
-_ADDRESS_KEY_WORDS = r"address"
-
-_NAME_KEY_WORDS = r"name|cardholder|beneficiary|recipient|payer"
-
-_GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
 
 
 
@@ -145,6 +139,25 @@ def _mask_truncated_card(match: re.Match) -> str:
     # Deliberately not mask_by_field_type: that would tokenize (or, with
     # PII unconfigured, collapse to a bare label), losing the truncation.
     return f"[{make_label('card')}:{_truncate_pan(_digits_only(match.group(0)))}]"
+
+
+_PAN_VALUE = re.compile(r"\d(?:[-\s]?\d){11,18}")
+
+
+def mask_card_value(value) -> str:
+    """The value of a card-named key: truncated when it is a PAN, else a label.
+
+    Never tokenized — a keyed hash of a PAN next to its truncated form is the
+    correlation FAQ 1117 warns about. A whole card object (number, expiry,
+    holder) is one label.
+    """
+    if isinstance(value, str) and already_masked(value):
+        return value
+    if isinstance(value, (str, int)) and not isinstance(value, bool):
+        text = str(value).strip()
+        if _PAN_VALUE.fullmatch(text):
+            return f"[{make_label('card')}:{_truncate_pan(_digits_only(text))}]"
+    return f"[{make_label('card')}]"
 
 
 def _mask_pem(match: re.Match) -> str:
@@ -499,28 +512,105 @@ def mask_by_all_patterns(text: str) -> str:
     return mask_by_patterns(text, rules_for(ALL_PACKS))
 
 
-KEYWORD_REGEX_FIELD_TYPE = (
-    (_CVV_KEYWORD, "cvv"),
-    (_CRED_KEYWORD, "secret"),
-    (_PAYMENT_ID_KEYWORD, "payment_id"),
-    (_EMAIL_KEY_WORDS, "email"),
-    (_PHONE_KEY_WORDS, "phone"),
-    (_ADDRESS_KEY_WORDS, "address"),
-    (_NAME_KEY_WORDS, "name"),
-    (_GENERIC_PII_KEY_WORDS, "generic"),
-)
+# ---------------------------------------------------------------------------
+# Key-name rules
+# ---------------------------------------------------------------------------
+# A key is split into words ("cardHolderName" -> card, holder, name;
+# "x-api-key" -> x, api, key; trailing digits dropped, so "cvv2" -> cvv) and
+# matched word by word. Matching a substring of the whole key is what made
+# "namespace", "hostname" and "telemetry" read as a name and a phone number.
+# Glued spellings that real payloads use ("cardtoken", "firstname") are
+# listed or suffix-matched explicitly instead.
+_KEY_SPLIT = re.compile(r"[_\-.\s]+|(?<=[a-z0-9])(?=[A-Z])")
+_TRAILING_DIGITS = re.compile(r"\d+$")
 
-KEYWORD_PATTERN_FIELD_TYPE = tuple(
-    (re.compile(regex, re.IGNORECASE), field_type)
-    for regex, field_type in KEYWORD_REGEX_FIELD_TYPE
-)
+_CVV_WORDS = frozenset({"cvv", "cvc", "cvn", "csc", "securitycode"})
+_CARD_WORDS = frozenset({"pan", "cardnumber", "cardno"})
+_EXPIRY_PREFIXES = ("expiry", "expiration")
+_EXP_PARTS = frozenset({"month", "year", "date", "mm", "yy", "yyyy"})
+_SECRET_WORDS = frozenset({
+    "bearer", "basic", "digest", "credential", "credentials",
+    "authorization", "authorisation",
+})
+_SECRET_SUFFIXES = ("token", "secret", "password", "passwd")
+_KEY_PREFIXES = frozenset({
+    "secret", "private", "public", "encryption", "decryption", "signing",
+    "access", "master", "root", "session", "api",
+})
+_GLUED_KEYS = frozenset(prefix + "key" for prefix in _KEY_PREFIXES)
+_PAYMENT_ID_PREFIXES = frozenset({"payment", "transaction", "auth"})
+_GLUED_PAYMENT_IDS = frozenset(prefix + "id" for prefix in _PAYMENT_ID_PREFIXES)
+_PHONE_WORDS = frozenset({"phone", "mobile", "tel", "telephone", "msisdn", "cellphone"})
+_NAME_WORDS = frozenset({
+    "name", "cardholder", "beneficiary", "recipient", "payer",
+    "firstname", "lastname", "fullname", "middlename", "surname",
+    "givenname", "familyname", "holdername", "cardholdername",
+})
+_GENERIC_WORDS = frozenset({"billing", "shipping", "customer", "contact", "udf"})
+
+
+def _key_words(key: str) -> tuple[str, ...]:
+    words = []
+    for part in _KEY_SPLIT.split(key):
+        word = _TRAILING_DIGITS.sub("", part.lower())
+        if word:
+            words.append(word)
+    return tuple(words)
+
+
+def _follows(words: tuple[str, ...], first: frozenset[str], second: str | frozenset[str]) -> bool:
+    seconds = second if isinstance(second, frozenset) else frozenset({second})
+    return any(a in first and b in seconds for a, b in zip(words, words[1:]))
+
+
+@lru_cache(maxsize=4096)
+def classify_key(key: str, packs: frozenset[str]) -> str | None:
+    """The field type a key name marks its value as, or None.
+
+    Cached: a service logs a small, fixed set of key names, so after warm-up
+    this is a dict lookup instead of a scan per key per line.
+    """
+    lowered = key.lower()
+    if lowered in SAFE_KEYS:
+        return None
+    words = _key_words(key)
+    if not words:
+        return None
+    word_set = frozenset(words)
+    if word_set & _CVV_WORDS or _follows(words, frozenset({"security"}), "code"):
+        return "cvv"
+    if words == ("card",) or word_set & _CARD_WORDS or _follows(
+        words, frozenset({"card"}), frozenset({"number", "no"})
+    ):
+        return "card"
+    if any(word.startswith(_EXPIRY_PREFIXES) for word in words) or _follows(
+        words, frozenset({"exp"}), _EXP_PARTS
+    ):
+        return "expiry"
+    if (
+        word_set & _SECRET_WORDS
+        or word_set & _GLUED_KEYS
+        or any(word.endswith(_SECRET_SUFFIXES) for word in words)
+        or _follows(words, _KEY_PREFIXES, "key")
+    ):
+        return "secret"
+    if "financial_ids" in packs and (
+        word_set & _GLUED_PAYMENT_IDS or _follows(words, _PAYMENT_ID_PREFIXES, "id")
+    ):
+        return "payment_id"
+    if any(word.endswith("email") for word in words):
+        return "email"
+    if word_set & _PHONE_WORDS:
+        return "phone"
+    if any(word.endswith("address") for word in words):
+        return "address"
+    if word_set & _NAME_WORDS:
+        return "name"
+    if word_set & _GENERIC_WORDS:
+        return "generic"
+    return None
 
 
 def check_if_sensitive_keyword(dict_key: str) -> str | None:
-    low_dict_key = dict_key.lower()
-    if low_dict_key in SAFE_KEYS:
-        return None
-    for pattern, field_type in KEYWORD_PATTERN_FIELD_TYPE:
-        if pattern.search(low_dict_key):
-            return field_type
-    return None
+    """classify_key with every pack on."""
+    return classify_key(dict_key, ALL_PACKS)

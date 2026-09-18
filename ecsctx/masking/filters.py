@@ -24,7 +24,7 @@ from typing import Any
 from ecsctx.masking.config import _normalise, get_masking_packs
 from ecsctx.masking.exemptions import _get_exempt_patterns, _path_is_exempt
 from ecsctx.masking.fields_rules import get_field_rule
-from ecsctx.masking.patterns import check_if_sensitive_keyword, mask_by_patterns, rules_for
+from ecsctx.masking.patterns import classify_key, mask_by_patterns, mask_card_value, rules_for
 from ecsctx.masking.tokens import mask_by_field_type
 
 _IS_MASKED_ = "_IS_MASKED_"
@@ -87,6 +87,7 @@ class MaskPIIFilter(logging.Filter):
 
     def _mask_dict(self, data: dict, path: tuple = ()) -> dict:
         exempt = _get_exempt_patterns()
+        packs = self._packs_in_force()
         result = {}
         for key, value in data.items():
             if path == () and key in self._skip_keys:
@@ -94,13 +95,15 @@ class MaskPIIFilter(logging.Filter):
                 continue
             lookup_key = str(key)
             child_path = path + (lookup_key,)
-            field_type = check_if_sensitive_keyword(lookup_key)
+            field_type = classify_key(lookup_key, packs)
             if field_type is None:
                 result[key] = self._mask_value(value, child_path)
                 continue
             field_rule = get_field_rule(field_type)
             if field_rule.exemptable and _path_is_exempt(child_path, exempt):
                 result[key] = self._mask_value(value, child_path)
+            elif field_type == "card":
+                result[key] = mask_card_value(value)
             else:
                 result[key] = mask_by_field_type(str(value), field_type)
         return result
