@@ -24,11 +24,17 @@ import pytest
 
 from ecsctx.masking.fields_rules import FIELD_RULES, get_field_rule
 from ecsctx.masking.filters import (
+    DEFAULT_SKIP_KEYS,
     STRUCTURAL_ECS_KEYS,
     MaskPIIFilter,
     is_masked_object,
 )
-from ecsctx.masking.patterns import SAFE_KEYS, check_if_sensitive_keyword, mask_by_all_patterns
+from ecsctx.masking.patterns import (
+    ALL_PACKS,
+    SAFE_KEYS,
+    check_if_sensitive_keyword,
+    mask_by_all_patterns,
+)
 from ecsctx.masking.tokens import (
     already_masked,
     make_label,
@@ -39,9 +45,10 @@ from ecsctx.pii import configure_pii
 
 
 def _mask(msg):
-    """Run a message through MaskPIIFilter and return the (mutated) record.msg."""
+    """Run a message through MaskPIIFilter with every pack on, and return the
+    (mutated) record.msg — the case tables below cover all 17 rules."""
     record = logging.LogRecord("test", logging.INFO, __file__, 0, msg, None, None)
-    MaskPIIFilter().filter(record)
+    MaskPIIFilter(packs=ALL_PACKS).filter(record)
     return record.msg
 
 
@@ -105,13 +112,14 @@ class TestCheckIfSensitiveKeyword:
 
 
 class TestFieldRules:
-    def test_cvv_not_tokenizable_not_exemptable(self):
-        rule = get_field_rule("cvv")
+    @pytest.mark.parametrize("field_type", ["cvv", "card", "expiry"])
+    def test_cardholder_data_is_neither_tokenized_nor_exemptable(self, field_type):
+        rule = get_field_rule(field_type)
         assert rule.tokenizable is False
         assert rule.exemptable is False
 
     @pytest.mark.parametrize(
-        "field_type", ["secret", "payment_id", "card", "pem_key", "iban", "jwt", "ssn"]
+        "field_type", ["secret", "payment_id", "pem_key", "iban", "jwt", "ssn"]
     )
     def test_secrets_tokenizable_not_exemptable(self, field_type):
         rule = get_field_rule(field_type)
@@ -610,54 +618,54 @@ def test_masks_jwt(label, sample, expected):
 # ---------------------------------------------------------------------------
 CARD_NUMBER_CASES = [
     # continuous, leading 9
-    ("card-12d-9-continuous", "912345678912", "[CARD-MASKED:912345**8912]"),
-    ("card-13d-9-continuous", "9123456789123", "[CARD-MASKED:912345***9123]"),
-    ("card-14d-9-continuous", "91234567891234", "[CARD-MASKED:912345****1234]"),
+    ("card-12d-9-continuous", "912345678912", "[CARD-MASKED:********8912]"),
+    ("card-13d-9-continuous", "9123456789123", "[CARD-MASKED:*********9123]"),
+    ("card-14d-9-continuous", "91234567891234", "[CARD-MASKED:**********1234]"),
     ("card-15d-9-continuous", "912345678912345", "[CARD-MASKED:912345*****2345]"),
     ("card-16d-9-continuous", "9123456789123456", "[CARD-MASKED:912345******3456]"),
     ("card-17d-9-continuous", "91234567891234567", "[CARD-MASKED:912345*******4567]"),
     ("card-18d-9-continuous", "912345678912345678", "[CARD-MASKED:912345********5678]"),
     ("card-19d-9-continuous", "9123456789123456789", "[CARD-MASKED:912345*********6789]"),
     # space-separated, leading 9
-    ("card-12d-9-space", "9123 4567 8912", "[CARD-MASKED:912345**8912]"),
-    ("card-13d-9-space", "9123 4567 8912 3", "[CARD-MASKED:912345***9123]"),
-    ("card-14d-9-space", "9123 4567 8912 34", "[CARD-MASKED:912345****1234]"),
+    ("card-12d-9-space", "9123 4567 8912", "[CARD-MASKED:********8912]"),
+    ("card-13d-9-space", "9123 4567 8912 3", "[CARD-MASKED:*********9123]"),
+    ("card-14d-9-space", "9123 4567 8912 34", "[CARD-MASKED:**********1234]"),
     ("card-15d-9-space", "9123 4567 8912 345", "[CARD-MASKED:912345*****2345]"),
     ("card-16d-9-space", "9123 4567 8912 3456", "[CARD-MASKED:912345******3456]"),
     ("card-17d-9-space", "9123 4567 8912 34567", "[CARD-MASKED:912345*******4567]"),
     ("card-18d-9-space", "9123 4567 8912 345678", "[CARD-MASKED:912345********5678]"),
     ("card-19d-9-space", "9123 4567 8912 3456789", "[CARD-MASKED:912345*********6789]"),
     # dash-separated, leading 9
-    ("card-12d-9-dash", "9123-4567-8912", "[CARD-MASKED:912345**8912]"),
-    ("card-13d-9-dash", "9123-4567-8912-3", "[CARD-MASKED:912345***9123]"),
-    ("card-14d-9-dash", "9123-4567-8912-34", "[CARD-MASKED:912345****1234]"),
+    ("card-12d-9-dash", "9123-4567-8912", "[CARD-MASKED:********8912]"),
+    ("card-13d-9-dash", "9123-4567-8912-3", "[CARD-MASKED:*********9123]"),
+    ("card-14d-9-dash", "9123-4567-8912-34", "[CARD-MASKED:**********1234]"),
     ("card-15d-9-dash", "9123-4567-8912-345", "[CARD-MASKED:912345*****2345]"),
     ("card-16d-9-dash", "9123-4567-8912-3456", "[CARD-MASKED:912345******3456]"),
     ("card-17d-9-dash", "9123-4567-8912-34567", "[CARD-MASKED:912345*******4567]"),
     ("card-18d-9-dash", "9123-4567-8912-345678", "[CARD-MASKED:912345********5678]"),
     ("card-19d-9-dash", "9123-4567-8912-3456789", "[CARD-MASKED:912345*********6789]"),
     # continuous, other leading digit — truncated too (BIN + last 4 visible)
-    ("card-12d-other-continuous", "112345678912", "[CARD-MASKED:112345**8912]"),
-    ("card-13d-other-continuous", "1123456789123", "[CARD-MASKED:112345***9123]"),
-    ("card-14d-other-continuous", "11234567891234", "[CARD-MASKED:112345****1234]"),
+    ("card-12d-other-continuous", "112345678912", "[CARD-MASKED:********8912]"),
+    ("card-13d-other-continuous", "1123456789123", "[CARD-MASKED:*********9123]"),
+    ("card-14d-other-continuous", "11234567891234", "[CARD-MASKED:**********1234]"),
     ("card-15d-other-continuous", "112345678912345", "[CARD-MASKED:112345*****2345]"),
     ("card-16d-other-continuous", "1123456789123456", "[CARD-MASKED:112345******3456]"),
     ("card-17d-other-continuous", "11234567891234567", "[CARD-MASKED:112345*******4567]"),
     ("card-18d-other-continuous", "112345678912345678", "[CARD-MASKED:112345********5678]"),
     ("card-19d-other-continuous", "1123456789123456789", "[CARD-MASKED:112345*********6789]"),
     # space-separated, other leading digit
-    ("card-12d-other-space", "11234 56 78912", "[CARD-MASKED:112345**8912]"),
-    ("card-13d-other-space", "11234 56 789123", "[CARD-MASKED:112345***9123]"),
-    ("card-14d-other-space", "11234 56 7891234", "[CARD-MASKED:112345****1234]"),
+    ("card-12d-other-space", "11234 56 78912", "[CARD-MASKED:********8912]"),
+    ("card-13d-other-space", "11234 56 789123", "[CARD-MASKED:*********9123]"),
+    ("card-14d-other-space", "11234 56 7891234", "[CARD-MASKED:**********1234]"),
     ("card-15d-other-space", "11234 56 78912345", "[CARD-MASKED:112345*****2345]"),
     ("card-16d-other-space", "11234 56 789123456", "[CARD-MASKED:112345******3456]"),
     ("card-17d-other-space", "11234 56 7891234567", "[CARD-MASKED:112345*******4567]"),
     ("card-18d-other-space", "11234 56 78912345678", "[CARD-MASKED:112345********5678]"),
     ("card-19d-other-space", "11234 56 789123456789", "[CARD-MASKED:112345*********6789]"),
     # dash-separated, other leading digit
-    ("card-12d-other-dash", "1123-4567-8912", "[CARD-MASKED:112345**8912]"),
-    ("card-13d-other-dash", "1123-4567-8912-3", "[CARD-MASKED:112345***9123]"),
-    ("card-14d-other-dash", "1123-4567-8912-34", "[CARD-MASKED:112345****1234]"),
+    ("card-12d-other-dash", "1123-4567-8912", "[CARD-MASKED:********8912]"),
+    ("card-13d-other-dash", "1123-4567-8912-3", "[CARD-MASKED:*********9123]"),
+    ("card-14d-other-dash", "1123-4567-8912-34", "[CARD-MASKED:**********1234]"),
     ("card-15d-other-dash", "1123-4567-8912-345", "[CARD-MASKED:112345*****2345]"),
     ("card-16d-other-dash", "1123-4567-8912-3456", "[CARD-MASKED:112345******3456]"),
     ("card-17d-other-dash", "1123-4567-8912-34567", "[CARD-MASKED:112345*******4567]"),
@@ -677,10 +685,10 @@ CARD_NUMBER_CASES = [
     ("card-5groups-other-space", "40345 678 1290 12 56789", "[CARD-MASKED:403456*********6789]"),
     ("card-5groups-other-dash", "40345-678-1290-12-56789", "[CARD-MASKED:403456*********6789]"),
     # mixed separators within one number
-    ("card-2-mixed-separator-9", "9034-5678 1290", "[CARD-MASKED:903456**1290]"),
+    ("card-2-mixed-separator-9", "9034-5678 1290", "[CARD-MASKED:********1290]"),
     ("card-3-mixed-separator-9", "9034-5678 1290-125", "[CARD-MASKED:903456*****0125]"),
     ("card-4-mixed-separator-9", "9034-5678 1290-1256 125", "[CARD-MASKED:903456*********6125]"),
-    ("card-2-mixed-separator-other", "4034-5678 1290", "[CARD-MASKED:403456**1290]"),
+    ("card-2-mixed-separator-other", "4034-5678 1290", "[CARD-MASKED:********1290]"),
     ("card-3-mixed-separator-other", "4034-5678 1290-125", "[CARD-MASKED:403456*****0125]"),
     ("card-4-mixed-separator-other", "4034-5678 1290-1256 125", "[CARD-MASKED:403456*********6125]"),
     # trailing chunk is phone-shaped (10 bare digits) — the phone rule runs
@@ -697,7 +705,7 @@ CARD_NUMBER_CASES = [
     ("card-19d-9-dot-prefixed-in-sentence", "Here num.9123456789123456789 card Number", "Here num.[CARD-MASKED:912345*********6789] card Number"),
     # 4-4-4-4 grouping: cascaded into per-group CVV masking in the ported
     # source, but full-PAN masking claims the whole run here.
-    ("card-12d-other-space-4x4", "1123 4567 8912", "[CARD-MASKED:112345**8912]"),
+    ("card-12d-other-space-4x4", "1123 4567 8912", "[CARD-MASKED:********8912]"),
     ("card-15d-other-space-4x4", "1123 4567 8912 345", "[CARD-MASKED:112345*****2345]"),
     ("card-16d-other-space-4x4", "1123 4567 8912 3456", "[CARD-MASKED:112345******3456]"),
     ("card-17d-other-space-4x4", "1123 4567 8912 34567", "[CARD-MASKED:112345*******4567]"),
@@ -923,9 +931,9 @@ class TestObjectAndPrimitiveHandling:
         embedded PAN would render unmasked downstream."""
         # the PAN is replaced; the already-masked portion of the repr is
         # left as-is
-        assert _mask({"event": "decrypted payment data", "card": _FakeCard()}) == {
+        assert _mask({"event": "decrypted payment data", "source": _FakeCard()}) == {
             "event": "decrypted payment data",
-            "card": "<Card(VISA, 512345******0008, [CARD-MASKED:958418******4802])>",
+            "source": "<Card(VISA, 512345******0008, [CARD-MASKED:958418******4802])>",
         }
 
     def test_masks_object_nested_in_list_and_dict(self):
@@ -978,8 +986,9 @@ class TestMaskPIIFilterEngine:
         out = flt._mask_value({"service": {"name": "John Doe should be masked"}})
         assert out["service"]["name"] != "John Doe should be masked"
 
-    def test_default_skip_keys_is_structural_ecs_keys(self):
-        assert MaskPIIFilter()._skip_keys == STRUCTURAL_ECS_KEYS
+    def test_default_skip_keys_cover_structural_and_correlation_keys(self):
+        assert MaskPIIFilter()._skip_keys == DEFAULT_SKIP_KEYS
+        assert STRUCTURAL_ECS_KEYS <= DEFAULT_SKIP_KEYS
 
     @pytest.mark.parametrize("container", [list, tuple, set])
     def test_iterable_container_type_is_preserved(self, container):
@@ -1063,7 +1072,7 @@ class TestMaskPIIFilterAsLoggingFilter:
     def test_second_regex_pass_over_masked_markers_is_a_noop(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         record = self._record("contact victim@example.com, card 4111111111111111")
-        MaskPIIFilter().filter(record)
+        MaskPIIFilter(packs=ALL_PACKS).filter(record)
         once = record.msg
         assert "victim@example.com" not in once
         assert mask_by_all_patterns(once) == once

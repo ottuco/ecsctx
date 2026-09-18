@@ -28,6 +28,8 @@ from ecsctx.processors import (
 # ecsctx.processors._safe_dump_and_mask used to wrap — mask_sensitive_data
 # (the structlog processor) now delegates to the same MaskPIIFilter instance.
 _mask = MaskPIIFilter()._mask_value
+# Card-number and CVV content rules are the opt-in `pci` pack.
+_mask_pci = MaskPIIFilter(packs=("pci",))._mask_value
 
 
 class TestTokenizeInProcessor:
@@ -661,12 +663,8 @@ class TestCardholderDataMasking:
     ):
         """End-to-end over a real MPGS sourceOfFunds payload (#159488).
 
-        The PAN is caught by the content rule and the CVV by its keyword;
-        order diagnostics must survive. NOTE: expiry year/month values are
-        NOT masked by the unified engine — it has no card-container
-        propagation, and neither the keys nor the bare 2-digit values match
-        any rule. Flagged on the PR; deliberately unasserted here so this
-        test does not enshrine the gap.
+        `card` is a card key, so the whole card object — number, expiry and
+        security code — is one label; order diagnostics survive.
         """
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         payload = {
@@ -682,10 +680,7 @@ class TestCardholderDataMasking:
             "order": {"reference": "deltabRKJ5X_0", "amount": 20},
         }
         masked = _mask(payload)
-        card = masked["sourceOfFunds"]["provided"]["card"]
-        assert "4111111111111111" not in str(masked)
-        assert card["number"].startswith("[CARD-MASKED")
-        assert card["securityCode"] == "[CVV-MASKED]"
+        assert masked["sourceOfFunds"]["provided"]["card"] == "[CARD-MASKED]"
         assert masked["order"] == {"reference": "deltabRKJ5X_0", "amount": 20}
 
     def test_nothing_outside_a_card_container_is_newly_masked(self, token_keyset_path):
@@ -713,12 +708,16 @@ PAN_BY_LENGTH = {
 }
 
 def _display(pan: str) -> str:
-    return f"{pan[:6]}{'*' * (len(pan) - 10)}{pan[-4:]}"
+    # First 6 + last 4 from 15 digits up; last 4 only for shorter PANs, which
+    # FAQ 1091 covers only for Discover.
+    if len(pan) >= 15:
+        return f"{pan[:6]}{'*' * (len(pan) - 10)}{pan[-4:]}"
+    return f"{'*' * (len(pan) - 4)}{pan[-4:]}"
 
 
 class TestPanDisplayMasking:
     @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
-    def test_mask_pan_keeps_first_six_and_last_four(self, length, pan):
+    def test_mask_pan_keeps_at_most_the_bin_and_last_four(self, length, pan):
         assert mask_pan(pan) == _display(pan)
         assert pan not in mask_pan(pan)
 
@@ -733,14 +732,14 @@ class TestPanDisplayMasking:
     def test_engine_output_contains_mask_pan_core(self, length, pan):
         """The engine rule and mask_pan share _truncate_pan: the labeled
         engine output always embeds the helper's bare core."""
-        assert mask_pan(pan) in _mask(f"pay {pan} ok")
+        assert mask_pan(pan) in _mask_pci(f"pay {pan} ok")
 
     @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
     def test_pans_masked_in_every_grouping(self, length, pan):
         grouped = " ".join(pan[i : i + 4] for i in range(0, len(pan), 4))
         dashed = "-".join(pan[i : i + 4] for i in range(0, len(pan), 4))
         for body in (grouped, dashed):
-            masked = _mask(f"pay {body} ok")
+            masked = _mask_pci(f"pay {body} ok")
             assert body not in masked
             assert pan not in masked
             assert masked == f"pay [CARD-MASKED:{_display(pan)}] ok"
@@ -754,8 +753,8 @@ class TestPanDisplayMasking:
     def test_short_int_under_cvv_key_is_masked(self):
         # The CVV rule is not tokenizable: any int under a CVV key becomes
         # the bare label, never a token and never the raw value.
-        assert _mask({"card": {"securityCode": 123}}) == {
-            "card": {"securityCode": "[CVV-MASKED]"}
+        assert _mask({"source": {"securityCode": 123}}) == {
+            "source": {"securityCode": "[CVV-MASKED]"}
         }
 
     def test_order_ids_and_timestamps_are_not_masked(self):
