@@ -290,13 +290,16 @@ class TestFindUnmaskedLiveHandlers:
     def test_clean_tree_reports_nothing(self, isolated_logging_tree):
         assert find_unmasked_live_handlers(MASKED_CFG) == []
 
-    def test_catches_djangos_admin_email_handler(self, isolated_logging_tree):
+    def test_catches_djangos_admin_email_handler(self, isolated_logging_tree, settings):
         """The case this exists for: Django configures DEFAULT_LOGGING first,
         and with disable_existing_loggers off its 'django' logger survives
-        with AdminEmailHandler attached, invisible to settings.LOGGING."""
+        with AdminEmailHandler attached, invisible to settings.LOGGING. It
+        only ships anything when ADMINS is set."""
         import logging.config
 
         from django.utils.log import DEFAULT_LOGGING
+
+        settings.ADMINS = [("Ops", "ops@example.com")]
 
         cfg = get_logging_config()
         logging.config.dictConfig(DEFAULT_LOGGING)

@@ -29,11 +29,12 @@ from ecsctx.masking.filters import MaskPIIFilter
 
 _REDACTED = "[REDACTED]"
 
-# Masks a body by its keys before it is serialised (see _masked_json). Nothing
-# is skipped: the filter's default skip_keys (service/project/log) are
-# ecsctx's own metadata in a log record, but in a gateway body a top-level
-# "log" or "service" key can hold anything, a card included.
-_structure_masker = MaskPIIFilter(skip_keys=())
+# Masks a body by its keys before it is serialised (see _masked_json). The
+# filter's defaults describe a log record: service/project/log and the
+# correlation ids are ecsctx's own fields, and user.name is a login. In a
+# gateway body those keys hold whatever the gateway put there — a card, a
+# person's name — so nothing is skipped or exempted.
+_structure_masker = MaskPIIFilter(skip_keys=(), name_rule_exempt=())
 
 # Query-param key hints: a param whose name contains one of these is treated
 # as credential-bearing (case-insensitive).

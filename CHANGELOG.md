@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+**Upgrading a PCI service (ottu_pg): enable the `pci` pack, or it loses PAN
+and CVV content masking.** Card-number and CVV content rules, and the
+IBAN/SSN/payment-id rules, are now opt-in packs:
+`get_logging_config(masking_packs=("pci", "financial_ids"))`, or
+`ECSCTX_MASKING_PACKS` as a Django setting or env var. That pair reproduces
+0.7.x's content coverage. Key names (`card`, `pan`, `card_number`, `cvv`,
+`securityCode`, `expiry`, `exp_month`, …) are masked in every service.
+
+- Masking a Connect gateway-response record through `get_logging_config()`
+  (handler filter + formatter): 486 µs → 47 µs, or 515 µs → 111 µs when the
+  body holds a secret (0.6.8, formatter only: 18 µs; `scripts/bench_masking.py`).
+  Content rules sit behind literal pre-checks with an early exit, credential
+  rules are tried only near credential words, and key decisions are cached.
+- A string is masked until a pass changes nothing (masking the CVV-shaped
+  group after a PAN frees the PAN on the next pass), so the record the filter
+  masks in place — what Sentry's logging integration reads — is complete on
+  its own. Those fixed points are remembered, so the formatter's pass over
+  them is a lookup.
+- The correlation ids `session_id`, `trace` and `span` are never scanned
+  (with `service`, `project`, `log`). A hex id starting with ten digits was
+  being masked as a phone number: a digit run touching a letter is no longer
+  a phone number. The card rule still matches a PAN followed by a letter
+  (Track 2 data).
+- Key names still match by substring, failing closed; `namespace`,
+  `hostname`, `filename`, `token_type`, `tokenization_status` are safe keys.
+  `user.name` is exempt from the name rule but content-scanned.
+- PANs below 15 digits keep only their last 4 (PCI SSC FAQ 1091 covers them
+  only for Discover); 15–19 digits keep first 6 + last 4.
+- Card keys mask as in 0.6.8: a PAN value is truncated, a card object is one
+  `[CARD-MASKED]`; expiry keys give `[EXPIRY-MASKED]` (they logged in clear
+  since 0.7.0). Card values are never tokenized.
+- `logger.info("%.3f", Decimal(...))` formats again: a number passed as a
+  format argument stays a number unless its text holds something to mask. In
+  structured fields every object, `Decimal` included, becomes its masked text,
+  as in 0.7.x.
+- Exemption paths anchor at the root or a payload container, so 0.6.x
+  container-relative patterns (`payment_methods[*].name`) work again.
+- A record masked with fewer packs is masked again by a filter with more
+  (a PCI handler after a default one).
+- `mask_sensitive_data` masks free-text `event.*` fields such as
+  `event.reason`; only the bounded ones (action, kind, category, type,
+  outcome, duration) are left alone.
+- `ECSCTX_MASKING_PACKS` may be a list or a comma-separated string; an
+  unknown pack name turns every pack on, warns once, and fails the boot
+  check.
+- The credential key prefix is bounded to 128 characters and the email rule
+  to RFC 5321's lengths: a 20 KB run of `a-a-a-…` before `token` or `@` took
+  seconds to scan. A credential whose key has 129+ characters before `_token`
+  with no hyphen in them, or an email with a local part over 64 characters, is
+  no longer masked by content (key-name masking is unchanged).
+- The four non-ASCII letters `IGNORECASE` folds onto ASCII ones (`İ`, `ı`,
+  `ſ`, `K`) are folded before the pre-checks, so they cannot skip a match.
+- Boot check: Django's `AdminEmailHandler` counts as shipping only when
+  `ADMINS` is set, so a stock project passes `manage.py check` with
+  `ENVIRONMENT=prod`.
 - The shared catalogue (`ecsctx.contrib.ottu`) carries ECS `category`, `type`
   and bounded `reasons` for all 63 events, aligned with Connect's
   definitions; `crypto.credential_resolved` is `debug` and

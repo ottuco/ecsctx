@@ -34,14 +34,33 @@ from importlib import import_module
 from typing import Any
 
 _NON_SHIPPING_CLASSES = frozenset({"logging.StreamHandler", "logging.NullHandler"})
+_ADMIN_EMAIL_HANDLER = "django.utils.log.AdminEmailHandler"
 
 DEFAULT_SKIP_ENVS = frozenset({"local", "test", "dev"})
 DEFAULT_ENV_VAR = "ENVIRONMENT"
 
 
+def _admins_configured() -> bool:
+    try:
+        from django.conf import settings
+
+        return bool(getattr(settings, "ADMINS", None))
+    except Exception:  # noqa: BLE001 - no Django, or settings not configured
+        return True
+
+
+def _ships(handler_class: str | None) -> bool:
+    """A handler ships logs off-host unless it is a console StreamHandler, a
+    no-op NullHandler, or Django's AdminEmailHandler with no ADMINS to mail."""
+    if handler_class in _NON_SHIPPING_CLASSES:
+        return False
+    if handler_class == _ADMIN_EMAIL_HANDLER:
+        return _admins_configured()
+    return True
+
+
 def _is_shipping_handler(handler_config: dict) -> bool:
-    """A handler ships logs off-host unless it is a console StreamHandler or a no-op NullHandler."""
-    return handler_config.get("class") not in _NON_SHIPPING_CLASSES
+    return _ships(handler_config.get("class"))
 
 
 def _resolve_dotted_path(path: str) -> Any:
@@ -173,7 +192,7 @@ def find_unmasked_live_handlers(logging_config: dict[str, Any]) -> list[str]:
             continue
         for handler in logger.handlers:
             handler_class = _live_handler_class_path(handler)
-            if handler_class in _NON_SHIPPING_CLASSES or _filter_used_in_live_object(handler):
+            if not _ships(handler_class) or _filter_used_in_live_object(handler):
                 continue
             unmasked.append(f"{name} -> {handler_class}")
 
@@ -196,8 +215,12 @@ def find_masking_errors(logging_config: dict[str, Any]) -> list[str]:
     The entry points below all go through this, so none of them can pass while
     the other half is broken.
     """
-    return find_masking_config_errors(logging_config) + find_unmasked_live_handlers(
-        logging_config
+    from ecsctx.masking.config import masking_pack_errors
+
+    return (
+        find_masking_config_errors(logging_config)
+        + find_unmasked_live_handlers(logging_config)
+        + masking_pack_errors()
     )
 
 
