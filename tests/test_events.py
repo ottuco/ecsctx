@@ -81,10 +81,11 @@ class TestSpec:
         with pytest.raises(ValueError, match="declared reason"):
             REFUSED.ecs(outcome="failure", reason="tiemout")
 
-    def test_undeclared_reasons_stay_permissive(self):
-        # Most events have not declared theirs; the check must not block sites
-        # that predate the mechanism.
-        assert REQUEST_SENT.ecs(reason="anything")["reason"] == "anything"
+    def test_a_reason_needs_a_declared_set(self):
+        # A reason is a bounded value or it aggregates nothing. An event with
+        # no set cannot take one until its set is declared.
+        with pytest.raises(ValueError, match="declares no reasons"):
+            REQUEST_SENT.ecs(reason="anything")
 
     def test_duration_is_nanoseconds_and_rides_inside_the_payload(self):
         # structlog takes the message as a positional arg named `event`, so a

@@ -50,6 +50,12 @@ ECS_OUTCOMES = frozenset(outcome.value for outcome in Outcome)
 _ReasonSet = tuple[str, ...] | type[Reason]
 
 
+# Equality is the dataclass default, so `reasons` compare by value, not by
+# class: two specs declared with different `Reason` classes of equal values are
+# equal. That is what `register_domain()` needs. Django's autoreload can import
+# an AppConfig module twice, re-executing each `Reason` class into a new class
+# object, and the re-registration must still read as the same declaration.
+# Which set a reason belongs to is `.ecs()`'s question, answered by identity.
 @dataclass(frozen=True, slots=True)
 class EventSpec:
     action: str
@@ -129,7 +135,11 @@ class EventSpec:
             raise ValueError(f"{self.action} is terminal and needs an outcome")
         if outcome is not None and outcome not in ECS_OUTCOMES:
             raise ValueError(f"{outcome!r} is not a valid ECS event.outcome")
-        if reason is not None and self.reasons and not self._declares(reason):
+        if reason is not None and not self.reasons:
+            # A reason is a bounded value or it aggregates nothing. An event
+            # that needs one declares its `Reason` class first.
+            raise ValueError(f"{self.action} declares no reasons; got {reason!r}")
+        if reason is not None and not self._declares(reason):
             raise ValueError(f"{reason!r} is not a declared reason for {self.action}")
         if duration_ns is not None and duration_ns < 0:
             raise ValueError(f"duration_ns must not be negative, got {duration_ns}")
