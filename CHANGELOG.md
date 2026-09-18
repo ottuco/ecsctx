@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.7.3 (2026-09-18)
+
+### Features
+- feat(net): url_host, loggable_request_body, redact_url(secrets=), deny-list bodies (5704f40)
+- feat(ottu): align the shared catalogue with Connect; register_ottu() (43a706d)
+- feat(masking): content rules in packs; card/CVV/financial-id rules opt-in (e1e9e5e)
+
+### Fixes
+- fix(net): mask gateway bodies without log-record exemptions (242538e)
+- fix(net): mask gateway bodies with nothing skipped (c6b5132)
+- fix(events): warn once per retired name under concurrency; review nits (37ec549)
+- fix(masking): mask each string to a fixed point; cache only fixed points (5382f3f)
+- fix(masking): close the leaks review found; keep masking twice, cheaply (17104b1)
+- fix(masking): mask every record in place again; keep the ADMINS rule (e7d6c34)
+- fix(masking): JWT pre-check honours the rule's case-insensitivity (d698ba4)
+- fix(masking): leave non-string args alone unless masking changed them (e02de78)
+- fix(masking): never scan structural fields; exemption paths match at any depth (0e1b5ed)
+- fix(masking): no match on digit runs touching letters; last 4 only below 15 digits (dc7f3d2)
+- fix(masking): match key names by whole word, cache them, restore card keys (1063bec)
+
+### Other
+- Merge pull request #48 from ottuco/feature/catalogue-align (de1768f)
+- Merge pull request #49 from ottuco/feature/net-parity (f0fb77e)
+- Merge pull request #50 from ottuco/feature/masking-packs (f686c7a)
+- Merge remote-tracking branch 'origin/feature/net-parity' into feature/masking-packs (206c124)
+- Merge remote-tracking branch 'origin/feature/catalogue-align' into feature/net-parity (b459f06)
+- Merge remote-tracking branch 'origin/feature/net-parity' into feature/masking-packs (d14ff26)
+- docs: resolve the changelog merge left with conflict markers (5800653)
+- Merge remote-tracking branch 'origin/feature/catalogue-align' into feature/net-parity (e6af61e)
+- test: Connect's jade cases through the full logging pipeline (cd2e336)
+- docs: masking packs, PCI opt-in and upgrade notes (4d2336f)
+- perf(masking): try credential rules only near credential words; benchmark (05b8e3c)
+- perf(masking): mask each record once; boot check accepts formatter masking (8481078)
+- docs: implementation plan for masking packs (4bc9523)
+- docs: design masking packs, one pass and precise rules for 0.8.0 (481dcb3)
+
+
 ## Unreleased
 
 **Upgrading a PCI service (ottu_pg): enable the `pci` pack, or it loses PAN
