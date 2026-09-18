@@ -20,7 +20,7 @@ validator in strict mode and want these to resolve:
 """
 
 from ecsctx.events.registry import register_domain
-from ecsctx.events.spec import EventSpec
+from ecsctx.events.spec import EventSpec, Reason
 
 API_REQUEST_RECEIVED = EventSpec(
     action="api.request_received",
@@ -40,15 +40,25 @@ API_RESPONSE_SENT = EventSpec(
     required=("event.outcome", "event.duration", "http.response.status_code", "url.path"),
 )
 
+
+class ApiRejection(Reason):
+    """Why a request was refused at the boundary.
+
+    Bounded, so "why were requests refused?" is one aggregation rather than a
+    scan of free text. Both are in-process refusals: the view never ran.
+    """
+
+    THROTTLED = "throttled"
+    VALIDATION_FAILED = "validation_failed"
+
+
 API_REQUEST_REJECTED = EventSpec(
     action="api.request_rejected",
     level="warning",
     terminal=True,
     category=("web",),
     type=("denied",),
-    # Bounded, so "why were requests refused?" is one aggregation rather than a
-    # scan of free text. Both are in-process refusals: the view never ran.
-    reasons=("throttled", "validation_failed"),
+    reasons=ApiRejection,
     # A refusal is the expected outcome of this event: warning, not error.
     failure_level="warning",
     required=("event.outcome", "event.reason", "http.response.status_code"),

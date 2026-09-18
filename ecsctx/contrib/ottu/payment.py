@@ -7,7 +7,7 @@ a failure-flavoured branch overrides the level at the call site, because
 outcome alone cannot distinguish them.
 """
 
-from ecsctx.events.spec import EventSpec
+from ecsctx.events.spec import EventSpec, Reason
 
 PAYMENT_SESSION_CREATED = EventSpec(
     action="payment.session_created",
@@ -16,12 +16,19 @@ PAYMENT_SESSION_CREATED = EventSpec(
     required=("event.outcome", "session_id", "merchant_id", "payment.orn"),
 )
 
+
+class EligibilityRejection(Reason):
+    """Why a payment was refused before any gateway was called."""
+
+    VALIDATION_FAILED = "validation_failed"
+
+
 PAYMENT_ELIGIBILITY_REJECTED = EventSpec(
     action="payment.eligibility_rejected",
     level="warning",
     terminal=True,
     type=("denied",),
-    reasons=("validation_failed",),
+    reasons=EligibilityRejection,
     failure_level="warning",
     required=("event.outcome", "event.reason", "session_id"),
 )
@@ -81,17 +88,22 @@ PAYMENT_OPERATION_REQUESTED = EventSpec(
     required=("labels.operation", "payment.reference"),
 )
 
+
+class OperationFailure(Reason):
+    """Why a payment operation (refund, capture, void, …) failed."""
+
+    GATEWAY_CALL_FAILED = "gateway_call_failed"
+    GATEWAY_DECLINED = "gateway_declined"
+    NOT_PERMITTED = "not_permitted"
+    NOT_ACTIONABLE = "not_actionable"
+    INVALID_AMOUNT = "invalid_amount"
+
+
 PAYMENT_OPERATION_COMPLETED = EventSpec(
     action="payment.operation_completed",
     terminal=True,
     type=("end",),
-    reasons=(
-        "gateway_call_failed",
-        "gateway_declined",
-        "not_permitted",
-        "not_actionable",
-        "invalid_amount",
-    ),
+    reasons=OperationFailure,
     required=("event.outcome", "event.duration", "labels.operation", "payment.reference"),
 )
 

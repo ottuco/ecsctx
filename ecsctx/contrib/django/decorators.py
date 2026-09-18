@@ -7,7 +7,9 @@ from ecsctx.events.http import (
     API_REQUEST_RECEIVED,
     API_REQUEST_REJECTED,
     API_RESPONSE_SENT,
+    ApiRejection,
 )
+from ecsctx.events.spec import Outcome
 from ecsctx.events.timing import Timer
 
 logger = structlog.get_logger(__name__)
@@ -86,13 +88,15 @@ def api_logging(view_cls):
         """
         if isinstance(exc, Throttled):
             return API_REQUEST_REJECTED.ecs(
-                outcome="failure", reason="throttled", duration_ns=duration_ns
+                outcome=Outcome.FAILURE, reason=ApiRejection.THROTTLED, duration_ns=duration_ns
             )
         if isinstance(exc, ValidationError):
             return API_REQUEST_REJECTED.ecs(
-                outcome="failure", reason="validation_failed", duration_ns=duration_ns
+                outcome=Outcome.FAILURE,
+                reason=ApiRejection.VALIDATION_FAILED,
+                duration_ns=duration_ns,
             )
-        outcome = "success" if status_code < 400 else "failure"
+        outcome = Outcome.SUCCESS if status_code < 400 else Outcome.FAILURE
         return API_RESPONSE_SENT.ecs(outcome=outcome, duration_ns=duration_ns)
 
     class LoggedView(view_cls):

@@ -3,7 +3,7 @@
 Transcribed from ticket #159487 (Event catalogue, ``task`` table).
 """
 
-from ecsctx.events.spec import EventSpec
+from ecsctx.events.spec import EventSpec, Reason
 
 TASK_ENQUEUED = EventSpec(
     action="task.enqueued",
@@ -27,12 +27,19 @@ TASK_COMPLETED = EventSpec(
     required=("event.outcome", "event.duration", "labels.job", "labels.queue"),
 )
 
+
+class TaskCancellation(Reason):
+    """Why a queued task was cancelled."""
+
+    NOT_SCHEDULED = "not_scheduled"
+
+
 TASK_CANCELLED = EventSpec(
     action="task.cancelled",
     terminal=True,
     category=("process",),
     type=("info",),
-    reasons=("not_scheduled",),
+    reasons=TaskCancellation,
     required=("event.outcome", "labels.queue"),
 )
 

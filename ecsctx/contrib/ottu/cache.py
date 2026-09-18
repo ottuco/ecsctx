@@ -3,7 +3,7 @@
 Transcribed from ticket #159487 (Event catalogue, ``cache`` table).
 """
 
-from ecsctx.events.spec import EventSpec
+from ecsctx.events.spec import EventSpec, Reason
 
 CACHE_READ = EventSpec(
     action="cache.read",
@@ -13,12 +13,21 @@ CACHE_READ = EventSpec(
     required=("event.outcome", "labels.cache", "labels.cache_hit"),
 )
 
+
+class CacheWriteFailure(Reason):
+    """Why a cache write did not happen."""
+
+    EXPIRED = "expired"
+    SERIALIZATION_FAILED = "serialization_failed"
+    BACKEND_UNAVAILABLE = "backend_unavailable"
+
+
 CACHE_WRITTEN = EventSpec(
     action="cache.written",
     level="debug",
     terminal=True,
     type=("info",),
-    reasons=("expired", "serialization_failed", "backend_unavailable"),
+    reasons=CacheWriteFailure,
     required=("event.outcome", "labels.cache"),
 )
 

@@ -7,7 +7,7 @@ ticket: auth/session flows identify by id, provisioning and role changes
 by name.
 """
 
-from ecsctx.events.spec import EventSpec
+from ecsctx.events.spec import EventSpec, Reason
 
 AUTH_REQUEST_AUTHENTICATED = EventSpec(
     action="auth.request_authenticated",
@@ -17,13 +17,22 @@ AUTH_REQUEST_AUTHENTICATED = EventSpec(
     required=("event.outcome", "labels.auth_method", "user.id"),
 )
 
+
+class AuthRejection(Reason):
+    """Why a request was refused before it was authenticated."""
+
+    SERVICE_NOT_ALLOWED = "service_not_allowed"
+    USER_DEACTIVATED = "user_deactivated"
+    USER_DEACTIVATED_CACHE = "user_deactivated_cache"
+
+
 AUTH_REQUEST_REJECTED = EventSpec(
     action="auth.request_rejected",
     level="warning",
     terminal=True,
     category=("authentication",),
     type=("denied",),
-    reasons=("service_not_allowed", "user_deactivated", "user_deactivated_cache"),
+    reasons=AuthRejection,
     failure_level="warning",
     required=("event.outcome", "event.reason", "labels.auth_method"),
 )

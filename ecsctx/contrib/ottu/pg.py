@@ -9,8 +9,8 @@ unexpected failure logs at ``error`` at the call site, because outcome alone
 cannot distinguish them.
 """
 
-from ecsctx.contrib.ottu.net import OUTBOUND_FAILURE_REASONS
-from ecsctx.events.spec import EventSpec
+from ecsctx.contrib.ottu.net import OutboundFailure
+from ecsctx.events.spec import EventSpec, Reason
 
 PG_REQUEST_SENT = EventSpec(
     action="pg.request_sent",
@@ -38,17 +38,24 @@ PG_REQUEST_FAILED = EventSpec(
     terminal=True,
     category=("network",),
     type=("error",),
-    reasons=OUTBOUND_FAILURE_REASONS,
+    reasons=OutboundFailure,
     failure_level="warning",
     required=("event.outcome", "event.reason", "error.type", "labels.operation"),
 )
+
+
+class CheckoutFailure(Reason):
+    """Why a gateway checkout could not be created."""
+
+    PG_URL_UNAVAILABLE = "pg_url_unavailable"
+
 
 PG_CHECKOUT_CREATED = EventSpec(
     action="pg.checkout_created",
     terminal=True,
     category=("network",),
     type=("creation",),
-    reasons=("pg_url_unavailable",),
+    reasons=CheckoutFailure,
     required=("event.outcome", "payment.reference", "payment.pg_code", "session_id"),
 )
 
@@ -67,29 +74,43 @@ PG_CALLBACK_ANSWERED = EventSpec(
     required=("event.outcome", "http.response.status_code", "payment.reference"),
 )
 
+
+class CallbackRejection(Reason):
+    """Why a gateway callback was refused."""
+
+    INVALID_SIGNATURE = "invalid_signature"
+    DECRYPTION_FAILED = "decryption_failed"
+    MISSING_SIGNATURE = "missing_signature"
+    ATTEMPT_NOT_FOUND = "attempt_not_found"
+    MALFORMED_PAYLOAD = "malformed_payload"
+
+
 PG_CALLBACK_REJECTED = EventSpec(
     action="pg.callback_rejected",
     level="warning",
     terminal=True,
     category=("network",),
     type=("denied",),
-    reasons=(
-        "invalid_signature",
-        "decryption_failed",
-        "missing_signature",
-        "attempt_not_found",
-        "malformed_payload",
-    ),
+    reasons=CallbackRejection,
     failure_level="warning",
     required=("event.outcome", "event.reason", "url.path"),
 )
+
+
+class CallbackSkip(Reason):
+    """Why a valid gateway callback changed nothing."""
+
+    ALREADY_FINAL = "already_final"
+    DUPLICATE = "duplicate"
+    NOT_APPLICABLE = "not_applicable"
+
 
 PG_CALLBACK_SKIPPED = EventSpec(
     action="pg.callback_skipped",
     terminal=True,
     category=("network",),
     type=("denied",),
-    reasons=("already_final", "duplicate", "not_applicable"),
+    reasons=CallbackSkip,
     required=("event.outcome", "event.reason", "payment.reference"),
 )
 

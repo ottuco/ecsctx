@@ -6,21 +6,28 @@ Transcribed from ticket #159487 (Event catalogue, ``net`` table).
 cannot distinguish them.
 """
 
-from ecsctx.events.spec import EventSpec
+from ecsctx.events.spec import EventSpec, Reason
 
-# Why an outbound HTTP call failed. Shared verbatim by `pg.request_failed` and
-# `net.request_failed`: one classifier answers for both, and a value that meant
-# something different per domain could not be aggregated across them. Ordered
-# from "the upstream said no" to "this is our bug".
-OUTBOUND_FAILURE_REASONS: tuple[str, ...] = (
-    "http_client_error",  # 4xx — the upstream rejected the request
-    "http_server_error",  # 5xx — the upstream broke
-    "timeout",  # connect or read timeout
-    "connection_error",  # DNS, TLS, refused
-    "invalid_json",  # the body was not the JSON the contract promises
-    "request_error",  # other requests-level failure (bad URL, too many redirects)
-    "unexpected_error",  # anything else: a defect here until proven otherwise
-)
+
+class OutboundFailure(Reason):
+    """Why an outbound HTTP call failed.
+
+    Shared by `pg.request_failed` and `net.request_failed`: one classifier
+    answers for both, and a value that meant something different per domain
+    could not be aggregated across them. Ordered from "the upstream said no" to
+    "this is our bug".
+    """
+
+    HTTP_CLIENT_ERROR = "http_client_error"  # 4xx — the upstream rejected the request
+    HTTP_SERVER_ERROR = "http_server_error"  # 5xx — the upstream broke
+    TIMEOUT = "timeout"  # connect or read timeout
+    CONNECTION_ERROR = "connection_error"  # DNS, TLS, refused
+    INVALID_JSON = "invalid_json"  # the body was not the JSON the contract promises
+    REQUEST_ERROR = "request_error"  # other requests-level failure (bad URL, redirects)
+    UNEXPECTED_ERROR = "unexpected_error"  # anything else: a defect here until proven otherwise
+
+
+OUTBOUND_FAILURE_REASONS: tuple[OutboundFailure, ...] = tuple(OutboundFailure)
 
 NET_REQUEST_SENT = EventSpec(
     action="net.request_sent",
@@ -43,7 +50,7 @@ NET_REQUEST_FAILED = EventSpec(
     terminal=True,
     category=("network",),
     type=("error",),
-    reasons=OUTBOUND_FAILURE_REASONS,
+    reasons=OutboundFailure,
     required=("event.outcome", "event.reason", "labels.operation", "error.type"),
 )
 
