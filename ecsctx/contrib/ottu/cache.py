@@ -9,27 +9,32 @@ CACHE_READ = EventSpec(
     action="cache.read",
     level="debug",
     terminal=True,
-    required=("event.outcome", "labels.store", "labels.result"),
+    type=("info",),
+    required=("event.outcome", "labels.cache", "labels.cache_hit"),
 )
 
 CACHE_WRITTEN = EventSpec(
     action="cache.written",
     level="debug",
     terminal=True,
-    required=("event.outcome", "labels.store"),
+    type=("info",),
+    reasons=("expired", "serialization_failed", "backend_unavailable"),
+    required=("event.outcome", "labels.cache"),
 )
 
 CACHE_INVALIDATED = EventSpec(
     action="cache.invalidated",
     terminal=True,
-    required=("event.outcome", "labels.store", "labels.scope"),
+    type=("info",),
+    required=("event.outcome", "labels.cache", "labels.trigger"),
 )
 
 CACHE_OPERATION_FAILED = EventSpec(
     action="cache.operation_failed",
     level="error",
     terminal=True,
-    required=("event.outcome", "labels.store", "labels.operation", "error.type"),
+    type=("error",),
+    required=("event.outcome", "labels.cache", "labels.operation", "error.type"),
 )
 
 SPECS: tuple[EventSpec, ...] = (

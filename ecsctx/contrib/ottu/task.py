@@ -7,24 +7,33 @@ from ecsctx.events.spec import EventSpec
 
 TASK_ENQUEUED = EventSpec(
     action="task.enqueued",
-    required=("labels.job", "labels.queue", "labels.job_id"),
+    category=("process",),
+    type=("info",),
+    required=("labels.job", "labels.queue"),
 )
 
 TASK_STARTED = EventSpec(
     action="task.started",
-    required=("labels.job", "labels.job_id", "trace.id"),
+    category=("process",),
+    type=("info",),
+    required=("labels.job", "labels.queue", "trace.id"),
 )
 
 TASK_COMPLETED = EventSpec(
     action="task.completed",
     terminal=True,
-    required=("event.outcome", "event.duration", "labels.job", "labels.job_id"),
+    category=("process",),
+    type=("info",),
+    required=("event.outcome", "event.duration", "labels.job", "labels.queue"),
 )
 
 TASK_CANCELLED = EventSpec(
     action="task.cancelled",
     terminal=True,
-    required=("event.outcome", "labels.job_id", "labels.action"),
+    category=("process",),
+    type=("info",),
+    reasons=("not_scheduled",),
+    required=("event.outcome", "labels.queue"),
 )
 
 SPECS: tuple[EventSpec, ...] = (

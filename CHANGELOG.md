@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- The shared catalogue (`ecsctx.contrib.ottu`) carries ECS `category`, `type`
+  and bounded `reasons` for all 63 events, aligned with Connect's
+  definitions; `crypto.credential_resolved` is `debug` and
+  `webhook.delivery_retried` is `warning`.
+- A warning-level terminal event (`pg.request_failed`, `*_rejected`, …) now
+  logs at **warning** through `emit(outcome="failure")`, not error; pass
+  `level="error"` for an unexpected failure.
+- `required` fields match what services emit: `cache.*` → `labels.cache`
+  (+ `labels.cache_hit` on read, `labels.trigger` on invalidation), `net.*`
+  → `labels.operation`, `task.*` → `labels.job`/`labels.queue`.
+  `OUTBOUND_FAILURE_REASONS` is shared by `pg.request_failed` and
+  `net.request_failed`.
+- `ecsctx.contrib.ottu.api` is the `ecsctx.events.http` definition, so the
+  catalogue and `register_http_events()` no longer conflict over `api`.
+- `register_ottu(local=..., aliases=..., freeze=True)` registers the catalogue
+  plus a service's own events (merged under shared prefixes).
+- A retired event name warns once instead of on every log line.
+
 ## v0.7.2 (2026-09-17)
 
 ### Fixes
