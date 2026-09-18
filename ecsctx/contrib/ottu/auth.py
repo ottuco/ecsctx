@@ -11,6 +11,10 @@ from ecsctx.events.spec import EventSpec, Reason
 
 AUTH_REQUEST_AUTHENTICATED = EventSpec(
     action="auth.request_authenticated",
+    description=(
+        "A caller's credentials were accepted; user.id says who and labels.auth_method "
+        "how."
+    ),
     terminal=True,
     category=("authentication",),
     type=("allowed",),
@@ -28,6 +32,10 @@ class AuthRejection(Reason):
 
 AUTH_REQUEST_REJECTED = EventSpec(
     action="auth.request_rejected",
+    description=(
+        "A request was refused during authentication for a policy reason, such as a "
+        "deactivated user or a service that may not call."
+    ),
     level="warning",
     terminal=True,
     category=("authentication",),
@@ -39,6 +47,10 @@ AUTH_REQUEST_REJECTED = EventSpec(
 
 AUTH_TOKEN_ISSUED = EventSpec(
     action="auth.token_issued",
+    description=(
+        "This service obtained or minted an access token; labels.grant_type says how "
+        "and labels.cache whether it came from cache."
+    ),
     terminal=True,
     category=("authentication",),
     type=("creation",),
@@ -47,6 +59,7 @@ AUTH_TOKEN_ISSUED = EventSpec(
 
 AUTH_TOKEN_REVOKED = EventSpec(
     action="auth.token_revoked",
+    description="A user's token was revoked, e.g. on logout or a password change.",
     terminal=True,
     category=("authentication",),
     type=("deletion",),
@@ -55,6 +68,10 @@ AUTH_TOKEN_REVOKED = EventSpec(
 
 AUTH_SESSION_TERMINATED = EventSpec(
     action="auth.session_terminated",
+    description=(
+        "A user session was ended by the system rather than by logout; the reason says "
+        "why."
+    ),
     level="warning",
     terminal=True,
     category=("authentication",),
@@ -65,6 +82,10 @@ AUTH_SESSION_TERMINATED = EventSpec(
 
 AUTH_SESSION_CHECK_SKIPPED = EventSpec(
     action="auth.session_check_skipped",
+    description=(
+        "The session check could not run, so the request was let through or refused "
+        "according to labels.fail_mode. The outcome is unknown."
+    ),
     level="warning",
     terminal=True,
     category=("authentication",),
@@ -75,6 +96,10 @@ AUTH_SESSION_CHECK_SKIPPED = EventSpec(
 
 AUTH_IDENTITY_PROVISIONED = EventSpec(
     action="auth.identity_provisioned",
+    description=(
+        "A user identity was created in, or synced from, the identity provider; "
+        "labels.direction says which way."
+    ),
     terminal=True,
     category=("authentication",),
     type=("info",),
@@ -83,6 +108,10 @@ AUTH_IDENTITY_PROVISIONED = EventSpec(
 
 AUTH_ROLES_CHANGED = EventSpec(
     action="auth.roles_changed",
+    description=(
+        "A user's roles changed; labels.roles_added and labels.roles_removed carry the "
+        "difference."
+    ),
     terminal=True,
     category=("authentication",),
     type=("change",),
@@ -91,6 +120,10 @@ AUTH_ROLES_CHANGED = EventSpec(
 
 AUTH_PRIVILEGE_GRANTED = EventSpec(
     action="auth.privilege_granted",
+    description=(
+        "A user gained a privilege (labels.privilege) from labels.source. Logged at "
+        "warning because it widens access."
+    ),
     level="warning",
     terminal=True,
     category=("authentication",),
@@ -101,6 +134,10 @@ AUTH_PRIVILEGE_GRANTED = EventSpec(
 
 AUTH_IDENTITY_SYNC_FAILED = EventSpec(
     action="auth.identity_sync_failed",
+    description=(
+        "Syncing a user with the identity provider failed, so the two records may now "
+        "disagree."
+    ),
     level="error",
     terminal=True,
     category=("authentication",),

@@ -116,6 +116,7 @@ class TestCatalogueReasons:
             "payment.duplicate_suppressed",
             "payment.state_change_skipped",
             "pg.credentials_unavailable",
+            "pg.signature_verification_skipped",
         }
 
     def test_both_request_failed_events_share_the_outbound_set(self):

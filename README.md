@@ -1888,10 +1888,32 @@ registers at startup.
 ### The shared Ottu catalogue (`ecsctx.contrib.ottu`)
 
 63 events in 11 domains (`pg`, `crypto`, `payment`, `card`, `threeds`, `net`,
-`task`, `cache`, `api`, `webhook`, `auth`), each an `EventSpec` constant with its
-ECS `category`/`type`, bounded `reasons` and levels, so every service names the
-same thing the same way. Import the constant; register once, together with your
-service's own events, from `AppConfig.ready()`:
+`task`, `cache`, `api`, `webhook`, `auth`), each an `EventSpec` constant with a
+description, its ECS `category`/`type`, a `Reason` class and levels, so every
+service names the same thing the same way. **[docs/events.md](docs/events.md)**
+lists them all with when to log each — look there before adding an event.
+
+Services are built by different teams, so the vocabulary is held in one place
+and the rules are enforced, not just written down:
+
+- A service's own events live in **one module of that service**, declared ahead
+  of use, and are registered with the catalogue at startup.
+- `register_ottu()` checks every local event against the naming rules
+  (`ecsctx.contrib.ottu.rules`) and refuses the lot, before registering
+  anything, if one breaks them:
+  - the action is `<domain>.<subject>_<verb>` and ends in a past-tense verb
+    from `VERBS`;
+  - a word that has drifted before is rejected with the word to use instead:
+    `inited` → `created`, `queued` → `enqueued`, `finished` → `completed`;
+  - the action contains no negation;
+  - the event has a description.
+- An event a second service needs, or a new reason for a shared event, is added
+  here by PR. [docs/rules/log-events.md](docs/rules/log-events.md) is the rule
+  each service copies into its `.claude/rules/`, so review catches what a rule
+  cannot, such as a synonym that is a different word.
+
+Import the constant; register once, together with your service's own events,
+from `AppConfig.ready()`:
 
 ```python
 from ecsctx.contrib.ottu import register_ottu
@@ -1899,12 +1921,23 @@ from ecsctx.contrib.ottu.net import OutboundFailure
 from ecsctx.contrib.ottu.pg import PG_REQUEST_FAILED
 from ecsctx.events import EventSpec, Outcome
 
-# Your own events: one under a shared prefix, one under a prefix of your own.
-PG_PAYLOAD_BUILT = EventSpec(action="pg.payload_built", terminal=True, type=("info",))
-WALLET_DEBITED = EventSpec(action="wallet.debited", terminal=True, type=("change",))
+# Your own events, in your service's one events module: one under a shared
+# prefix, one under a prefix of your own.
+PG_PAYLOAD_BUILT = EventSpec(
+    action="pg.payload_built",
+    description="The request body for a PSP call was assembled, before sending.",
+    terminal=True,
+    type=("info",),
+)
+WALLET_BALANCE_DEBITED = EventSpec(
+    action="wallet.balance_debited",
+    description="A wallet balance was debited for a payment.",
+    terminal=True,
+    type=("change",),
+)
 
 register_ottu(
-    local={"pg": (PG_PAYLOAD_BUILT,), "wallet": (WALLET_DEBITED,)},
+    local={"pg": (PG_PAYLOAD_BUILT,), "wallet": (WALLET_BALANCE_DEBITED,)},
     aliases={"token_blacklist": "auth.token_revoked"},  # retired names still logged
 )                                                      # freezes the registry
 
@@ -1917,6 +1950,20 @@ prefix go through `register_ottu(local=...)` rather than a second
 `register_domain`; redefining a shared action raises. The `api` domain is the
 one `@api_logging` emits, so it never conflicts with `register_http_events()`.
 A retired name warns once, not on every line.
+
+### Adding an event
+
+1. Search [docs/events.md](docs/events.md) and your service's events module.
+   If an event already names what happened, use it. The difference goes in
+   fields or a reason, not in a new action.
+2. If more than one service will log it, add it to the catalogue module for
+   its domain here:
+   - with a `description`, and its reasons as a `Reason` subclass;
+   - regenerate the page with `python -m ecsctx.contrib.ottu.render_docs`;
+   - the catalogue owners review it (`.github/CODEOWNERS`).
+3. If only your service can log it, declare it in your service's events module
+   and pass it to `register_ottu(local=...)`. The naming rules are checked
+   when the service starts.
 
 ### Declaring and registering
 

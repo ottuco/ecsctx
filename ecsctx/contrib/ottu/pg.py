@@ -14,6 +14,10 @@ from ecsctx.events.spec import EventSpec, Reason
 
 PG_REQUEST_SENT = EventSpec(
     action="pg.request_sent",
+    description=(
+        "A call to a payment gateway (PSP) is about to be sent; labels.operation names "
+        "it."
+    ),
     category=("network",),
     type=("connection",),
     required=("labels.operation", "payment.pg_code", "http.request.method", "url.full"),
@@ -21,6 +25,7 @@ PG_REQUEST_SENT = EventSpec(
 
 PG_RESPONSE_RECEIVED = EventSpec(
     action="pg.response_received",
+    description="The PSP answered; carries the status code and duration.",
     terminal=True,
     category=("network",),
     type=("connection",),
@@ -34,6 +39,10 @@ PG_RESPONSE_RECEIVED = EventSpec(
 
 PG_REQUEST_FAILED = EventSpec(
     action="pg.request_failed",
+    description=(
+        "A PSP call produced no usable answer. Warning for an expected 4xx or timeout; "
+        "the call site logs error for anything unexpected."
+    ),
     level="warning",
     terminal=True,
     category=("network",),
@@ -52,6 +61,10 @@ class CheckoutFailure(Reason):
 
 PG_CHECKOUT_CREATED = EventSpec(
     action="pg.checkout_created",
+    description=(
+        "A hosted checkout was created at the PSP for an attempt; a failure means no "
+        "payment URL came back."
+    ),
     terminal=True,
     category=("network",),
     type=("creation",),
@@ -61,6 +74,10 @@ PG_CHECKOUT_CREATED = EventSpec(
 
 PG_CALLBACK_RECEIVED = EventSpec(
     action="pg.callback_received",
+    description=(
+        "The PSP called back for an attempt: a server notification or the payer "
+        "returning."
+    ),
     category=("network",),
     type=("connection",),
     required=("payment.reference", "payment.pg_code", "url.path"),
@@ -68,6 +85,9 @@ PG_CALLBACK_RECEIVED = EventSpec(
 
 PG_CALLBACK_ANSWERED = EventSpec(
     action="pg.callback_answered",
+    description=(
+        "A PSP callback was answered; carries the status code returned to the PSP."
+    ),
     terminal=True,
     category=("network",),
     type=("end",),
@@ -87,6 +107,10 @@ class CallbackRejection(Reason):
 
 PG_CALLBACK_REJECTED = EventSpec(
     action="pg.callback_rejected",
+    description=(
+        "A PSP callback was refused: a bad or missing signature, an undecryptable "
+        "payload, an unknown attempt or a malformed payload."
+    ),
     level="warning",
     terminal=True,
     category=("network",),
@@ -107,6 +131,10 @@ class CallbackSkip(Reason):
 
 PG_CALLBACK_SKIPPED = EventSpec(
     action="pg.callback_skipped",
+    description=(
+        "A valid PSP callback changed nothing: the attempt was already final, it was a "
+        "duplicate, or it does not apply."
+    ),
     terminal=True,
     category=("network",),
     type=("denied",),
@@ -116,16 +144,24 @@ PG_CALLBACK_SKIPPED = EventSpec(
 
 PG_SIGNATURE_VERIFICATION_SKIPPED = EventSpec(
     action="pg.signature_verification_skipped",
+    description=(
+        "A PSP callback's signature was not verified and its payload was trusted as is; "
+        "the reason says why."
+    ),
     level="warning",
     terminal=True,
     category=("network",),
     type=("denied",),
     failure_level="warning",
-    required=("event.outcome", "payment.pg_code"),
+    required=("event.outcome", "event.reason", "payment.pg_code"),
 )
 
 PG_CREDENTIALS_UNAVAILABLE = EventSpec(
     action="pg.credentials_unavailable",
+    description=(
+        "A MID's gateway credentials could not be loaded, so the PSP could not be "
+        "called."
+    ),
     level="error",
     terminal=True,
     category=("network",),

@@ -85,6 +85,10 @@ class EventSpec:
     # Declared intent for the call site, which picks the level: None means
     # error if terminal, otherwise same as level.
     failure_level: str | None = None
+    # When to log this event and what its outcome means, for the developer
+    # choosing between events and the reviewer checking the choice. Rendered
+    # into the catalogue's reference page.
+    description: str = ""
 
     def __post_init__(self) -> None:
         if isinstance(self.reasons, type) and issubclass(self.reasons, Reason):

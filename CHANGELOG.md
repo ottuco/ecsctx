@@ -4,6 +4,37 @@
 
 ### Added
 
+- **One vocabulary, enforced.**
+  - `ecsctx.contrib.ottu.rules` holds the naming rules every Ottu event follows,
+    shared or local: `<domain>.<subject>_<verb>`, a past-tense verb from
+    `VERBS`, no known synonym (`SYNONYMS`: `inited` → `created`, `queued` →
+    `enqueued`, …), no negation, and a description.
+  - The catalogue's tests hold it to these rules. `register_ottu(local=...)`
+    checks a service's own events at startup and raises `EventRuleError`
+    listing every problem, before anything is registered.
+- `EventSpec.description`: when to log the event and what success and failure
+  mean. Every catalogue event has one.
+- `docs/events.md`, generated from the catalogue with
+  `python -m ecsctx.contrib.ottu.render_docs`, lists every shared event with its
+  import, description, levels, reasons and fields. A test fails if it is stale.
+- `docs/rules/log-events.md`: the rule each service copies into its
+  `.claude/rules/`, so review catches what a rule cannot.
+- `.github/CODEOWNERS` covers the catalogue.
+- `ApiRejection.MISSING_HEADER` and `ApiRejection.INVALID_HEADER`: a header gate
+  that refuses a request before the view reports `api.request_rejected`
+  instead of an action of its own.
+
+### Changed (breaking)
+
+- `register_ottu(local=...)` refuses local events that break the naming rules.
+- `pg.signature_verification_skipped` requires `event.reason`, as the #159487
+  catalogue does; its description already promised one. It has no reason set
+  yet, so it takes none until a service declares one.
+- `registry.RESERVED_PREFIXES` covers every ECS field set (`file`, `host`,
+  `network`, `process`, `source`, `destination`, `client`, `server`, …), not
+  only eleven of them. A domain named after a field set reads, in every query,
+  like the fields a document already carries.
+
 - **`Outcome` and `Reason`** (`ecsctx.events`): outcomes and reasons are
   objects a call site imports, not strings it types. `Outcome` is ECS's closed
   set; an event's reasons are a `Reason` subclass passed as

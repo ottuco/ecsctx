@@ -9,6 +9,7 @@ from ecsctx.events.spec import EventSpec
 
 THREEDS_AUTHENTICATION_REQUESTED = EventSpec(
     action="threeds.authentication_requested",
+    description="3-D Secure authentication started with the PSP for an attempt.",
     category=("authentication",),
     type=("start",),
     required=("payment.reference", "payment.pg_code"),
@@ -16,6 +17,7 @@ THREEDS_AUTHENTICATION_REQUESTED = EventSpec(
 
 THREEDS_CHALLENGE_ISSUED = EventSpec(
     action="threeds.challenge_issued",
+    description="The payer was sent a 3-D Secure challenge.",
     category=("authentication",),
     type=("creation",),
     required=("payment.reference", "session_id"),
@@ -23,6 +25,10 @@ THREEDS_CHALLENGE_ISSUED = EventSpec(
 
 THREEDS_AUTHENTICATION_COMPLETED = EventSpec(
     action="threeds.authentication_completed",
+    description=(
+        "3-D Secure finished; labels.auth_status carries the PSP's result. The call "
+        "site logs warning unless it succeeded."
+    ),
     terminal=True,
     category=("authentication",),
     type=("end",),
