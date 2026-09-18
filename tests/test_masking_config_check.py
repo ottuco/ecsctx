@@ -290,13 +290,16 @@ class TestFindUnmaskedLiveHandlers:
     def test_clean_tree_reports_nothing(self, isolated_logging_tree):
         assert find_unmasked_live_handlers(MASKED_CFG) == []
 
-    def test_catches_djangos_admin_email_handler(self, isolated_logging_tree):
+    def test_catches_djangos_admin_email_handler(self, isolated_logging_tree, settings):
         """The case this exists for: Django configures DEFAULT_LOGGING first,
         and with disable_existing_loggers off its 'django' logger survives
-        with AdminEmailHandler attached, invisible to settings.LOGGING."""
+        with AdminEmailHandler attached, invisible to settings.LOGGING. It
+        only ships anything when ADMINS is set."""
         import logging.config
 
         from django.utils.log import DEFAULT_LOGGING
+
+        settings.ADMINS = [("Ops", "ops@example.com")]
 
         cfg = get_logging_config()
         logging.config.dictConfig(DEFAULT_LOGGING)
@@ -341,16 +344,18 @@ class TestValidateAndAssert:
 
 class TestGetLoggingConfigPassesTheCheck:
     """Regression: get_logging_config() must produce a LOGGING dict that
-    satisfies find_masking_config_errors() out of the box — it wires
-    mask_pii_filter into every handler it builds via install_maskers_in_config."""
+    satisfies find_masking_config_errors() out of the box."""
 
     def test_default_config_is_clean(self):
         cfg = get_logging_config()
         assert find_masking_config_errors(cfg) == []
 
-    def test_console_handler_carries_the_filter(self):
+    def test_console_handler_is_masked_by_its_formatter_not_the_filter(self):
+        """One masking pass per record: the formatter runs
+        mask_sensitive_data, so the filter would only mask everything again.
+        It stays defined for handlers a project adds with another formatter."""
         cfg = get_logging_config()
-        assert cfg["handlers"]["console"]["filters"] == ["correlation", "mask_pii_filter"]
+        assert cfg["handlers"]["console"]["filters"] == ["correlation"]
         assert cfg["filters"] == {
             "correlation": {"()": "cid.log.CidContextFilter"},
             "mask_pii_filter": {"()": "ecsctx.masking.filters.MaskPIIFilter"},

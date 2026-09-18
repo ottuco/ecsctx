@@ -131,16 +131,11 @@ def get_logging_config(
             None leaves the choice to ECSCTX_MASKING_PACKS (setting, then env).
 
     Returns:
-        Complete LOGGING dict ready to use in Django settings. "mask_pii_filter"
-        is wired into LOGGING["filters"] and every handler built here (via
-        ecsctx.masking.install_maskers_in_config) — masking already runs twice
-        over for records this config's own console handler emits (once via
-        this filter, once via the mask_sensitive_data processor already in
-        the formatter chain — proven idempotent, not a bug), but it's what
-        makes ecsctx.contrib.django.checks' boot-time system check pass
-        without an extra install_maskers() call, and it's the only masking
-        layer that reaches a handler this LOGGING dict builds if a project
-        later swaps in a different formatter.
+        Complete LOGGING dict ready to use in Django settings. Each record is
+        masked once: the console handler's formatter runs
+        mask_sensitive_data, and "mask_pii_filter" is defined in
+        LOGGING["filters"] (via ecsctx.masking.install_maskers_in_config) for
+        any handler a project adds with a formatter that does not mask.
 
     Example:
         # Basic usage

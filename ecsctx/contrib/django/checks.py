@@ -34,14 +34,33 @@ from importlib import import_module
 from typing import Any
 
 _NON_SHIPPING_CLASSES = frozenset({"logging.StreamHandler", "logging.NullHandler"})
+_ADMIN_EMAIL_HANDLER = "django.utils.log.AdminEmailHandler"
 
 DEFAULT_SKIP_ENVS = frozenset({"local", "test", "dev"})
 DEFAULT_ENV_VAR = "ENVIRONMENT"
 
 
+def _admins_configured() -> bool:
+    try:
+        from django.conf import settings
+
+        return bool(getattr(settings, "ADMINS", None))
+    except Exception:  # noqa: BLE001 - no Django, or settings not configured
+        return True
+
+
+def _ships(handler_class: str | None) -> bool:
+    """A handler ships logs off-host unless it is a console StreamHandler, a
+    no-op NullHandler, or Django's AdminEmailHandler with no ADMINS to mail."""
+    if handler_class in _NON_SHIPPING_CLASSES:
+        return False
+    if handler_class == _ADMIN_EMAIL_HANDLER:
+        return _admins_configured()
+    return True
+
+
 def _is_shipping_handler(handler_config: dict) -> bool:
-    """A handler ships logs off-host unless it is a console StreamHandler or a no-op NullHandler."""
-    return handler_config.get("class") not in _NON_SHIPPING_CLASSES
+    return _ships(handler_config.get("class"))
 
 
 def _resolve_dotted_path(path: str) -> Any:
@@ -89,14 +108,21 @@ def _filter_used_in_live_object(logger_or_handler) -> bool:
     return any(isinstance(f, MaskPIIFilter) for f in logger_or_handler.filters)
 
 
-def _is_unmasked_shipping_logger(logger_config: dict, handlers_configs: dict) -> bool:
-    """True if this logger reaches a shipping handler without mask_pii_filter applied
-    anywhere between the logger itself and that handler."""
+def _is_unmasked_shipping_logger(
+    logger_config: dict, handlers_configs: dict, masking_formatters: set[str]
+) -> bool:
+    """True if this logger reaches a shipping handler with no masking between
+    them: neither mask_pii_filter on the logger or the handler, nor a
+    formatter on the handler that runs mask_sensitive_data."""
     if _filter_used_in_conf(logger_config):
         return False
     for handler_name in logger_config.get("handlers", []):
         handler_config = handlers_configs.get(handler_name, {})
-        if _is_shipping_handler(handler_config) and not _filter_used_in_conf(handler_config):
+        if (
+            _is_shipping_handler(handler_config)
+            and not _filter_used_in_conf(handler_config)
+            and handler_config.get("formatter") not in masking_formatters
+        ):
             return True
     return False
 
@@ -107,38 +133,46 @@ def find_masking_config_errors(logging_config: dict[str, Any]) -> list[str]:
     Empty list means the config is safe. An empty/absent logging_config is
     considered nothing to validate (e.g. a project using install_maskers()
     with manually-built handlers instead of the declarative LOGGING setting).
+    A shipping handler is masked by mask_pii_filter (on it or its logger) or
+    by a formatter that runs mask_sensitive_data.
     """
     if not logging_config:
         return []
 
+    from ecsctx.masking.install import masking_formatter_names
+
     errors: list[str] = []
     filters = logging_config.get("filters", {})
+    handlers_configs = logging_config.get("handlers", {})
+    loggers_configs = logging_config.get("loggers", {})
+    masking_formatters = masking_formatter_names(logging_config)
+
+    unmasked = [
+        name
+        for name, logger_config in loggers_configs.items()
+        if _is_unmasked_shipping_logger(logger_config, handlers_configs, masking_formatters)
+    ]
+    if _is_unmasked_shipping_logger(
+        logging_config.get("root", {}), handlers_configs, masking_formatters
+    ):
+        unmasked.append("root")
+
     if "mask_pii_filter" not in filters:
-        errors.append(
-            "mask_pii_filter must be defined in LOGGING['filters'] for PCI DSS "
-            "compliance. Add 'mask_pii_filter': "
-            "{'()': 'ecsctx.masking.filters.MaskPIIFilter'} to filters — or use "
-            "ecsctx.contrib.django.get_logging_config(), which does this "
-            "automatically — or call ecsctx.masking.install_maskers() to sweep "
-            "handlers built outside of LOGGING."
-        )
+        if unmasked:
+            errors.append(
+                "mask_pii_filter must be defined in LOGGING['filters'] for PCI DSS "
+                "compliance. Add 'mask_pii_filter': "
+                "{'()': 'ecsctx.masking.filters.MaskPIIFilter'} to filters — or use "
+                "ecsctx.contrib.django.get_logging_config(), which does this "
+                "automatically — or call ecsctx.masking.install_maskers() to sweep "
+                "handlers built outside of LOGGING."
+            )
         return errors
 
     filter_class_error = _filter_class_error(filters)
     if filter_class_error:
         errors.append(filter_class_error)
         return errors
-
-    handlers_configs = logging_config.get("handlers", {})
-    loggers_configs = logging_config.get("loggers", {})
-
-    unmasked = [
-        name
-        for name, logger_config in loggers_configs.items()
-        if _is_unmasked_shipping_logger(logger_config, handlers_configs)
-    ]
-    if _is_unmasked_shipping_logger(logging_config.get("root", {}), handlers_configs):
-        unmasked.append("root")
 
     if unmasked:
         errors.append(
@@ -167,13 +201,19 @@ def find_unmasked_live_handlers(logging_config: dict[str, Any]) -> list[str]:
         if name not in configured and isinstance(logger, logging.Logger):
             candidates.append((name, logger))
 
+    from ecsctx.masking.install import formatter_masks
+
     unmasked = []
     for name, logger in candidates:
         if logger.disabled or _filter_used_in_live_object(logger):
             continue
         for handler in logger.handlers:
             handler_class = _live_handler_class_path(handler)
-            if handler_class in _NON_SHIPPING_CLASSES or _filter_used_in_live_object(handler):
+            if (
+                not _ships(handler_class)
+                or _filter_used_in_live_object(handler)
+                or formatter_masks(handler.formatter)
+            ):
                 continue
             unmasked.append(f"{name} -> {handler_class}")
 
