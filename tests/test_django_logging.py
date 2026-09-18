@@ -200,3 +200,39 @@ class TestMaskingPipelineIntegration:
             capsys,
         )
         assert doc["message"] == "user [EMAIL-MASKED] signed in"
+
+
+class TestConnectLinesSurviveTheFullPipeline:
+    """The cases seen on Connect's jade logs under 0.7.2, through the real
+    get_logging_config() + configure_structlog() pipeline and formatter."""
+
+    _formatted = TestAttributionEndToEnd._formatted
+
+    def test_correlation_fields_labels_and_numbers_survive(self, capsys):
+        import structlog
+
+        doc = self._formatted(
+            lambda: structlog.get_logger("test").info(
+                "HTTP 200 OK took 1500 ms",
+                session_id="8231045567ab34cd9f0e1a2b3c4d5e6f7a8b9c0d",
+                labels={"namespace": "cybersource", "operation": "payment"},
+                user={"id": "7", "name": "admin"},
+                customer_email="payer@example.com",
+            ),
+            capsys,
+        )
+        assert doc["message"] == "HTTP 200 OK took 1500 ms"
+        assert doc["session_id"] == "8231045567ab34cd9f0e1a2b3c4d5e6f7a8b9c0d"
+        assert doc["labels"] == {"namespace": "cybersource", "operation": "payment"}
+        assert doc["user"] == {"id": "7", "name": "admin"}
+        assert doc["extra"]["customer_email"] == "[EMAIL-MASKED]"
+
+    def test_a_numeric_format_arg_is_not_lost(self, capsys):
+        import logging
+        from decimal import Decimal
+
+        doc = self._formatted(
+            lambda: logging.getLogger("thirdparty").warning("refunded %.3f", Decimal("12.5")),
+            capsys,
+        )
+        assert doc["message"] == "refunded 12.500"
