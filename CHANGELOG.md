@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.8.0 (2026-09-18)
+
+### Features
+- Merge pull request #54 from ottuco/feature/catalogue-governance (8dda9d0)
+- Merge pull request #53 from ottuco/feature/event-values (37ee704)
+- feat(ottu): one vocabulary, enforced: naming rules, descriptions, docs page (70609ce)
+- feat(events): Outcome and Reason; catalogue reasons are objects (1ac952f)
+
+### Fixes
+- fix(ottu): signature_verification_skipped requires the reason it promises (132caa0)
+- fix(events): a reason needs a declared set; say why specs equal by value (f723e1e)
+- fix(masking): keep exceptions, honour the exemption setting, walk PII containers (e57d2de)
+
+### Other
+- Merge pull request #52 from ottuco/refactor/remove-emit (9097484)
+- Merge branch 'feature/event-values' into feature/catalogue-governance (909c012)
+- Merge branch 'refactor/remove-emit' into feature/event-values (147dcb1)
+- Merge remote-tracking branch 'origin/main' into refactor/remove-emit (b714bfb)
+- Merge pull request #51 from ottuco/fix/masking-074 (f373b32)
+- Merge branch 'feature/event-values' into feature/catalogue-governance (009cfd8)
+- refactor(django): drop the exemption-setting bridge; one resolution path (34e84c3)
+- Merge branch 'feature/event-values' into feature/catalogue-governance (e5b86d8)
+- Merge branch 'refactor/remove-emit' into feature/event-values (5c1788d)
+- docs: one blank line before v0.7.3 in the changelog (dbdf58c)
+- refactor(events)!: remove emit(); one way to log an event (dd10c12)
+
+
 ## Unreleased
 
 ### Added
