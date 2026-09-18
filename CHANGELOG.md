@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.2 (2026-09-18)
+
+### Features
+- feat(ottu): pg.payload_decrypted; mask a pre-serialised request body (c8e569a)
+
+### Other
+- Merge pull request #56 from ottuco/feat/pg-payload-decrypted (4e1a400)
+
+
 ## Unreleased
 
 ### Added
