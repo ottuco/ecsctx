@@ -98,10 +98,14 @@ class MaskPIIFilter(logging.Filter):
         self,
         *,
         skip_keys: "list[str] | frozenset[str]" = DEFAULT_SKIP_KEYS,
+        name_rule_exempt: Iterable[tuple[str, ...]] = _NAME_RULE_EXEMPT,
         packs: Iterable[str] | None = None,
     ) -> None:
         super().__init__()
         self._skip_keys = frozenset(skip_keys)
+        # Both defaults describe a log record. Masking anything else — a
+        # gateway body — passes skip_keys=() and name_rule_exempt=().
+        self._name_rule_exempt = frozenset(name_rule_exempt)
         # None follows ecsctx.masking.config at mask time, so a filter built by
         # dictConfig before settings are loaded still honours them.
         self._packs = None if packs is None else _normalise(packs)
@@ -138,7 +142,7 @@ class MaskPIIFilter(logging.Filter):
                 continue
             field_rule = get_field_rule(field_type)
             if field_rule.exemptable and (
-                child_path in _NAME_RULE_EXEMPT or _path_is_exempt(child_path, ctx.exempt)
+                child_path in self._name_rule_exempt or _path_is_exempt(child_path, ctx.exempt)
             ):
                 result[key] = self._mask_value(value, child_path, ctx)
             elif field_type == "card":

@@ -294,3 +294,13 @@ class TestFixedPoint:
         # masked; it must not need the formatter's pass to be complete.
         record = _filter("charge pan 4111111111111111 0827 ok", packs=("pci",))
         assert record.msg == "charge pan [CARD-MASKED:411111******1111] [CVV-MASKED] ok"
+
+
+class TestGatewayBodiesAreNotLogRecords:
+    def test_a_name_in_a_gateway_body_is_masked(self):
+        # user.name is exempt from the name rule in a log record (a login, for
+        # audit trails); a gateway body's "user.name" is a person's name.
+        from ecsctx.contrib.net import loggable_request_body
+
+        logged = loggable_request_body(None, {"user": {"name": "Jane Doe"}})
+        assert "Jane Doe" not in logged
