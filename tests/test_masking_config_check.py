@@ -344,18 +344,16 @@ class TestValidateAndAssert:
 
 class TestGetLoggingConfigPassesTheCheck:
     """Regression: get_logging_config() must produce a LOGGING dict that
-    satisfies find_masking_config_errors() out of the box."""
+    satisfies find_masking_config_errors() out of the box — it wires
+    mask_pii_filter into every handler it builds via install_maskers_in_config."""
 
     def test_default_config_is_clean(self):
         cfg = get_logging_config()
         assert find_masking_config_errors(cfg) == []
 
-    def test_console_handler_is_masked_by_its_formatter_not_the_filter(self):
-        """One masking pass per record: the formatter runs
-        mask_sensitive_data, so the filter would only mask everything again.
-        It stays defined for handlers a project adds with another formatter."""
+    def test_console_handler_carries_the_filter(self):
         cfg = get_logging_config()
-        assert cfg["handlers"]["console"]["filters"] == ["correlation"]
+        assert cfg["handlers"]["console"]["filters"] == ["correlation", "mask_pii_filter"]
         assert cfg["filters"] == {
             "correlation": {"()": "cid.log.CidContextFilter"},
             "mask_pii_filter": {"()": "ecsctx.masking.filters.MaskPIIFilter"},

@@ -36,33 +36,6 @@ def _has_masker(handler: logging.Handler) -> bool:
     return any(isinstance(f, MaskPIIFilter) for f in handler.filters)
 
 
-def _masks(processors) -> bool:
-    # Imported here: ecsctx.processors imports this package.
-    from ecsctx.processors import mask_sensitive_data
-
-    return any(p is mask_sensitive_data for p in processors or ())
-
-
-def formatter_config_masks(formatter_config: dict) -> bool:
-    """True if a LOGGING formatter entry runs mask_sensitive_data itself —
-    structlog's ProcessorFormatter with it in `processors`, which every
-    record (structlog or stdlib) passes through."""
-    return _masks(formatter_config.get("processors"))
-
-
-def formatter_masks(formatter: logging.Formatter | None) -> bool:
-    """The live-object counterpart of formatter_config_masks."""
-    return _masks(getattr(formatter, "processors", None))
-
-
-def masking_formatter_names(logging_config: dict) -> set[str]:
-    return {
-        name
-        for name, formatter_config in logging_config.get("formatters", {}).items()
-        if isinstance(formatter_config, dict) and formatter_config_masks(formatter_config)
-    }
-
-
 def _iter_handlers():
     seen: set[int] = set()
     for handler in logging.root.handlers:
@@ -80,19 +53,12 @@ def _iter_handlers():
 
 def install_maskers_in_config(logging_config: dict) -> None:
     """Wire "mask_pii_filter" into logging_config's filters and reference
-    it from every handler whose formatter does not already mask. Idempotent
-    — never adds it twice to the same handler.
-
-    A handler formatted by a ProcessorFormatter that runs
-    mask_sensitive_data is left without the filter: its formatter masks every
-    record, and a second pass would only cost CPU.
+    it from every handler. Idempotent — never adds it twice to the same
+    handler.
     """
     filters = logging_config.setdefault("filters", {})
     filters["mask_pii_filter"] = {"()": "ecsctx.masking.filters.MaskPIIFilter"}
-    masked_by_formatter = masking_formatter_names(logging_config)
     for handler_config in logging_config.get("handlers", {}).values():
-        if handler_config.get("formatter") in masked_by_formatter:
-            continue
         handler_filters = handler_config.setdefault("filters", [])
         if "mask_pii_filter" not in handler_filters:
             handler_filters.append("mask_pii_filter")
@@ -106,7 +72,7 @@ def install_maskers_on_handlers() -> None:
     """
     flt = MaskPIIFilter()
     for handler in _iter_handlers():
-        if not _has_masker(handler) and not formatter_masks(handler.formatter):
+        if not _has_masker(handler):
             handler.addFilter(flt)
 
 

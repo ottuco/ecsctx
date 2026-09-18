@@ -7,19 +7,13 @@ are opt-in packs a PCI service enables in its logging config. The default pack
 """
 
 import logging
-import os
 import random
 from decimal import Decimal
 
 import pytest
-from structlog.stdlib import ProcessorFormatter
 
 from ecsctx.contrib.django import get_logging_config
-from ecsctx.contrib.django.checks import (
-    find_masking_config_errors,
-    find_unmasked_live_handlers,
-)
-from ecsctx.formatters import ECSFormatter
+from ecsctx.contrib.django.checks import find_unmasked_live_handlers
 from ecsctx.masking.config import (
     _reset_masking_config,
     configure_masking_packs,
@@ -27,9 +21,8 @@ from ecsctx.masking.config import (
 )
 from ecsctx.masking.exemptions import configure_masking
 from ecsctx.masking.filters import MaskPIIFilter
-from ecsctx.masking.install import install_maskers_in_config
 from ecsctx.masking.patterns import ALL_PACKS, RULES, classify_key
-from ecsctx.processors import mask_pan, mask_sensitive_data
+from ecsctx.processors import mask_pan
 
 
 @pytest.fixture(autouse=True)
@@ -276,36 +269,6 @@ class TestArgs:
         record = logging.LogRecord("t", logging.INFO, __file__, 0, "%s", (Holder(),), None)
         MaskPIIFilter().filter(record)
         assert record.getMessage() == "owner [EMAIL-MASKED]"
-
-
-class TestOnePassPerRecord:
-    def test_a_handler_formatted_by_ecsctx_is_masked_by_its_formatter_only(self):
-        cfg = get_logging_config()
-        assert "mask_pii_filter" not in cfg["handlers"]["console"]["filters"]
-
-    def test_a_handler_with_another_formatter_gets_the_filter(self):
-        cfg = get_logging_config()
-        cfg["handlers"]["file"] = {"class": "logging.FileHandler", "filename": "x.log"}
-        install_maskers_in_config(cfg)
-        assert cfg["handlers"]["file"]["filters"] == ["mask_pii_filter"]
-        assert "mask_pii_filter" not in cfg["handlers"]["console"]["filters"]
-
-    def test_a_shipping_handler_masked_by_its_formatter_passes_the_check(self):
-        cfg = get_logging_config()
-        cfg["handlers"]["file"] = {
-            "class": "logging.FileHandler",
-            "filename": "x.log",
-            "formatter": "structlog_formatter",
-        }
-        cfg["root"]["handlers"].append("file")
-        assert find_masking_config_errors(cfg) == []
-
-    def test_a_live_handler_masked_by_its_formatter_passes_the_check(self, isolated_logging_tree):
-        cfg = get_logging_config()
-        handler = logging.FileHandler(os.devnull)
-        handler.setFormatter(ProcessorFormatter(processors=[mask_sensitive_data, ECSFormatter()]))
-        logging.getLogger("ecsctx-formatter-masked").addHandler(handler)
-        assert find_unmasked_live_handlers(cfg) == []
 
 
 class TestAdminEmailHandler:
