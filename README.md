@@ -797,28 +797,63 @@ This ensures the receiving service can correlate its logs with yours under the s
 
 ## 13. PII Masking & Tokenization
 
-ecsctx automatically detects and protects sensitive data in logs. The `mask_sensitive_data` processor walks payload structures recursively (path-aware) to find and tokenize PII, and scans every string value for email/phone patterns.
+ecsctx detects and protects sensitive data in logs. `MaskPIIFilter` walks each
+record (path-aware), masks values by their key name, and scans string values
+with content rules. `get_logging_config()` puts it on every handler, where it
+masks the record in place — so Sentry's logging integration, `handleError` and
+handlers that never call `format()` see masked data too — and the formatter's
+`mask_sensitive_data` masks the shaped event again. The second pass is cheap:
+strings already known clean are not scanned twice.
 
 **Log processor path** (automatic via `mask_sensitive_data`):
-- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`) for fraud correlation. Same input always produces the same token.
-- When PII is not configured: detected values are replaced with `[PII_REDACTED]` — raw PII never appears in logs.
-- Two types bypass tokenization: PANs truncate to first 6 + last 4 (`[CARD-MASKED:411111******1111]`, no token alongside, regardless of PII configuration) and CVV is always the bare `[CVV-MASKED]`.
+- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens, labelled by type (`[EMAIL-MASKED:ptok:v1:...]`), for fraud correlation. Same input always produces the same token.
+- When PII is not configured: detected values become the bare label (`[EMAIL-MASKED]`) — raw PII never appears in logs.
+- Cardholder data is never tokenized: PANs are truncated (`[CARD-MASKED:411111******1111]`), and CVV and expiry are always the bare `[CVV-MASKED]` / `[EXPIRY-MASKED]`.
 
 **Explicit encryption API** (standalone, NOT part of the log processor pipeline):
 - `protect()` / `reveal()` use **AES-256-GCM** for randomized ciphertext (`penc:v1:<kid>:...`) when reversible encryption is needed. Requires `PII_ACCESS=full`.
 
 Keys are delivered via mounted keyset files or fetched from Vault.
 
-### PAN display-masking (`mask_pan`)
+### Masking packs — PCI services must opt in
 
-PANs are **display-masked, not tokenized**: the engine emits
-`[CARD-MASKED:411111******1111]` for any 12–19 digit run (spaces/dashes
-allowed), and `mask_pan("378282246310005")` returns the bare core
-`"378282*****0005"`. Rationale: support and debugging identify a card by BIN +
-last4, and PCI DSS explicitly permits showing at most the first six and last
-four — an opaque token would force a vault lookup per log line. Everything
-else PII keeps tokenization. `mask_pan` is also exported for call sites that
-must mask a PAN before logging (e.g. replacing a hand-rolled helper):
+Content rules come in packs. Only a service that handles card data needs the
+card and CVV rules, and running them on every string of every line costs CPU
+and mangles numeric ids (a hex `session_id` starting with ten digits reads
+as a phone number to a careless rule).
+
+| Pack | Content rules | On by default |
+|------|---------------|---------------|
+| `default` | PEM keys, credentials (`token=…`, `"secret": …`, `Bearer …`), phone numbers, emails, JWTs | always |
+| `pci` | PANs (truncated), CVV — keyed (`cvv=123`, `"securityCode": "123"`, `CVV 123`) and bare 3–4 digit groups | no |
+| `financial_ids` | IBANs, SSNs, payment/transaction/auth ids (content and key names) | no |
+
+A PCI-scoped service enables them in its logging config:
+
+```python
+LOGGING = get_logging_config(masking_packs=("pci", "financial_ids"))
+```
+
+or with `ECSCTX_MASKING_PACKS = ["pci", "financial_ids"]` in Django settings,
+or `ECSCTX_MASKING_PACKS=pci,financial_ids` in the environment (precedence:
+the argument, then the setting, then the env var). `default` is always on. An
+unknown pack name in the setting or env var fails closed — every pack is on,
+with a warning, and the boot check reports it.
+Upgrading from 0.7.x without opting in turns PAN and CVV content scanning
+**off**.
+
+Key names are checked in every service regardless of packs: a key named
+`card`, `pan`, `card_number`, `cvv`, `securityCode`, `expiry`, `exp_month`, …
+masks its value wherever it appears.
+
+### PAN truncation (`mask_pan`)
+
+Logs are stored data, so PCI DSS 3.5.1 truncation applies. PANs of 15–19
+digits keep the first 6 and last 4 (`411111******1111`), the format every
+brand accepts (PCI SSC FAQ 1091); shorter PANs keep only the last 4
+(`*********6789`), because FAQ 1091 covers them only for Discover. No token
+or hash is emitted beside a truncated PAN (FAQ 1117). `mask_pan` returns the
+same bare core for call sites that must mask a PAN before logging:
 `from ecsctx import mask_pan`.
 
 ### Network-boundary redaction (`ecsctx.contrib.net`)
@@ -828,7 +863,9 @@ two boundary shapes need dedicated helpers — import them instead of copying
 them per service:
 
 ```python
-from ecsctx.contrib.net import loggable_body, redact_body, redact_url
+from ecsctx.contrib.net import (
+    loggable_body, loggable_request_body, redact_body, redact_url, url_host,
+)
 ```
 
 - `redact_url(url)` — masks credential-looking query params (`password`,
@@ -839,9 +876,20 @@ from ecsctx.contrib.net import loggable_body, redact_body, redact_url
   `client_secret`, …) in JSON and form-encoded bodies. A bare `token` key is
   deliberately left alone: gateways reuse it for non-secret payment/session
   identifiers that log readers rely on.
-- `loggable_body(response)` — the response body to log: capped text for
-  textual responses, else `None`. Redacts **before** capping, so a cap landing
-  mid-value cannot leave a token head exposed.
+- `redact_url(url, secrets=[token])` also masks literal values anywhere in
+  the URL — a saved-card token in a path such as `/card/<token>/`.
+- `url_host(url)` — the host to name in a log *message*; the full URL belongs
+  in `url.full`, because a message is a grouping key.
+- `loggable_body(response)` — the response body to log, or `None`. A
+  deny-list (`UNREADABLE_CONTENT_TYPES`: HTML, CSV, PDF, images, archives)
+  rather than an allow-list, because gateways mislabel JSON as `text/plain`
+  or omit `Content-Type`; an HTML/PDF body is still kept when the status is
+  4xx/5xx, since an edge proxy's block page is the whole explanation. A JSON
+  body is masked by its keys before it is serialised (so `"securityCode"` is
+  caught without the `pci` pack), then redacted **before** capping, so a cap
+  landing mid-value cannot leave a token head exposed.
+- `loggable_request_body(data, json_body)` — the same for the outbound half
+  (`json_body` wins over form `data`); never raises.
 
 Configure per deploy without code changes. Precedence: explicit call >
 Django settings > env vars > defaults (same lazy pattern as the masking
@@ -900,23 +948,42 @@ ECSCTX_REDACT_BODY_LOG_CAP=8192
 
 ### What Gets Detected
 
-| Type | Detection | Output |
-|------|-----------|--------|
-| **Emails** | Regex: `user@domain.com` patterns | `"ptok:v1:KeND..."` |
-| **Phone numbers** | Regex: 10-15 digits with +/spaces/dashes | `"ptok:v1:x8Fp..."` |
-| **Names** | Keys containing: `name`, `customer`, `payer`, `billing`, `shipping`, `cardholder`, `email`, `phone`, `mobile`, `contact`, `recipient`, `beneficiary`, `address`, `udf` | `"ptok:v1:..."` |
-| **Auth headers** | `authorization`, `api-key`, `x-api-key` keys | `"Bearer <first4>****<last4>"` (masked, not tokenized; `"Bearer ****"` when the secret is ≤8 chars) |
-| **PANs** | 12–19 digit runs (spaces/dashes allowed); no Luhn gate, no card-key propagation — detection is shape-only | `"[CARD-MASKED:411111******1111]"` — first 6 (BIN) + last 4 visible, the most PCI DSS permits in clear; no token alongside; a second pass is a noop |
+A key name marks its value when the lowercased key **contains** a keyword, so
+glued and plural names payloads use (`phonenumber`, `cardcvv`, `nameoncard`,
+`tokens`) are caught; the known false positives are listed below as safe keys.
+Card and expiry keys are matched precisely.
+
+| Type | Key names | Content rule (pack) | Output |
+|------|-----------|---------------------|--------|
+| **Secrets** | containing `token`, `secret`, `password`, `passwd`, `authorization`, `bearer`, `basic`, `digest`, `credential`, or an `api`/`access`/`secret`/`private`/… `_key` | credential forms (`default`) | `[SECRET-MASKED…]` |
+| **Emails / phones** | containing `email`; `phone`, `mobile`, `tel` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]` |
+| **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
+| **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no` | 12–19 digit runs (`pci`) | `[CARD-MASKED:411111******1111]` |
+| **CVV / expiry** | containing `cvv`, `cvc`, `security code`; `expiry`, `expiration`, `exp_month`, … | keyed and bare CVV (`pci`) | `[CVV-MASKED]`, `[EXPIRY-MASKED]` |
+| **IBAN / SSN / payment ids** | `payment_id`, `transaction_id`, `auth_id` (`financial_ids`) | `financial_ids` | `[IBAN-MASKED…]`, … |
+
+A digit run that touches a letter is never a phone number — it is part of an
+id. The card rule still matches a PAN followed by a letter, because Track 2
+data puts a `D` separator right after it.
+
+### Structural fields (never scanned)
+
+ecsctx's own metadata (`service`, `project`, `log`) and the correlation ids
+services generate (`session_id`, `trace`, `span`) are left alone: masking them
+breaks the joins logs exist for. `user.name` is exempt from the name rule — it
+is a login that audit trails need — but its content is still scanned, so an
+email login is masked.
 
 ### Whitelist (NOT Masked)
 
-These keys are safe even though they contain "name":
+These keys are never masked by name, although a word in them matches a rule:
 
 ```
 gateway_name, vendor_name, module_name, func_name, task_name, service_name,
 app_name, project_name, class_name, method_name, view_name, username,
 site_name, domain_name, bank_name, display_name, install_name,
-installation_name, event_name, customer_id, id, pk
+installation_name, event_name, pathname, customer_id, id, pk,
+namespace, hostname, filename, token_type, tokenization_status
 ```
 
 ### Path exemptions
@@ -937,7 +1004,11 @@ from ecsctx import configure_masking
 configure_masking(exempt_paths=["payment_methods[*].name", "audit"])
 ```
 
-**Path syntax** (matched relative to the masked container, e.g. inside `payload`):
+**Path syntax.** A pattern is anchored at the root of the record or at a
+payload container (`payload`, `args`, `kwargs`, `extra`, the http request and
+response bodies), so `payment_methods[*].name` and
+`payload.payment_methods[*].name` both exempt the same field, while a short
+pattern such as `audit` does not reach an `audit` key nested deeper:
 
 | Segment | Meaning |
 |---------|---------|
@@ -950,6 +1021,19 @@ Matching is a **prefix match**, so a pattern also exempts everything nested belo
 - `payment_methods[*].name` — exempts just that field in every array element
 - `payment_methods` — exempts the entire `payment_methods` subtree
 - `order.customer.name`, `items[*].tags[*].name` — arbitrary nesting works
+
+### Boot check (Django)
+
+Importing `ecsctx.contrib.django` registers a `Tags.security` system check
+(`ecsctx.E00x`) that fails `manage.py check`, `migrate` and `runserver` if a
+handler that ships logs off-host is unmasked. A handler counts as masked if it
+carries `mask_pii_filter` (itself or through its logger) or its formatter runs
+`mask_sensitive_data`. Console `StreamHandler`/`NullHandler` never ship;
+Django's `AdminEmailHandler` ships only when `ADMINS` is set. The check is
+skipped when `ENVIRONMENT` is `local`, `test` or `dev`
+(`ECSCTX_MASKING_CHECK_ENV_VAR`, `ECSCTX_MASKING_CHECK_SKIP_ENVS`), or with
+`ECSCTX_SKIP_MASKING_CHECK = True`; `assert_no_masking_errors(settings.LOGGING)`
+enforces it in a test suite regardless of environment.
 
 ### Configuration
 
@@ -1793,8 +1877,41 @@ is always valid. Before this module, one service carried 34 hand-rolled names:
 88% with no namespace, two containing a literal space, one in SCREAMING_CASE.
 
 `ecsctx.events` ships the **mechanism** — how an event is declared, how a domain
-claims a prefix, where a field lands. It deliberately ships **no vocabulary**:
-your business events stay in your own codebase and register at startup.
+claims a prefix, where a field lands. The shared Ottu vocabulary is in
+`ecsctx.contrib.ottu` (below); anything else stays in your own codebase and
+registers at startup.
+
+### The shared Ottu catalogue (`ecsctx.contrib.ottu`)
+
+63 events in 11 domains (`pg`, `crypto`, `payment`, `card`, `threeds`, `net`,
+`task`, `cache`, `api`, `webhook`, `auth`), each an `EventSpec` constant with its
+ECS `category`/`type`, bounded `reasons` and levels, so every service names the
+same thing the same way. Import the constant; register once, together with your
+service's own events, from `AppConfig.ready()`:
+
+```python
+from ecsctx.contrib.ottu import register_ottu
+from ecsctx.contrib.ottu.pg import PG_REQUEST_FAILED
+from ecsctx.events import EventSpec
+
+# Your own events: one under a shared prefix, one under a prefix of your own.
+PG_PAYLOAD_BUILT = EventSpec(action="pg.payload_built", terminal=True, type=("info",))
+WALLET_DEBITED = EventSpec(action="wallet.debited", terminal=True, type=("change",))
+
+register_ottu(
+    local={"pg": (PG_PAYLOAD_BUILT,), "wallet": (WALLET_DEBITED,)},
+    aliases={"token_blacklist": "auth.token_revoked"},  # retired names you still emit
+)                                                      # freezes the registry
+
+logger.warning("PSP rejected the call", ecs_event=PG_REQUEST_FAILED.ecs(
+    outcome="failure", reason="http_client_error"))
+```
+
+A prefix can be registered only once, which is why your events under a shared
+prefix go through `register_ottu(local=...)` rather than a second
+`register_domain`; redefining a shared action raises. The `api` domain is the
+one `@api_logging` emits, so it never conflicts with `register_http_events()`.
+A retired name warns once, not on every line.
 
 ### Declaring and registering
 
@@ -1840,8 +1957,9 @@ picks the level, and calls the logger. Positional args pass through untouched, s
 lazy `%s` formatting still works.
 
 **Level** comes from the spec: `level` on the success path, `level_on_failure`
-when `outcome="failure"` (defaulting to `error` for terminal events). Pass
-`level=` to override.
+when `outcome="failure"` (`failure_level` if the spec sets one — the catalogue's
+warning-level `*_rejected`/`*_failed` events do — else `error` for terminal
+events). Pass `level=` to override.
 
 ### Field placement
 

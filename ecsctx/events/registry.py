@@ -34,6 +34,9 @@ _lock = threading.Lock()
 _domains: dict[str, tuple[EventSpec, ...]] = {}
 _by_action: dict[str, EventSpec] = {}
 _aliases: dict[str, str] = {}
+# Retired names already warned about: the validator resolves on every log
+# line, and one warning per name is enough to find the call site.
+_warned_aliases: set[str] = set()
 _frozen = False
 
 
@@ -110,12 +113,18 @@ def resolve(name) -> EventSpec | None:
     if target is None:
         return None
     resolved = _by_action.get(target)
-    if resolved is not None:
-        warnings.warn(
-            f"{name!r} is a retired event name; use {target!r}",
-            DeprecationWarning,
-            stacklevel=3,
-        )
+    if resolved is not None and name not in _warned_aliases:
+        # Checked again under the lock: two threads resolving the same retired
+        # name at once must not both warn. Only this rare path pays for it.
+        with _lock:
+            first = name not in _warned_aliases
+            _warned_aliases.add(name)
+        if first:
+            warnings.warn(
+                f"{name!r} is a retired event name; use {target!r}",
+                DeprecationWarning,
+                stacklevel=3,
+            )
     return resolved
 
 
@@ -145,4 +154,5 @@ def reset() -> None:
         _domains.clear()
         _by_action.clear()
         _aliases.clear()
+        _warned_aliases.clear()
         _frozen = False

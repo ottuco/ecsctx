@@ -11,24 +11,28 @@ from ecsctx.events.spec import EventSpec
 CARD_TOKENIZATION_COMPLETED = EventSpec(
     action="card.tokenization_completed",
     terminal=True,
+    type=("end",),
     required=("event.outcome", "session_id", "payment.pg_code"),
 )
 
 CARD_TOKENIZATION_SKIPPED = EventSpec(
     action="card.tokenization_skipped",
     terminal=True,
+    type=("denied",),
     required=("event.outcome", "event.reason", "session_id"),
 )
 
 CARD_TOKEN_UPDATED = EventSpec(
     action="card.token_updated",
     terminal=True,
+    type=("change",),
     required=("event.outcome", "labels.change", "labels.card_id"),
 )
 
 CARD_TOKEN_DELETED = EventSpec(
     action="card.token_deleted",
     terminal=True,
+    type=("deletion",),
     required=("event.outcome", "labels.source"),
 )
 
@@ -36,6 +40,8 @@ CARD_TOKEN_LOOKUP_FAILED = EventSpec(
     action="card.token_lookup_failed",
     level="warning",
     terminal=True,
+    type=("error",),
+    failure_level="warning",
     required=("event.outcome", "event.reason"),
 )
 

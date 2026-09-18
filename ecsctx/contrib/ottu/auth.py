@@ -12,6 +12,8 @@ from ecsctx.events.spec import EventSpec
 AUTH_REQUEST_AUTHENTICATED = EventSpec(
     action="auth.request_authenticated",
     terminal=True,
+    category=("authentication",),
+    type=("allowed",),
     required=("event.outcome", "labels.auth_method", "user.id"),
 )
 
@@ -19,18 +21,26 @@ AUTH_REQUEST_REJECTED = EventSpec(
     action="auth.request_rejected",
     level="warning",
     terminal=True,
+    category=("authentication",),
+    type=("denied",),
+    reasons=("service_not_allowed", "user_deactivated", "user_deactivated_cache"),
+    failure_level="warning",
     required=("event.outcome", "event.reason", "labels.auth_method"),
 )
 
 AUTH_TOKEN_ISSUED = EventSpec(
     action="auth.token_issued",
     terminal=True,
+    category=("authentication",),
+    type=("creation",),
     required=("event.outcome", "labels.grant_type", "labels.cache"),
 )
 
 AUTH_TOKEN_REVOKED = EventSpec(
     action="auth.token_revoked",
     terminal=True,
+    category=("authentication",),
+    type=("deletion",),
     required=("event.outcome", "user.id"),
 )
 
@@ -38,6 +48,9 @@ AUTH_SESSION_TERMINATED = EventSpec(
     action="auth.session_terminated",
     level="warning",
     terminal=True,
+    category=("authentication",),
+    type=("info",),
+    failure_level="warning",
     required=("event.outcome", "event.reason", "user.id"),
 )
 
@@ -45,18 +58,25 @@ AUTH_SESSION_CHECK_SKIPPED = EventSpec(
     action="auth.session_check_skipped",
     level="warning",
     terminal=True,
+    category=("authentication",),
+    type=("denied",),
+    failure_level="warning",
     required=("event.outcome", "event.reason", "labels.fail_mode"),
 )
 
 AUTH_IDENTITY_PROVISIONED = EventSpec(
     action="auth.identity_provisioned",
     terminal=True,
+    category=("authentication",),
+    type=("info",),
     required=("event.outcome", "user.name", "labels.direction"),
 )
 
 AUTH_ROLES_CHANGED = EventSpec(
     action="auth.roles_changed",
     terminal=True,
+    category=("authentication",),
+    type=("change",),
     required=("event.outcome", "user.name", "labels.roles_added", "labels.roles_removed"),
 )
 
@@ -64,6 +84,9 @@ AUTH_PRIVILEGE_GRANTED = EventSpec(
     action="auth.privilege_granted",
     level="warning",
     terminal=True,
+    category=("authentication",),
+    type=("allowed",),
+    failure_level="warning",
     required=("event.outcome", "user.name", "labels.privilege", "labels.source"),
 )
 
@@ -71,6 +94,8 @@ AUTH_IDENTITY_SYNC_FAILED = EventSpec(
     action="auth.identity_sync_failed",
     level="error",
     terminal=True,
+    category=("authentication",),
+    type=("error",),
     required=("event.outcome", "event.reason", "error.type"),
 )
 

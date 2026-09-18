@@ -7,8 +7,10 @@ from ecsctx.contrib.net import (
     ecs_url,
     loggable_body,
     parse_json_or_raw,
+    loggable_request_body,
     redact_body,
     redact_url,
+    url_host,
 )
 
 
@@ -181,3 +183,105 @@ class TestBoundaryShapers:
     def test_parse_json_or_raw_non_utf8_bytes_returned_untouched(self):
         raw = b"\xff\xfe\x00binary-body"
         assert parse_json_or_raw(raw) is raw
+
+
+class _Response:
+    def __init__(self, text, content_type=None, status_code=200):
+        self.text = text
+        self.status_code = status_code
+        self.headers = {} if content_type is None else {"Content-Type": content_type}
+
+
+class TestUrlHost:
+    def test_names_the_host_only(self):
+        assert url_host("https://gw.example.com:8443/pay?token=x") == "gw.example.com"
+
+    def test_never_raises_on_a_log_path(self):
+        assert url_host("") == "unknown host"
+        assert url_host(None) == "unknown host"
+        assert url_host("http://[::1") == "unknown host"
+
+
+class TestRedactUrlSecrets:
+    def test_a_secret_in_the_path_is_masked(self):
+        assert redact_url("https://h/pbl/card/tok_9f8e/", secrets=["tok_9f8e"]) == (
+            "https://h/pbl/card/[REDACTED]/"
+        )
+
+    def test_a_secret_in_the_query_and_repeated(self):
+        url = redact_url("https://h/a/tok_1/b?ref=tok_1", secrets=["tok_1"])
+        assert "tok_1" not in url
+
+    def test_a_bare_string_is_one_secret_and_empty_ones_are_ignored(self):
+        assert redact_url("https://h/x/abc", secrets="abc") == "https://h/x/[REDACTED]"
+        assert redact_url("https://h/x/abc", secrets=["", None]) == "https://h/x/abc"
+
+    def test_without_secrets_the_path_is_untouched(self):
+        assert redact_url("https://h/checkout/8231045567ab") == "https://h/checkout/8231045567ab"
+
+
+class TestLoggableRequestBody:
+    def test_no_body_is_none(self):
+        assert loggable_request_body(None, None) is None
+
+    def test_keys_are_masked_before_the_body_becomes_a_string(self):
+        logged = loggable_request_body(None, {"card": {"securityCode": "737"}, "amount": "10.000"})
+        assert "737" not in logged
+        assert '"amount": "10.000"' in logged
+
+    def test_json_wins_over_form_data(self):
+        assert loggable_request_body({"a": "form"}, {"a": "json"}) == '{"a": "json"}'
+
+    def test_a_string_body_is_redacted_and_capped(self):
+        logged = loggable_request_body("client_secret=s3cr3t&x=" + "y" * 9000, None)
+        assert "s3cr3t" not in logged
+        assert len(logged) == 4096
+
+    def test_an_unserialisable_body_is_not_logged(self):
+        loop = {}
+        loop["self"] = loop
+        assert loggable_request_body(None, loop) is None
+
+
+class TestLoggableBodyDenyList:
+    def test_json_without_a_content_type_is_logged(self):
+        assert loggable_body(_Response('{"status": "ok"}')) == '{"status": "ok"}'
+
+    def test_json_labelled_text_plain_is_parsed_and_its_keys_masked(self):
+        logged = loggable_body(_Response('{"securityCode": "737", "ok": true}', "text/plain"))
+        assert "737" not in logged
+        assert '"ok": true' in logged
+
+    def test_an_error_page_is_the_whole_explanation_so_it_is_kept(self):
+        page = "<html><body>Request blocked by edge proxy</body></html>"
+        assert loggable_body(_Response(page, "text/html", status_code=403)) == page
+
+    def test_a_document_on_success_is_not_logged(self):
+        assert loggable_body(_Response("<html>receipt</html>", "text/html")) is None
+        assert loggable_body(_Response("%PDF-1.7", "application/pdf")) is None
+
+
+class TestBodiesAreNotLogRecords:
+    """A gateway body is masked with nothing skipped: service/project/log are
+    ecsctx's own metadata keys in a log record, but in a body they are
+    whatever the gateway put there."""
+
+    def test_a_card_under_a_top_level_log_key_is_masked(self):
+        logged = loggable_request_body(None, {"log": {"cvv": "737", "card_number": "4111111111111111"}})
+        assert "737" not in logged
+        assert "4111111111111111" not in logged
+
+    def test_a_response_with_a_top_level_service_key_is_masked(self):
+        logged = loggable_body(_Response('{"service": {"securityCode": "737"}}', "application/json"))
+        assert "737" not in logged
+
+
+class TestDenyListTradeOff:
+    def test_an_unlisted_content_type_is_logged_as_capped_text(self):
+        # Deliberate, as in ottu_backend's contrib/net: gateways mislabel or omit
+        # Content-Type often enough that an allow-list drops the replies worth
+        # reading. A binary type the deny-list does not name is logged as
+        # (possibly garbled) text, capped.
+        logged = loggable_body(_Response("\x08\x96\x01" + "x" * 5000, "application/protobuf"))
+        assert logged.startswith("\x08\x96\x01")
+        assert len(logged) == 4096

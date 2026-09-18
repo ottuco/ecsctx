@@ -1,7 +1,7 @@
 """The HTTP boundary events the library emits for itself.
 
-ecsctx ships no business vocabulary — that stays in the services (#159490). These
-three are the exception, and the reason is narrow: `api_logging` is a decorator
+The shared business vocabulary lives in ``ecsctx.contrib.ottu``; these three
+are defined here, in the core, for a narrow reason: `api_logging` is a decorator
 *in this package* that emits two log lines, and a log line that will not name
 itself is the defect this whole programme exists to remove. A service cannot
 declare an action for a call site it does not own.
@@ -27,8 +27,8 @@ API_REQUEST_RECEIVED = EventSpec(
     level="info",
     category=("web",),
     type=("access",),
-    required=("method", "path"),
-    optional=("session_id", "merchant_id", "user_id"),
+    required=("http.request.method", "url.path", "trace.id"),
+    optional=("session_id", "merchant_id", "user.id"),
 )
 
 API_RESPONSE_SENT = EventSpec(
@@ -37,7 +37,7 @@ API_RESPONSE_SENT = EventSpec(
     terminal=True,
     category=("web",),
     type=("access",),
-    required=("method", "path", "status_code"),
+    required=("event.outcome", "event.duration", "http.response.status_code", "url.path"),
 )
 
 API_REQUEST_REJECTED = EventSpec(
@@ -49,7 +49,9 @@ API_REQUEST_REJECTED = EventSpec(
     # Bounded, so "why were requests refused?" is one aggregation rather than a
     # scan of free text. Both are in-process refusals: the view never ran.
     reasons=("throttled", "validation_failed"),
-    required=("method", "path", "status_code"),
+    # A refusal is the expected outcome of this event: warning, not error.
+    failure_level="warning",
+    required=("event.outcome", "event.reason", "http.response.status_code"),
 )
 
 HTTP_EVENTS = (API_REQUEST_RECEIVED, API_RESPONSE_SENT, API_REQUEST_REJECTED)

@@ -30,6 +30,7 @@ Usage in settings.py:
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import Protocol
 
 import structlog
@@ -44,6 +45,7 @@ from ecsctx import (
 )
 from ecsctx.contrib.django.processors import contextvars_injector
 from ecsctx.events.validator import event_contract
+from ecsctx.masking.config import configure_masking_packs
 from ecsctx.masking.install import install_maskers_in_config
 
 # =============================================================================
@@ -113,6 +115,7 @@ def get_logging_config(
     handler_level: str = "DEBUG",
     use_cid_filter: bool = True,
     loggers: dict | None = None,
+    masking_packs: Iterable[str] | None = None,
 ) -> dict:
     """
     Returns a complete Django LOGGING configuration dict.
@@ -123,6 +126,9 @@ def get_logging_config(
         use_cid_filter: Whether to add CID correlation filter (default: True)
         loggers: Additional logger configurations to merge (use presets like
             RQ_LOGGERS, CELERY_LOGGERS)
+        masking_packs: Content-masking packs to enable on top of "default",
+            e.g. ("pci", "financial_ids") for a service that handles card data.
+            None leaves the choice to ECSCTX_MASKING_PACKS (setting, then env).
 
     Returns:
         Complete LOGGING dict ready to use in Django settings. "mask_pii_filter"
@@ -152,6 +158,9 @@ def get_logging_config(
             "myapp.api": {"level": "DEBUG", "propagate": True},
         })
     """
+    if masking_packs is not None:
+        configure_masking_packs(masking_packs)
+
     filters = {}
     handler_filters = []
 

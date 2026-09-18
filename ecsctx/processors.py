@@ -373,34 +373,36 @@ def contextvars_injector(_logger, _method_name, event_dict):
 # SENSITIVE DATA MASKING/TOKENIZATION
 # =============================================================================
 #
-# The actual masking rules live in ecsctx.masking (MaskPIIFilter) — a stdlib
-# logging.Filter that runs on every LogRecord reaching a handler it is
-# attached to, structlog or not. This processor is a second, structlog-only
-# net: it delegates to the same filter instance, so a pipeline that only
-# calls configure_structlog() (no get_logging_config()/install_maskers())
-# still gets masked, and so a payload nested under `extra` (moved there by
-# namespace_ecs_fields) is covered too — not just the payload/headers/http
-# containers this processor scanned in earlier versions.
-#
-# STRUCTURAL_ECS_KEYS (service/project) is skipped by MaskPIIFilter's
-# default skip_keys — see ecsctx.masking.filters for why.
+# The actual masking rules live in ecsctx.masking (MaskPIIFilter). This
+# processor is the engine for every handler whose formatter runs it —
+# get_logging_config()'s among them — and it delegates to a filter instance,
+# so a pipeline that only calls configure_structlog() still gets masked, and
+# a payload nested under `extra` (moved there by namespace_ecs_fields) is
+# covered too. Structural fields and correlation ids are skipped — see
+# DEFAULT_SKIP_KEYS in ecsctx.masking.filters.
 _default_filter = MaskPIIFilter()
+
+# ECS event fields whose values come from closed sets or the event registry.
+# event.reason and anything else under event.* is free text and is masked.
+_BOUNDED_EVENT_FIELDS = frozenset(
+    {"event.action", "event.kind", "event.category", "event.type", "event.outcome", "event.duration"}
+)
 
 
 def mask_pan(number: str) -> str:
-    """Display-mask a PAN, keeping the first 6 and last 4 digits visible.
+    """Truncate a PAN: first 6 + last 4 from 15 digits up, last 4 below.
 
     Bare-core counterpart of the engine's card rule, which emits the same
     truncation label-wrapped (`[CARD-MASKED:411111******1111]`): use this
     helper at call sites that must mask a PAN before logging (e.g.
     replacing a hand-rolled helper). The core truncation is shared with
     `ecsctx.masking.patterns._truncate_pan` so the two can never drift.
-    PCI DSS permits showing at most the first six (BIN) and last four of a
-    PAN, where an opaque token would force a vault lookup per log line.
-    Separators are stripped, so grouped input comes back as one contiguous
-    masked value. Values of 10 or fewer digits carry no BIN+last4 to preserve
-    and are fully starred: this path only receives PAN-length input, so
-    anything else is a caller bug, and starring fails closed.
+    Logs are stored data (PCI DSS 3.5.1); FAQ 1091 allows first 6 + last 4
+    for 15/16-digit PANs of every listed brand and covers shorter ones only
+    for Discover. Separators are stripped, so grouped input comes back as one
+    contiguous masked value. Values of 10 or fewer digits are fully starred:
+    this path only receives PAN-length input, so anything else is a caller
+    bug, and starring fails closed.
     """
     digits = re.sub(r"[ -]", "", number)
     if len(digits) > 10:
@@ -445,15 +447,15 @@ def mask_sensitive_data(_logger, _method_name, event_dict):
     """Structlog processor for PII/PCI masking and tokenization.
 
     Delegates to MaskPIIFilter, which walks the whole event_dict (except
-    STRUCTURAL_ECS_KEYS and the `event.*` dotted ECS event fields)
-    recursively, masking sensitive content and dict keys. Idempotent: a
-    record already masked by MaskPIIFilter (e.g. via install_maskers() on
-    the same handler chain) is not re-processed.
+    the structural fields in DEFAULT_SKIP_KEYS and the bounded `event.*`
+    fields — action, kind, category, type, outcome, duration) recursively, masking sensitive
+    content and dict keys with the packs in force. Idempotent: masked
+    markers are left as they are.
 
     Bytes ``payload=`` must be parsed by ``normalize_payload_field``
     earlier in the chain — this processor never parses raw bytes itself.
     """
-    to_mask = {k: v for k, v in event_dict.items() if not (isinstance(k, str) and k.startswith("event."))}
+    to_mask = {k: v for k, v in event_dict.items() if k not in _BOUNDED_EVENT_FIELDS}
     masked = _default_filter._mask_dict(to_mask)
     event_dict.update(masked)
     return event_dict
