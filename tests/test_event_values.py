@@ -11,6 +11,14 @@ import json
 import pytest
 
 from ecsctx.contrib.ottu import ALL_DOMAINS, yaml_render
+from ecsctx.contrib.ottu.auth import (
+    AUTH_REQUEST_REJECTED,
+    AUTH_TOKEN_ISSUED,
+    AUTH_TOKEN_REVOKED,
+    AuthRejection,
+    TokenIssueFailure,
+    TokenRevocation,
+)
 from ecsctx.contrib.ottu.net import OUTBOUND_FAILURE_REASONS, OutboundFailure
 from ecsctx.contrib.ottu.pg import PG_REQUEST_FAILED
 from ecsctx.contrib.ottu.webhook import WebhookFailure
@@ -138,3 +146,29 @@ class TestCatalogueReasons:
             "reasons: [http_client_error, http_server_error, timeout, connection_error, "
             "invalid_json, request_error, unexpected_error]"
         ) in rendered
+
+
+class TestAuthReasons:
+    """Reasons Connect logs on shared auth events (its login refusals, its
+    token revocations, its failed token requests), declared here so every
+    service uses the same values."""
+
+    @pytest.mark.parametrize("reason", ["ACCOUNT_LOCKED", "INVALID_CREDENTIALS"])
+    def test_a_login_refusal_is_an_auth_rejection(self, reason):
+        payload = AUTH_REQUEST_REJECTED.ecs(
+            outcome=Outcome.FAILURE, reason=getattr(AuthRejection, reason)
+        )
+        assert payload["reason"] == reason.lower()
+
+    def test_a_revoked_token_says_why(self):
+        payload = AUTH_TOKEN_REVOKED.ecs(
+            outcome=Outcome.SUCCESS, reason=TokenRevocation.USER_DEACTIVATED
+        )
+        assert payload["reason"] == "user_deactivated"
+
+    @pytest.mark.parametrize("reason", ["CONNECTION_FAILED", "REJECTED"])
+    def test_a_token_this_service_could_not_get_says_why(self, reason):
+        payload = AUTH_TOKEN_ISSUED.ecs(
+            outcome=Outcome.FAILURE, reason=getattr(TokenIssueFailure, reason)
+        )
+        assert payload["reason"] == reason.lower()
