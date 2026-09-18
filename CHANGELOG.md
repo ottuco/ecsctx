@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.1 (2026-09-18)
+
+### Features
+- Merge pull request #55 from ottuco/feature/auth-reasons (c0ef34b)
+- feat(ottu): auth reasons Connect logs — login refusals, revocations, token failures (d96a8b2)
+
+
 ## Unreleased
 
 ### Added
