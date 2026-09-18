@@ -20,10 +20,17 @@ import contextlib
 import json
 import os
 import re
+from collections.abc import Collection
+from http import HTTPStatus
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
+from ecsctx.masking.filters import MaskPIIFilter
+
 _REDACTED = "[REDACTED]"
+
+# Masks a body by its keys before it is serialised (see _masked_json).
+_structure_masker = MaskPIIFilter()
 
 # Query-param key hints: a param whose name contains one of these is treated
 # as credential-bearing (case-insensitive).
@@ -45,7 +52,20 @@ _CREDENTIAL_EXACT = frozenset({"p", "u", "pw"})
 
 # Only log a response body when it's textual, and cap its size so a
 # binary/large download never bloats a log line.
-_TEXTUAL_CONTENT_TYPES = ("application/json", "application/xml", "text/", "+xml", "+json")
+# Bodies that are a download or a rendered page, never a reply worth reading.
+# A deny-list, not an allow-list: gateways mislabel JSON as text/plain or send
+# no Content-Type at all often enough that requiring a known-textual type drops
+# exactly the replies worth reading.
+UNREADABLE_CONTENT_TYPES = (
+    "text/html",
+    "text/csv",
+    "image/",
+    "audio/",
+    "video/",
+    "application/pdf",
+    "application/zip",
+    "application/octet-stream",
+)
 _DEFAULT_BODY_LOG_CAP = 4096
 
 # Credential keys whose VALUE must never reach the log, whatever the body shape.
@@ -214,21 +234,46 @@ def _is_credential_key(key: str) -> bool:
     return k in _CREDENTIAL_EXACT or any(hint in k for hint in _CREDENTIAL_HINTS)
 
 
-def redact_url(url: str) -> str:
-    """Return ``url`` with credential-looking query-param values masked."""
+def redact_url(url: str, *, secrets: Collection[str] | None = None) -> str:
+    """Return ``url`` with credential-looking query-param values masked.
+
+    ``secrets`` holds literal values (e.g. a saved-card token carried in the
+    URL path) to mask wherever they occur in the URL. The path is otherwise
+    left alone, so deliberately logged identifiers such as ``session_id`` stay
+    visible. Empty values are ignored; with no secrets the result is exactly
+    what the query-param masking alone produces.
+    """
     if not isinstance(url, str) or not url:
         return url  # None/empty/non-str: nothing to redact, never raise on a log path
     try:
         parts = urlsplit(url)
     except ValueError:
         return _REDACTED  # unparseable -> don't risk logging it raw
-    if not parts.query:
-        return url
-    redacted = [
-        (k, _REDACTED if _is_credential_key(k) else v)
-        for k, v in parse_qsl(parts.query, keep_blank_values=True)
-    ]
-    return urlunsplit(parts._replace(query=urlencode(redacted)))
+    if parts.query:
+        redacted = [
+            (k, _REDACTED if _is_credential_key(k) else v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        ]
+        url = urlunsplit(parts._replace(query=urlencode(redacted)))
+    if isinstance(secrets, str):
+        secrets = (secrets,)  # a bare string is one secret, not a char collection
+    for secret in secrets or ():
+        if secret:
+            url = url.replace(str(secret), _REDACTED)
+    return url
+
+
+def url_host(url: str) -> str:
+    """The host to name in a log message. The full URL stays in ``url.full``.
+
+    A message is a grouping key, so it must not carry the URL itself: a
+    per-merchant endpoint makes every line unique and defeats aggregation. The
+    host says where the call went at a glance and stays bounded.
+    """
+    with contextlib.suppress(ValueError):
+        if host := urlsplit(url or "").hostname:
+            return host
+    return "unknown host"
 
 
 def redact_body(text: str) -> str:
@@ -245,20 +290,69 @@ def redact_body(text: str) -> str:
     return form_re.sub(rf"\1={_REDACTED}", text)
 
 
-def loggable_body(response: Any) -> str | None:
-    """The response body to log: capped text for textual responses, else None.
+def _masked_json(body: Any) -> str:
+    """Mask a structure by its keys, then serialise it.
 
-    ``response`` is duck-typed (``headers`` mapping + ``text``) so this module
-    stays dependency-free — any ``requests``-like response works. Redacts
-    before capping: a cap that lands mid-value would leave the head of a
-    token exposed, since the JSON pattern needs the closing quote to match.
-    Never raises: a body that can't be read is omitted, not logged raw.
+    Masking must happen before the body becomes a string: once it is one, a
+    key such as ``securityCode`` no longer sits next to its value for the
+    key-name rules, and three digits match no content rule worth having.
+    Serialised rather than logged as a dict so ``http.*.body.content`` keeps
+    one Elasticsearch mapping instead of one field per gateway key.
+    """
+    return json.dumps(_structure_masker._mask_value(body), default=str)
+
+
+def loggable_request_body(data: Any, json_body: Any) -> str | None:
+    """The request body to log: masked, redacted, capped text — or None.
+
+    ``json_body`` wins over form ``data``, as in ``requests``. Never raises:
+    logging must not be the thing that breaks a payment, so a body that
+    cannot be serialised is simply not logged.
+    """
+    body = json_body if json_body is not None else data
+    if body is None:
+        return None
+    try:
+        text = body if isinstance(body, str) else _masked_json(body)
+    except (TypeError, ValueError, RecursionError):  # RecursionError: a cyclic structure
+        return None
+    # Redact before capping: a cap landing mid-value would leave the head of a
+    # token exposed, since the JSON pattern needs the closing quote to match.
+    return redact_body(text)[: _get_body_log_cap()]
+
+
+def _is_error(response: Any) -> bool:
+    status = getattr(response, "status_code", None)
+    return isinstance(status, int) and status >= HTTPStatus.BAD_REQUEST
+
+
+def loggable_body(response: Any) -> str | None:
+    """The response body to log: masked, redacted, capped text, or None.
+
+    ``response`` is duck-typed (``headers`` mapping, ``text``, optional
+    ``status_code``) so any ``requests``-like response works. Never raises: a
+    body that can't be read is omitted, not logged raw.
     """
     try:
         content_type = response.headers.get("Content-Type", "").lower()
-        if not any(t in content_type for t in _TEXTUAL_CONTENT_TYPES):
+        text = response.text
+        if any(t in content_type for t in UNREADABLE_CONTENT_TYPES):
+            # A document is noise on a success and the whole story on a
+            # failure: when a gateway answers with an edge proxy's block page,
+            # that page is the explanation. A receipt PDF still costs nothing,
+            # because it comes back 200.
+            if _is_error(response) and isinstance(text, str):
+                return redact_body(text)[: _get_body_log_cap()]
             return None
-        return redact_body(response.text or "")[: _get_body_log_cap()]
+        if not isinstance(text, str):
+            return None
+        # Parse first so the key-name rules see keys; a reply that is not a
+        # JSON object or list falls through to the text path.
+        with contextlib.suppress(ValueError):
+            parsed = json.loads(text or "")
+            if isinstance(parsed, (dict, list)):
+                return redact_body(_masked_json(parsed))[: _get_body_log_cap()]
+        return redact_body(text)[: _get_body_log_cap()]
     except Exception:  # noqa: BLE001 - log path must never raise; omit the body instead
         return None
 
@@ -365,12 +459,15 @@ def ecs_http(
 
 
 __all__ = [
+    "UNREADABLE_CONTENT_TYPES",
     "configure_redaction",
     "configure_redaction_from_env",
     "ecs_http",
     "ecs_url",
     "loggable_body",
+    "loggable_request_body",
     "parse_json_or_raw",
     "redact_body",
     "redact_url",
+    "url_host",
 ]

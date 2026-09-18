@@ -828,7 +828,9 @@ two boundary shapes need dedicated helpers — import them instead of copying
 them per service:
 
 ```python
-from ecsctx.contrib.net import loggable_body, redact_body, redact_url
+from ecsctx.contrib.net import (
+    loggable_body, loggable_request_body, redact_body, redact_url, url_host,
+)
 ```
 
 - `redact_url(url)` — masks credential-looking query params (`password`,
@@ -839,9 +841,20 @@ from ecsctx.contrib.net import loggable_body, redact_body, redact_url
   `client_secret`, …) in JSON and form-encoded bodies. A bare `token` key is
   deliberately left alone: gateways reuse it for non-secret payment/session
   identifiers that log readers rely on.
-- `loggable_body(response)` — the response body to log: capped text for
-  textual responses, else `None`. Redacts **before** capping, so a cap landing
-  mid-value cannot leave a token head exposed.
+- `redact_url(url, secrets=[token])` also masks literal values anywhere in
+  the URL — a saved-card token in a path such as `/card/<token>/`.
+- `url_host(url)` — the host to name in a log *message*; the full URL belongs
+  in `url.full`, because a message is a grouping key.
+- `loggable_body(response)` — the response body to log, or `None`. A
+  deny-list (`UNREADABLE_CONTENT_TYPES`: HTML, CSV, PDF, images, archives)
+  rather than an allow-list, because gateways mislabel JSON as `text/plain`
+  or omit `Content-Type`; an HTML/PDF body is still kept when the status is
+  4xx/5xx, since an edge proxy's block page is the whole explanation. A JSON
+  body is masked by its keys before it is serialised (so `"securityCode"` is
+  caught without the `pci` pack), then redacted **before** capping, so a cap
+  landing mid-value cannot leave a token head exposed.
+- `loggable_request_body(data, json_body)` — the same for the outbound half
+  (`json_body` wins over form `data`); never raises.
 
 Configure per deploy without code changes. Precedence: explicit call >
 Django settings > env vars > defaults (same lazy pattern as the masking

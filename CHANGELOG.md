@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `ecsctx.contrib.net` gains `url_host()`, `loggable_request_body()` and
+  `redact_url(url, secrets=...)` (literal values masked anywhere in the URL),
+  so services can drop their own copies.
+- `loggable_body()` uses a deny-list of unreadable content types instead of an
+  allow-list of textual ones: JSON labelled `text/plain` or sent without a
+  `Content-Type` is logged, and an HTML/PDF error body (4xx/5xx) is kept. A
+  JSON body is masked by its keys before it is serialised.
+
 ## v0.7.2 (2026-09-17)
 
 ### Fixes
