@@ -7,6 +7,7 @@ are opt-in packs a PCI service enables in its logging config. The default pack
 """
 
 import logging
+from decimal import Decimal
 
 import pytest
 
@@ -248,3 +249,21 @@ class TestExemptionPaths:
         configure_masking(exempt_paths=["payload.payment_methods[*].name"])
         masked = MaskPIIFilter()._mask_dict({"payload": {"payment_methods": [{"name": "KNET"}]}})
         assert masked == {"payload": {"payment_methods": [{"name": "KNET"}]}}
+
+
+class TestArgs:
+    def test_numeric_format_args_survive(self):
+        record = logging.LogRecord(
+            "t", logging.INFO, __file__, 0, "refunded %.3f of %d", (Decimal("12.5"), Decimal("3")), None
+        )
+        MaskPIIFilter().filter(record)
+        assert record.getMessage() == "refunded 12.500 of 3"
+
+    def test_an_object_whose_text_holds_pii_is_still_masked(self):
+        class Holder:
+            def __str__(self):
+                return "owner a@b.co"
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "%s", (Holder(),), None)
+        MaskPIIFilter().filter(record)
+        assert record.getMessage() == "owner [EMAIL-MASKED]"

@@ -155,7 +155,14 @@ class MaskPIIFilter(logging.Filter):
             return self._mask_iterable(value, path)
         if isinstance(value, dict):
             return self._mask_dict(value, path)
-        return self._mask_string(str(value))
+        if isinstance(value, str):
+            return self._mask_string(value)
+        # Scan the object's text, but hand back the object itself when that
+        # text holds nothing to mask: a Decimal or UUID turned into a string
+        # breaks a "%d"/"%f" placeholder and logging drops the whole line.
+        text = str(value)
+        masked = self._mask_string(text)
+        return value if masked == text else masked
 
     def filter(self, record: logging.LogRecord) -> bool:
         if not is_masked_object(record):
