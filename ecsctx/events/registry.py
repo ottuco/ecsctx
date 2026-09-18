@@ -114,12 +114,17 @@ def resolve(name) -> EventSpec | None:
         return None
     resolved = _by_action.get(target)
     if resolved is not None and name not in _warned_aliases:
-        _warned_aliases.add(name)
-        warnings.warn(
-            f"{name!r} is a retired event name; use {target!r}",
-            DeprecationWarning,
-            stacklevel=3,
-        )
+        # Checked again under the lock: two threads resolving the same retired
+        # name at once must not both warn. Only this rare path pays for it.
+        with _lock:
+            first = name not in _warned_aliases
+            _warned_aliases.add(name)
+        if first:
+            warnings.warn(
+                f"{name!r} is a retired event name; use {target!r}",
+                DeprecationWarning,
+                stacklevel=3,
+            )
     return resolved
 
 
