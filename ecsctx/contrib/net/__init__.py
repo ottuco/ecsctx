@@ -29,8 +29,11 @@ from ecsctx.masking.filters import MaskPIIFilter
 
 _REDACTED = "[REDACTED]"
 
-# Masks a body by its keys before it is serialised (see _masked_json).
-_structure_masker = MaskPIIFilter()
+# Masks a body by its keys before it is serialised (see _masked_json). Nothing
+# is skipped: the filter's default skip_keys (service/project/log) are
+# ecsctx's own metadata in a log record, but in a gateway body a top-level
+# "log" or "service" key can hold anything, a card included.
+_structure_masker = MaskPIIFilter(skip_keys=())
 
 # Query-param key hints: a param whose name contains one of these is treated
 # as credential-bearing (case-insensitive).
