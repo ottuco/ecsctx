@@ -91,6 +91,19 @@ class TestTheCatalogue:
     def test_every_shared_event_follows_the_rules(self, spec):
         assert rules.check(spec) == []
 
+    @pytest.mark.parametrize(
+        "spec", [s for s in _catalogue() if "reason" in s.description.lower()], ids=str
+    )
+    def test_a_description_that_promises_a_reason_can_carry_one(self, spec):
+        # "the reason says why" is a promise to the reader; the spec must let a
+        # call site keep it.
+        assert spec.reasons or "event.reason" in spec.required
+
+    def test_an_event_waiting_for_its_reasons_says_so_on_the_page(self):
+        page = render_docs.render()
+        section = page.split("### `pg.signature_verification_skipped`", 1)[1].split("###", 1)[0]
+        assert "none declared yet" in section
+
     def test_the_header_gate_refusals_are_api_rejections(self):
         # Connect's header gate refuses a request before any view runs — the
         # same thing `api.request_rejected` names, so it is not a second action.

@@ -153,7 +153,7 @@ PG_SIGNATURE_VERIFICATION_SKIPPED = EventSpec(
     category=("network",),
     type=("denied",),
     failure_level="warning",
-    required=("event.outcome", "payment.pg_code"),
+    required=("event.outcome", "event.reason", "payment.pg_code"),
 )
 
 PG_CREDENTIALS_UNAVAILABLE = EventSpec(

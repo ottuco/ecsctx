@@ -93,6 +93,11 @@ def _event(module, spec: EventSpec) -> list[str]:
             f"(`from {reason_class.__module__} import {reason_class.__name__}`): "
             f"{_codes(spec.reasons)}"
         )
+    elif "event.reason" in spec.required:
+        lines.append(
+            "- **Reasons:** none declared yet, so it takes none. The first service "
+            "that needs one adds its `Reason` class here by PR."
+        )
     if spec.required:
         lines.append(f"- **Carries:** {_codes(spec.required)}")
     if spec.optional:

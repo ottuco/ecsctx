@@ -95,6 +95,7 @@ Syncing a user with the identity provider failed, so the two records may now dis
 
 - **Level:** error; on failure error. Terminal: `.ecs()` needs an outcome.
 - **ECS:** kind `event`, category `authentication`, type `error`
+- **Reasons:** none declared yet, so it takes none. The first service that needs one adds its `Reason` class here by PR.
 - **Carries:** `event.outcome`, `event.reason`, `error.type`
 
 ### `auth.privilege_granted`
@@ -146,6 +147,7 @@ The session check could not run, so the request was let through or refused accor
 
 - **Level:** warning; on failure warning. Terminal: `.ecs()` needs an outcome.
 - **ECS:** kind `event`, category `authentication`, type `denied`
+- **Reasons:** none declared yet, so it takes none. The first service that needs one adds its `Reason` class here by PR.
 - **Carries:** `event.outcome`, `event.reason`, `labels.fail_mode`
 
 ### `auth.session_terminated`
@@ -156,6 +158,7 @@ A user session was ended by the system rather than by logout; the reason says wh
 
 - **Level:** warning; on failure warning. Terminal: `.ecs()` needs an outcome.
 - **ECS:** kind `event`, category `authentication`, type `info`
+- **Reasons:** none declared yet, so it takes none. The first service that needs one adds its `Reason` class here by PR.
 - **Carries:** `event.outcome`, `event.reason`, `user.id`
 
 ### `auth.token_issued`
@@ -245,6 +248,7 @@ A saved card token could not be found or read; the reason says why.
 
 - **Level:** warning; on failure warning. Terminal: `.ecs()` needs an outcome.
 - **ECS:** kind `event`, type `error`
+- **Reasons:** none declared yet, so it takes none. The first service that needs one adds its `Reason` class here by PR.
 - **Carries:** `event.outcome`, `event.reason`
 
 ### `card.token_updated`
@@ -275,6 +279,7 @@ Card tokenization was not attempted for a session; the reason says why. The outc
 
 - **Level:** info; on failure error. Terminal: `.ecs()` needs an outcome.
 - **ECS:** kind `event`, type `denied`
+- **Reasons:** none declared yet, so it takes none. The first service that needs one adds its `Reason` class here by PR.
 - **Carries:** `event.outcome`, `event.reason`, `session_id`
 
 ## `crypto`
@@ -398,6 +403,7 @@ A repeated payment action was stopped by a guard (labels.guard), so it ran once.
 
 - **Level:** warning; on failure warning. Terminal: `.ecs()` needs an outcome.
 - **ECS:** kind `event`, type `denied`
+- **Reasons:** none declared yet, so it takes none. The first service that needs one adds its `Reason` class here by PR.
 - **Carries:** `event.outcome`, `event.reason`, `labels.guard`
 
 ### `payment.eligibility_rejected`
@@ -470,6 +476,7 @@ A transition was asked for but not applied, because the current state (labels.st
 
 - **Level:** warning; on failure warning. Terminal: `.ecs()` needs an outcome.
 - **ECS:** kind `event`, type `denied`
+- **Reasons:** none declared yet, so it takes none. The first service that needs one adds its `Reason` class here by PR.
 - **Carries:** `event.outcome`, `event.reason`, `labels.transition`, `labels.state_current`
 
 ### `payment.state_changed`
@@ -547,6 +554,7 @@ A MID's gateway credentials could not be loaded, so the PSP could not be called.
 
 - **Level:** error; on failure error. Terminal: `.ecs()` needs an outcome.
 - **ECS:** kind `event`, category `network`, type `error`
+- **Reasons:** none declared yet, so it takes none. The first service that needs one adds its `Reason` class here by PR.
 - **Carries:** `event.outcome`, `event.reason`, `payment.pg_code`, `error.type`
 
 ### `pg.request_failed`
@@ -588,7 +596,8 @@ A PSP callback's signature was not verified and its payload was trusted as is; t
 
 - **Level:** warning; on failure warning. Terminal: `.ecs()` needs an outcome.
 - **ECS:** kind `event`, category `network`, type `denied`
-- **Carries:** `event.outcome`, `payment.pg_code`
+- **Reasons:** none declared yet, so it takes none. The first service that needs one adds its `Reason` class here by PR.
+- **Carries:** `event.outcome`, `event.reason`, `payment.pg_code`
 
 ## `task`
 

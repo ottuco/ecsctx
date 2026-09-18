@@ -27,6 +27,9 @@
 ### Changed (breaking)
 
 - `register_ottu(local=...)` refuses local events that break the naming rules.
+- `pg.signature_verification_skipped` requires `event.reason`, as the #159487
+  catalogue does; its description already promised one. It has no reason set
+  yet, so it takes none until a service declares one.
 - `registry.RESERVED_PREFIXES` covers every ECS field set (`file`, `host`,
   `network`, `process`, `source`, `destination`, `client`, `server`, …), not
   only eleven of them. A domain named after a field set reads, in every query,
