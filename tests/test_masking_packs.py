@@ -8,6 +8,7 @@ are opt-in packs a PCI service enables in its logging config. The default pack
 
 import logging
 import os
+import random
 from decimal import Decimal
 
 import pytest
@@ -24,7 +25,7 @@ from ecsctx.masking.config import (
 from ecsctx.masking.exemptions import configure_masking
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.install import install_maskers_in_config
-from ecsctx.masking.patterns import ALL_PACKS, classify_key
+from ecsctx.masking.patterns import ALL_PACKS, RULES, classify_key
 from ecsctx.processors import mask_pan, mask_sensitive_data
 
 
@@ -324,3 +325,41 @@ class TestAdminEmailHandler:
         errors = find_unmasked_live_handlers(self._configure_like_django())
         assert len(errors) == 1
         assert "django -> django.utils.log.AdminEmailHandler" in errors[0]
+
+
+class TestCredentialScanMatchesFullScan:
+    """The credential rules try only positions near a credential word; that
+    must never change their output. Checked against pattern.sub on the
+    ported samples and on generated text."""
+
+    FRAGMENTS = [
+        '"', "'", ":", "=", " ", "  ", "-", "_", ",", "{", "}", "\n",
+        "token", "Token", "access_token", "x-api-key", "api_key", "apiKey", "Bearer",
+        "basic", "Digest", "credentials", "Authorization", "authorisation_header",
+        "secret", "client_secret", "password", "PASSWD", "key", "monkey", "keyboard",
+        "tokenization", "abc123", "abcdefghij", "a1b2c3d4e5f6", "eyJhbGciOi.x.y",
+        "12345678", "value", "İ", "straße", "==", "/+~.",
+    ]
+
+    def _credential_rules(self):
+        return [rule for rule in RULES if rule.scan is not None]
+
+    def test_matches_on_generated_text(self):
+        rng = random.Random(159795)
+        rules = self._credential_rules()
+        for _ in range(3000):
+            text = "".join(rng.choice(self.FRAGMENTS) for _ in range(rng.randint(1, 14)))
+            for rule in rules:
+                assert rule.scan(rule.pattern, rule.repl, text) == rule.pattern.sub(rule.repl, text), (
+                    rule.name,
+                    text,
+                )
+
+    def test_matches_on_the_ported_samples(self):
+        from tests.test_masking_filter import CREDENTIAL_MASKED_CASES, NOT_MASKED
+
+        samples = [sample for _label, sample, _expected in CREDENTIAL_MASKED_CASES if isinstance(sample, str)]
+        samples += [sample for _label, sample in NOT_MASKED if isinstance(sample, str)]
+        for sample in samples:
+            for rule in self._credential_rules():
+                assert rule.scan(rule.pattern, rule.repl, sample) == rule.pattern.sub(rule.repl, sample)

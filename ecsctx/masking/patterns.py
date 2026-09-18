@@ -99,6 +99,10 @@ _IBAN_PREFIX = (
 # digits (ISO/IEC 7812 caps at 19; Maestro issues from 12). Only dash and
 # space count as real-world separators.
 #
+# The phone, card and SSN rules put a one-character lookahead for their first
+# character in front of the lead guard: it rejects most positions before the
+# costlier lookbehind runs, without changing what matches.
+#
 # _CARD_LEAD_GUARD: a match may only start right after a real prefix (quote,
 # "([{", ":", "=", space, comma, dot, or start-of-string), not mid-digit-run
 # or glued to a letter. The extra (?<!\d ) blocks a space that's itself
@@ -263,6 +267,9 @@ class Rule(NamedTuple):
     # Each one only checks for something its rule cannot match without, so a
     # gate can skip work but never change a result.
     gate: Callable[[str, str], bool]
+    # Replaces pattern.sub for rules whose matches can only start at a few
+    # positions it can find cheaply; same output as pattern.sub.
+    scan: Callable[[re.Pattern, Callable, str], str] | None = None
 
 
 # Spelled the way the credential rules spell them: "authori" would also match
@@ -324,8 +331,64 @@ def _has_three_digits(text: str, _lowered: str) -> bool:
     return _THREE_DIGITS.search(text) is not None
 
 
-def _rule(pack, regex, repl, gate):
-    return (pack, regex, repl, gate)
+# Every credential match contains one of these words, and starts inside the
+# run of [\w-] characters holding it, or on the quote right before that run
+# (rule 2's quoted key). So the credential rules only need trying at those
+# positions, not at every position of a long body — re.sub tries every one,
+# and at ~16 µs per rule per gateway body that was most of the masking cost.
+# The words are found with str.find on the lowercased text: a case-insensitive
+# regex alternation gets no literal-prefix speedup and costs as much as the
+# rule it would be saving.
+_CRED_WORDS = (
+    "bearer", "basic", "digest", "credential", "authorization", "authorisation",
+    "token", "secret", "password", "passwd", "key",
+)
+_KEY_CHAR = re.compile(r"[\w-]")
+
+
+def _credential_word_starts(lowered: str) -> list[int]:
+    starts = set()
+    for word in _CRED_WORDS:
+        index = lowered.find(word)
+        while index != -1:
+            starts.add(index)
+            index = lowered.find(word, index + 1)
+    return sorted(starts)
+
+
+def _sub_near_credential_words(pattern: re.Pattern, repl, text: str) -> str:
+    """pattern.sub(repl, text), trying only positions a credential match can start at."""
+    lowered = text.lower()
+    if len(lowered) != len(text):
+        # Lowercasing changed the length (a few non-ASCII characters do), so
+        # its positions are not the text's: fall back to the full scan.
+        return pattern.sub(repl, text)
+    parts = []
+    copied = 0  # text[:copied] is already in parts
+    tried = 0  # every position below this has been tried or lies inside a match
+    for word_start in _credential_word_starts(lowered):
+        if word_start < tried:
+            continue
+        run_start = word_start
+        while run_start > 0 and _KEY_CHAR.match(text, run_start - 1):
+            run_start -= 1
+        for position in range(max(tried, run_start - 1), word_start + 1):
+            match = pattern.match(text, position)
+            if match:
+                parts.append(text[copied:match.start()])
+                parts.append(repl(match))
+                copied = tried = match.end()
+                break
+        else:
+            tried = word_start + 1
+    if not parts:
+        return text
+    parts.append(text[copied:])
+    return "".join(parts)
+
+
+def _rule(pack, regex, repl, gate, scan=None):
+    return (pack, regex, repl, gate, scan)
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +425,7 @@ _RULE_TABLE = (
         rf"([\"'])({_CRED_KEYWORD})\1(\s*:\s*)\1([^\"']*)\1",
         _cred_quoted,
         _has_credential,
+        _sub_near_credential_words,
     ),
     # 3. Credential — ":" / "=" (secret_key=abc123).
     _rule(
@@ -369,6 +433,7 @@ _RULE_TABLE = (
         rf"\b({_CRED_KEYWORD}[\"'\s]*[:=][\"'\s]*)({_CRED_VALUE}+={{0,2}})",
         _cred_kv,
         _has_credential,
+        _sub_near_credential_words,
     ),
     # 4. CVV — quoted key ("cvv": "123").
     _rule(
@@ -405,6 +470,7 @@ _RULE_TABLE = (
         rf"\b({_CRED_KEYWORD})\s+(?=(?:{_CRED_VALUE})*\d)({_CRED_VALUE}{{8,}}={{0,2}})",
         _cred_space,
         _has_credential,
+        _sub_near_credential_words,
     ),
     # 9. CVV — bare space (CVV 123).
     _rule(
@@ -435,7 +501,8 @@ _RULE_TABLE = (
     _rule(
         "default",
         
-        _CARD_LEAD_GUARD
+        r"(?=[+(\d])"
+        + _CARD_LEAD_GUARD
         + r"(?:\+[1-9]\d{0,2}(?:[-.\s]?\d){6,13}|\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})"
         + _CARD_TAIL_GUARD,
         _phone,
@@ -463,14 +530,14 @@ _RULE_TABLE = (
     # pass cannot re-match it.
     _rule(
         "pci",
-        _CARD_LEAD_GUARD + r"\d" + _CARD_BODY + _CARD_TAIL_GUARD,
+        r"(?=\d)" + _CARD_LEAD_GUARD + r"\d" + _CARD_BODY + _CARD_TAIL_GUARD,
         _mask_truncated_card,
         _has_card_shape,
     ),
     # 16. SSN (123-45-6789).
     _rule(
         "financial_ids",
-        _CARD_LEAD_GUARD + r"\d{3}[-\s]?\d{2}[-\s]?\d{4}\b",
+        r"(?=\d)" + _CARD_LEAD_GUARD + r"\d{3}[-\s]?\d{2}[-\s]?\d{4}\b",
         _ssn,
         _has_ssn_shape,
     ),
@@ -485,8 +552,8 @@ _RULE_TABLE = (
 
 
 RULES: tuple[Rule, ...] = tuple(
-    Rule(f"{index}:{repl.__name__}", pack, re.compile(regex, re.IGNORECASE), repl, gate)
-    for index, (pack, regex, repl, gate) in enumerate(_RULE_TABLE, start=1)
+    Rule(f"{index}:{repl.__name__}", pack, re.compile(regex, re.IGNORECASE), repl, gate, scan)
+    for index, (pack, regex, repl, gate, scan) in enumerate(_RULE_TABLE, start=1)
 )
 
 
@@ -502,13 +569,23 @@ def rules_for(packs: frozenset[str]) -> tuple[Rule, ...]:
 
 def mask_by_patterns(text: str, rules: tuple[Rule, ...]) -> str:
     lowered = text.lower()
+    # Several rules share a gate (the three credential forms, the three CVV
+    # forms): evaluate each gate once per version of the text.
+    gates: dict = {}
     for rule in rules:
-        if not rule.gate(text, lowered):
+        passed = gates.get(rule.gate)
+        if passed is None:
+            passed = gates[rule.gate] = rule.gate(text, lowered)
+        if not passed:
             continue
-        masked = rule.pattern.sub(rule.repl, text)
+        if rule.scan is not None:
+            masked = rule.scan(rule.pattern, rule.repl, text)
+        else:
+            masked = rule.pattern.sub(rule.repl, text)
         if masked != text:
             text = masked
             lowered = text.lower()
+            gates.clear()
     return text
 
 
