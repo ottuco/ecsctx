@@ -321,8 +321,9 @@ def setup_logging(
     # settings module is still importing. Reading django.conf.settings at that
     # point forces an early settings._setup(), which caches a *partial* settings
     # object (everything defined after the setup_logging() call is lost) and
-    # breaks the whole app. The exemptions are bridged lazily at log time instead
-    # (contextvars_injector -> _auto_configure_masking), when settings are ready.
+    # breaks the whole app. The exemptions read it themselves, lazily, the first
+    # time anything masks once settings are configured
+    # (ecsctx.masking.exemptions._get_exempt_patterns).
     configure_structlog(integrations=integrations)
     if capture_warnings:
         logging.captureWarnings(True)

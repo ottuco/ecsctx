@@ -79,6 +79,30 @@
   `Timer` and `timed()` stay: pass `duration_ns=t.ns` to `.ecs()`.
   A service still calling `emit` must convert before upgrading.
 
+### Fixes
+
+Found adopting 0.7.x in ottu_backend; each was present since 0.7.0.
+
+- **Exceptions survive masking.** `exc_info` and `stack_info` are never masked.
+  An exception passed as `exc_info=exc` (as the middleware's
+  `unhandled_exception` line does) was turned into strings, so with
+  `SentryIntegration` the line lost `error.stack_trace` and Sentry received no
+  exception. The rendered `error.*` fields are masked as before.
+- **`ECSCTX_MASK_EXEMPT_PATHS` always applies.** The exemptions now read the
+  Django setting themselves (explicit call → setting → `PII_MASK_EXEMPT_PATHS`).
+  Before, if anything masked before the first structlog line — the handler
+  filter on a stdlib record — the env var was loaded and the setting ignored.
+  The Django processor's bridge for the setting (`_auto_configure_masking`) is
+  gone: one resolution path, not two that happened to agree.
+- **PII containers keep their shape.** A dict or list under a PII key
+  (`customer`, `billing`, `contact`, …) was masked into one string. Each field
+  is now masked on its own: by its own key's type (an `email` field gets an
+  email token, so the same address correlates across records), kept if a safe
+  key (`id`, `customer_id`), else tokenized as the container's type. Card,
+  CVV, expiry and secret containers are still masked as one unit. A service
+  that logged such containers on 0.7.x sees the field change from a string
+  back to an object in its index once.
+
 ## v0.7.3 (2026-09-18)
 
 ### Features

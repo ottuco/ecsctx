@@ -570,12 +570,11 @@ def test_masks_email(label, sample, expected):
     assert _mask(sample) == expected
 
 
-def test_email_under_a_sensitive_parent_key_is_blanket_masked():
-    """Diverges from the ported source on purpose: "contact" is itself a
-    sensitive key in ecsctx (generic PII category), so the whole subtree is
-    replaced rather than recursed into and masked leaf-by-leaf. The email
-    never survives either way."""
-    assert _mask({"contact": {"email": "user@example.com"}}) == {"contact": "[GENERIC-MASKED]"}
+def test_email_under_a_sensitive_parent_key_is_masked_as_an_email():
+    """"contact" is a PII container (generic category): it keeps its shape and
+    each field is masked on its own, so the email gets an email token that
+    correlates with the same email anywhere else."""
+    assert _mask({"contact": {"email": "user@example.com"}}) == {"contact": {"email": "[EMAIL-MASKED]"}}
 
 
 # ---------------------------------------------------------------------------

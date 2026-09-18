@@ -165,7 +165,7 @@ def _ensure_configured() -> None:
 
     Retries until Django settings are importable, so a first call during
     settings.py import doesn't pin env values permanently (same lazy pattern
-    as the masking settings bridge). An explicit configure_redaction() call
+    as the masking exemptions). An explicit configure_redaction() call
     wins wholesale — even a partial one — matching masking_is_configured().
     """
     global _redact_auto_configure_attempted, _extra_secret_keys, _body_log_cap
