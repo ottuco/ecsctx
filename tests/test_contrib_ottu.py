@@ -14,8 +14,6 @@ from ecsctx.contrib.ottu import net as net_events
 from ecsctx.contrib.ottu import payment as payment_events
 from ecsctx.contrib.ottu import pg as pg_events
 from ecsctx.events import (
-    UnknownEventError,
-    emit,
     register_domain,
     registry,
     resolve,
@@ -33,19 +31,6 @@ def _clean_registry():
 def _register_all():
     for prefix, specs in ALL_DOMAINS.items():
         register_domain(prefix, specs)
-
-
-class _StubLogger:
-    """Captures the call the way structlog would receive it."""
-
-    def __init__(self):
-        self.calls = []
-
-    def __getattr__(self, level):
-        def _call(message, *args, **kwargs):
-            self.calls.append((level, message, kwargs))
-
-        return _call
 
 
 def test_no_duplicate_actions_across_domains() -> None:
@@ -98,23 +83,6 @@ def test_failure_levels_match_ticket() -> None:
     assert auth_events.AUTH_IDENTITY_SYNC_FAILED.level == "error"
     assert cache_events.CACHE_READ.level == "debug"
     assert net_events.NET_REQUEST_FAILED.level == "error"
-
-
-def test_emit_routes_level_from_outcome() -> None:
-    _register_all()
-    logger = _StubLogger()
-    emit(logger, pg_events.PG_REQUEST_FAILED, "PSP rejected the call", outcome="failure")
-    assert logger.calls[0][0] == "warning"
-    emit(logger, pg_events.PG_REQUEST_FAILED, "PSP call broke", outcome="failure", level="error")
-    assert logger.calls[1][0] == "error"
-    emit(logger, pg_events.PG_REQUEST_SENT, "Calling PSP")
-    assert logger.calls[2][0] == "info"
-
-
-def test_emit_unknown_name_raises() -> None:
-    _register_all()
-    with pytest.raises(UnknownEventError):
-        emit(_StubLogger(), "nope.nothing_happened", "Ghost")
 
 
 def _parse_list(value: str) -> list[str]:

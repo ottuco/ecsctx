@@ -39,9 +39,10 @@ class EventSpec:
     # Connect's LogEvent carried only `level`, described as "the level of the
     # SUCCESS path". The taxonomy it came from said things like "info on
     # success, error on failure" and the generator kept the first word, so the
-    # failure level was lost and `emit()` had no way to know that
+    # failure level was lost and a reader had no way to know that
     # pg.response_received is info when it works and error when it does not.
-    # None means: error if terminal, otherwise same as level.
+    # Declared intent for the call site, which picks the level: None means
+    # error if terminal, otherwise same as level.
     failure_level: str | None = None
 
     def __str__(self) -> str:

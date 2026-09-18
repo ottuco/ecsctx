@@ -5,26 +5,19 @@ registry is that it cannot drift: production carried 34 hand-rolled names in
 Connect and ~163 in Ottu PG precisely because nothing rejected any of them.
 """
 
+import importlib
 import warnings
 
 import pytest
 
+import ecsctx.events
 from ecsctx.events import (
     EventSpec,
     RegistryFrozenError,
-    UnknownEventError,
-    emit,
     register_aliases,
     register_domain,
     registry,
     resolve,
-    route,
-)
-from ecsctx.events import fields as field_table
-from ecsctx.processors import (
-    ROOT_ALLOWLIST,
-    _reset_root_fields,
-    configure_root_fields,
 )
 
 REQUEST_SENT = EventSpec(
@@ -53,23 +46,6 @@ def _clean_registry():
     registry.reset()
     yield
     registry.reset()
-
-
-class Recorder:
-    """Captures the call the way structlog would receive it."""
-
-    def __init__(self):
-        self.calls = []
-
-    def __getattr__(self, level):
-        def record(message, *args, **kwargs):
-            self.calls.append((level, message, args, kwargs))
-
-        return record
-
-    @property
-    def last(self):
-        return self.calls[-1]
 
 
 class TestSpec:
@@ -221,135 +197,17 @@ class TestAliases:
         assert resolve("PG_CALL") is None
 
 
-class TestRouting:
-    def test_every_table_path_lands_under_an_allowlisted_root(self):
-        # A path outside ROOT_ALLOWLIST would be swept into `extra` by
-        # namespace_ecs_fields — correct at the call site, wrong in Elasticsearch.
-        for name, path in field_table.FIELD_PATHS.items():
-            assert path.partition(".")[0] in ROOT_ALLOWLIST, f"{name} -> {path}"
+class TestOneWayToLog:
+    @pytest.mark.parametrize(
+        "name", ["emit", "emit_pair", "Call", "UnknownEventError", "route", "FIELD_PATHS"]
+    )
+    def test_the_events_package_has_no_logging_wrapper(self, name):
+        # A service logs with its own logger and `ecs_event=SPEC.ecs(...)`. A
+        # second way to log hid the level from the call site, placed fields by
+        # kwarg name and took an event as a string.
+        assert not hasattr(ecsctx.events, name)
 
-    def test_correlation_ids_stay_flat_at_root(self):
-        assert route({"session_id": "abc", "merchant_id": "m1"}) == {
-            "session_id": "abc",
-            "merchant_id": "m1",
-        }
-
-    def test_two_http_kwargs_merge_into_one_object(self):
-        assert route({"method": "POST", "status_code": 201}) == {
-            "http": {"request": {"method": "POST"}, "response": {"status_code": 201}}
-        }
-
-    def test_an_unknown_scalar_becomes_an_aggregatable_label(self):
-        assert route({"attempt": 3}) == {"labels": {"attempt": 3}}
-
-    def test_an_unknown_structure_goes_to_extra(self):
-        assert route({"blob": {"a": 1}}) == {"extra": {"blob": {"a": 1}}}
-
-    def test_an_explicit_ecs_namespace_passes_through(self):
-        # 44 existing call sites pass `http=` this way; routing it into `extra`
-        # would be a regression dressed up as normalization.
-        assert route({"http": {"response": {"status_code": 500}}}) == {
-            "http": {"response": {"status_code": 500}}
-        }
-
-    def test_a_service_configured_root_namespace_also_passes_through(self):
-        # configure_root_fields() is how Wallet, AutoPay et al. claim their own
-        # root namespace, and reshape_log_event honours it dynamically. Reading
-        # a frozen copy of the allowlist here would send wallet={...} to
-        # extra.wallet while the rest of the chain treated wallet as root.
-        try:
-            configure_root_fields(extra_fields=["wallet"])
-            assert route({"wallet": {"balance": 100}}) == {"wallet": {"balance": 100}}
-        finally:
-            _reset_root_fields()
-
-    def test_an_unconfigured_namespace_still_goes_to_extra(self):
-        # The passthrough follows the allowlist rather than waving through any
-        # dict, so this must stay in extra once the configuration is gone.
-        _reset_root_fields()
-        assert route({"wallet": {"balance": 100}}) == {
-            "extra": {"wallet": {"balance": 100}}
-        }
-
-    def test_an_explicit_namespace_merges_with_the_table_rather_than_replacing(self):
-        assert route({"status_code": 200, "http": {"request": {"method": "GET"}}}) == {
-            "http": {"response": {"status_code": 200}, "request": {"method": "GET"}}
-        }
-
-    def test_an_explicit_leaf_wins_over_the_table(self):
-        routed = route({"status_code": 200, "http": {"response": {"status_code": 500}}})
-        assert routed["http"]["response"]["status_code"] == 500
-
-
-class TestEmit:
-    def test_it_logs_at_the_specs_level_with_the_ecs_payload(self):
-        log = Recorder()
-        emit(log, REQUEST_SENT, "Calling gateway", pg_code="mpgs")
-        level, message, _args, kwargs = log.last
-        assert level == "info"
-        assert message == "Calling gateway"
-        assert kwargs["ecs_event"]["action"] == "pg.request_sent"
-        assert kwargs["payment"] == {"pg_code": "mpgs"}
-
-    def test_a_failure_outcome_raises_the_level(self):
-        log = Recorder()
-        emit(log, RESPONSE_RECEIVED, "PG failed", outcome="failure")
-        assert log.last[0] == "error"
-
-    def test_a_success_outcome_keeps_the_specs_level(self):
-        log = Recorder()
-        emit(log, RESPONSE_RECEIVED, "PG replied", outcome="success")
-        assert log.last[0] == "info"
-
-    def test_an_explicit_level_overrides_the_outcome(self):
-        log = Recorder()
-        emit(log, RESPONSE_RECEIVED, "PG failed", outcome="failure", level="warning")
-        assert log.last[0] == "warning"
-
-    def test_lazy_format_args_reach_the_logger_uncollapsed(self):
-        # The house rule bans f-strings in log calls; an API that forced eager
-        # formatting would defeat it silently.
-        log = Recorder()
-        emit(log, REQUEST_SENT, "took %s ms", 42)
-        assert log.last[1:3] == ("took %s ms", (42,))
-
-    def test_a_string_name_resolves_through_the_registry(self):
-        register_domain("pg", [REQUEST_SENT])
-        log = Recorder()
-        emit(log, "pg.request_sent", "Calling gateway")
-        assert log.last[3]["ecs_event"]["action"] == "pg.request_sent"
-
-    def test_a_retired_string_name_resolves_through_the_alias_map(self):
-        register_domain("pg", [REQUEST_SENT])
-        register_aliases({"PG_CALL": "pg.request_sent"})
-        log = Recorder()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            emit(log, "PG_CALL", "Calling gateway")
-        assert log.last[3]["ecs_event"]["action"] == "pg.request_sent"
-
-    def test_an_unregistered_name_raises_rather_than_inventing_a_value(self):
-        log = Recorder()
-        with pytest.raises(UnknownEventError, match="not a registered event"):
-            emit(log, "pg.invented", "Whatever")
-        assert log.calls == []
-
-    def test_duration_and_reason_travel_in_the_ecs_payload(self):
-        log = Recorder()
-        emit(
-            log,
-            REFUSED,
-            "Refused",
-            outcome="failure",
-            reason="timeout",
-            duration_ns=1_000,
-        )
-        payload = log.last[3]["ecs_event"]
-        assert payload["reason"] == "timeout"
-        assert payload["duration"] == 1_000
-
-    def test_a_terminal_event_without_an_outcome_still_refuses(self):
-        log = Recorder()
-        with pytest.raises(ValueError, match="terminal"):
-            emit(log, RESPONSE_RECEIVED, "PG replied")
-        assert log.calls == []
+    @pytest.mark.parametrize("module", ["ecsctx.events.emit", "ecsctx.events.fields"])
+    def test_the_wrapper_modules_are_gone(self, module):
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(module)

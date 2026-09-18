@@ -11,8 +11,8 @@ the first service to emit this vocabulary end to end. ``required`` lists the
 fields each event carries (minus ``event.action``, which is the spec itself);
 it is declaration-only — the runtime contract validator does not enforce it
 yet (#159491). A terminal event declared at ``warning`` is logged at warning
-on failure (``failure_level``); an unexpected failure passes
-``level="error"`` at the call site.
+on failure (``failure_level``); an unexpected failure logs at ``error`` at the
+call site, which always picks the level.
 """
 
 from collections.abc import Iterable
