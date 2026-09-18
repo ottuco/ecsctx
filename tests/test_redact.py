@@ -259,3 +259,29 @@ class TestLoggableBodyDenyList:
     def test_a_document_on_success_is_not_logged(self):
         assert loggable_body(_Response("<html>receipt</html>", "text/html")) is None
         assert loggable_body(_Response("%PDF-1.7", "application/pdf")) is None
+
+
+class TestBodiesAreNotLogRecords:
+    """A gateway body is masked with nothing skipped: service/project/log are
+    ecsctx's own metadata keys in a log record, but in a body they are
+    whatever the gateway put there."""
+
+    def test_a_card_under_a_top_level_log_key_is_masked(self):
+        logged = loggable_request_body(None, {"log": {"cvv": "737", "card_number": "4111111111111111"}})
+        assert "737" not in logged
+        assert "4111111111111111" not in logged
+
+    def test_a_response_with_a_top_level_service_key_is_masked(self):
+        logged = loggable_body(_Response('{"service": {"securityCode": "737"}}', "application/json"))
+        assert "737" not in logged
+
+
+class TestDenyListTradeOff:
+    def test_an_unlisted_content_type_is_logged_as_capped_text(self):
+        # Deliberate, as in ottu_backend's contrib/net: gateways mislabel or omit
+        # Content-Type often enough that an allow-list drops the replies worth
+        # reading. A binary type the deny-list does not name is logged as
+        # (possibly garbled) text, capped.
+        logged = loggable_body(_Response("\x08\x96\x01" + "x" * 5000, "application/protobuf"))
+        assert logged.startswith("\x08\x96\x01")
+        assert len(logged) == 4096

@@ -50,7 +50,6 @@ ALL_DOMAINS: dict[str, tuple] = {
 }
 
 
-
 def register_ottu(
     *,
     local: dict[str, Iterable[EventSpec]] | None = None,
