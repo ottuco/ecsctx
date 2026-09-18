@@ -1889,8 +1889,9 @@ service's own events, from `AppConfig.ready()`:
 
 ```python
 from ecsctx.contrib.ottu import register_ottu
+from ecsctx.contrib.ottu.net import OutboundFailure
 from ecsctx.contrib.ottu.pg import PG_REQUEST_FAILED
-from ecsctx.events import EventSpec
+from ecsctx.events import EventSpec, Outcome
 
 # Your own events: one under a shared prefix, one under a prefix of your own.
 PG_PAYLOAD_BUILT = EventSpec(action="pg.payload_built", terminal=True, type=("info",))
@@ -1902,7 +1903,7 @@ register_ottu(
 )                                                      # freezes the registry
 
 logger.warning("PSP rejected the call", ecs_event=PG_REQUEST_FAILED.ecs(
-    outcome="failure", reason="http_client_error"))
+    outcome=Outcome.FAILURE, reason=OutboundFailure.HTTP_CLIENT_ERROR))
 ```
 
 A prefix can be registered only once, which is why your events under a shared
@@ -1947,7 +1948,7 @@ There is one way to log an event: your own logger, with the event's payload.
 ```python
 logger.info(
     "Gateway replied in %s ms", elapsed_ms,
-    ecs_event=PG_RESPONSE_RECEIVED.ecs(outcome="success", duration_ns=elapsed_ns),
+    ecs_event=PG_RESPONSE_RECEIVED.ecs(outcome=Outcome.SUCCESS, duration_ns=elapsed_ns),
     session_id=sid,
     payment={"pg_code": "mpgs"},
     http={"response": {"status_code": 200}},
@@ -1960,6 +1961,33 @@ each checked against the spec, so a terminal event without an outcome or an
 undeclared reason raises at the call site. Everything else is an ECS namespace
 passed by name (`payment=`, `http=`, `url=`, `error=`), placed where you wrote
 it.
+
+**Outcomes and reasons are objects.** `Outcome` is ECS's closed set
+(`SUCCESS`, `FAILURE`, `UNKNOWN`); an event's reasons are a `Reason` subclass
+declared next to it and passed as `reasons=`:
+
+```python
+from ecsctx.events import EventSpec, Reason
+
+class CallbackRejection(Reason):
+    INVALID_SIGNATURE = "invalid_signature"
+    MALFORMED_PAYLOAD = "malformed_payload"
+
+PG_CALLBACK_REJECTED = EventSpec(
+    action="pg.callback_rejected", terminal=True, reasons=CallbackRejection,
+)
+
+PG_CALLBACK_REJECTED.ecs(outcome=Outcome.FAILURE, reason=CallbackRejection.INVALID_SIGNATURE)
+```
+
+A member is a name your editor completes and a linter sees; a string is valid
+until the line runs, usually on the failure path. The document carries the
+plain value (`"failure"`, `"invalid_signature"`), so nothing changes in the
+index. A member of another event's set is rejected even when its value matches
+— `WebhookFailure.TIMEOUT` does not explain a `pg.request_failed`. Plain strings
+are still accepted for a declared value. A set with members cannot be
+subclassed, so a new reason for a shared event is added where the set is
+declared.
 
 **The level is the call site's.** The spec's `level` and `failure_level` declare
 the intended level (the catalogue's warning-level `*_rejected`/`*_failed` events
@@ -1979,7 +2007,7 @@ with timed() as t:
 
 logger.info(
     "Gateway replied in %.1f ms", t.ms,
-    ecs_event=PG_RESPONSE_RECEIVED.ecs(outcome="success", duration_ns=t.ns),
+    ecs_event=PG_RESPONSE_RECEIVED.ecs(outcome=Outcome.SUCCESS, duration_ns=t.ns),
 )
 ```
 

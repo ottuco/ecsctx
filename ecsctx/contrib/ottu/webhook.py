@@ -6,7 +6,7 @@ branch overrides the level at the call site. ``delivery_retried`` is
 ``warning``: a retry means the merchant's endpoint failed once already.
 """
 
-from ecsctx.events.spec import EventSpec
+from ecsctx.events.spec import EventSpec, Reason
 
 WEBHOOK_DELIVERY_ENQUEUED = EventSpec(
     action="webhook.delivery_enqueued",
@@ -22,19 +22,27 @@ WEBHOOK_REQUEST_SENT = EventSpec(
     required=("url.full", "payment.reference", "labels.attempt"),
 )
 
+
+class WebhookFailure(Reason):
+    """Why a delivery to the merchant's endpoint failed.
+
+    Shared by the final attempt and each retry.
+    """
+
+    TIMEOUT = "timeout"
+    HTTP_ERROR = "http_error"
+    CONNECTION_FAILED = "connection_failed"
+    INVALID_REQUEST = "invalid_request"
+    JOB_TIMEOUT = "job_timeout"
+    UNEXPECTED_ERROR = "unexpected_error"
+
+
 WEBHOOK_DELIVERY_COMPLETED = EventSpec(
     action="webhook.delivery_completed",
     terminal=True,
     category=("network",),
     type=("end",),
-    reasons=(
-        "timeout",
-        "http_error",
-        "connection_failed",
-        "invalid_request",
-        "job_timeout",
-        "unexpected_error",
-    ),
+    reasons=WebhookFailure,
     required=("event.outcome", "event.duration", "labels.attempt"),
 )
 
@@ -43,23 +51,23 @@ WEBHOOK_DELIVERY_RETRIED = EventSpec(
     level="warning",
     category=("network",),
     type=("info",),
-    reasons=(
-        "timeout",
-        "http_error",
-        "connection_failed",
-        "invalid_request",
-        "job_timeout",
-        "unexpected_error",
-    ),
+    reasons=WebhookFailure,
     required=("labels.attempt", "payment.reference"),
 )
+
+
+class WebhookSkip(Reason):
+    """Why no delivery was attempted."""
+
+    OPERATIONS_NOT_CONFIGURED = "operations_not_configured"
+
 
 WEBHOOK_DELIVERY_SKIPPED = EventSpec(
     action="webhook.delivery_skipped",
     terminal=True,
     category=("network",),
     type=("denied",),
-    reasons=("operations_not_configured",),
+    reasons=WebhookSkip,
     required=("event.outcome", "event.reason", "payment.reference"),
 )
 

@@ -34,7 +34,7 @@ from ecsctx.events.registry import (
     register_domain,
     resolve,
 )
-from ecsctx.events.spec import ECS_OUTCOMES, EventSpec
+from ecsctx.events.spec import ECS_OUTCOMES, EventSpec, Outcome, Reason
 from ecsctx.events.timing import Timer, timed
 from ecsctx.events.validator import (
     MODE_REPAIR,
@@ -53,6 +53,8 @@ __all__ = [
     "RESERVED_PREFIXES",
     "EventContractError",
     "EventSpec",
+    "Outcome",
+    "Reason",
     "RegistryFrozenError",
     "Timer",
     "all_events",

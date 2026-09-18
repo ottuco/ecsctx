@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- **`Outcome` and `Reason`** (`ecsctx.events`): outcomes and reasons are
+  objects a call site imports, not strings it types. `Outcome` is ECS's closed
+  set; an event's reasons are a `Reason` subclass passed as
+  `EventSpec(reasons=...)`. `.ecs()` still accepts declared plain strings,
+  rejects a member of another event's set even when its value matches, and
+  always writes the plain value, so documents are unchanged.
+- Every catalogue reason set is a `Reason` subclass next to its event:
+  `OutboundFailure` (net/pg `request_failed`; `OUTBOUND_FAILURE_REASONS` is
+  `tuple(OutboundFailure)`), `ApiRejection`, `AuthRejection`,
+  `CacheWriteFailure`, `EligibilityRejection`, `OperationFailure`,
+  `CheckoutFailure`, `CallbackRejection`, `CallbackSkip`, `TaskCancellation`,
+  `WebhookFailure`, `WebhookSkip`.
+
 ### Removed (breaking)
 
 - **`emit()` and everything built on it:** `emit`, `emit_pair`, `Call`,
