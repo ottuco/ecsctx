@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every PR, not only those into main, so a stacked PR is tested before its
+  # base merges.
   pull_request:
-    branches: [main]
 
 jobs:
   test:

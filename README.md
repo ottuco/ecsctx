@@ -1844,13 +1844,11 @@ ecsctx/
 │   ├── vault.py               # VaultKeysetProvider (AppRole auth)
 │   └── normalize.py           # Email/phone normalization for deterministic tokens
 ├── events/
-│   ├── __init__.py            # Public API: EventSpec, register_domain, emit
+│   ├── __init__.py            # Public API: EventSpec, register_domain, timed
 │   ├── spec.py                # EventSpec — what an event declares
 │   ├── registry.py            # Domain prefixes, aliases, freeze()
-│   ├── fields.py              # kwarg -> ECS path table
 │   ├── validator.py           # event_contract processor (strict / repair)
-│   ├── timing.py              # timed(), emit_pair() — event.duration in ns
-│   └── emit.py                # emit() — build, route, choose level, log
+│   └── timing.py              # Timer, timed() — event.duration in ns
 └── contrib/
     ├── django/
     │   ├── __init__.py        # Django exports
@@ -1900,7 +1898,7 @@ WALLET_DEBITED = EventSpec(action="wallet.debited", terminal=True, type=("change
 
 register_ottu(
     local={"pg": (PG_PAYLOAD_BUILT,), "wallet": (WALLET_DEBITED,)},
-    aliases={"token_blacklist": "auth.token_revoked"},  # retired names you still emit
+    aliases={"token_blacklist": "auth.token_revoked"},  # retired names still logged
 )                                                      # freezes the registry
 
 logger.warning("PSP rejected the call", ecs_event=PG_REQUEST_FAILED.ecs(
@@ -1942,46 +1940,31 @@ already read the registry.
 field-set name (`log`, `event`, `service`, `trace`, …), and any event whose action
 does not live under the prefix it registers with.
 
-### Emitting
+### Logging an event
+
+There is one way to log an event: your own logger, with the event's payload.
 
 ```python
-from ecsctx.events import emit
-
-emit(logger, PG_RESPONSE_RECEIVED, "Gateway replied in %s ms", elapsed_ms,
-     outcome="success", duration_ns=elapsed_ns,
-     pg_code="mpgs", session_id=sid, status_code=200)
+logger.info(
+    "Gateway replied in %s ms", elapsed_ms,
+    ecs_event=PG_RESPONSE_RECEIVED.ecs(outcome="success", duration_ns=elapsed_ns),
+    session_id=sid,
+    payment={"pg_code": "mpgs"},
+    http={"response": {"status_code": 200}},
+)
 ```
 
-`emit()` builds the `ecs_event=` payload, routes each field to its ECS path,
-picks the level, and calls the logger. Positional args pass through untouched, so
-lazy `%s` formatting still works.
+`.ecs()` builds the `ecs_event=` payload: `action`, `kind`, `category` and
+`type` from the spec, plus the `outcome`, `reason` and `duration_ns` you pass —
+each checked against the spec, so a terminal event without an outcome or an
+undeclared reason raises at the call site. Everything else is an ECS namespace
+passed by name (`payment=`, `http=`, `url=`, `error=`), placed where you wrote
+it.
 
-**Level** comes from the spec: `level` on the success path, `level_on_failure`
-when `outcome="failure"` (`failure_level` if the spec sets one — the catalogue's
-warning-level `*_rejected`/`*_failed` events do — else `error` for terminal
-events). Pass `level=` to override.
-
-### Field placement
-
-`emit()` routes kwargs so placement stops being a per-developer decision:
-
-| kwarg | lands at |
-|---|---|
-| `session_id`, `merchant_id` | root (flat) |
-| `pg_code`, `order_id`, `orn`, `reference`, `amount`, `currency` | `payment.*` |
-| `method`, `status_code`, `request_bytes`, `response_bytes` | `http.request.*` / `http.response.*` |
-| `path`, `query` | `url.*` |
-| `target`, `target_type` | `service.target.*` |
-| `user_id` | `user.id` |
-| `error_type`, `error_message` | `error.*` |
-| any other scalar | `labels.<name>` |
-| any other structure | `extra.<name>` |
-
-An ECS namespace passed whole (`http={"response": {...}}`) still passes through
-at root and deep-merges with anything the table placed. The check reads the
-**live** allowlist, so a namespace your service claimed with
-`configure_root_fields(["wallet"])` or `ECSCTX_ROOT_FIELDS` passes through too —
-`wallet={...}` reaches root rather than `extra.wallet`.
+**The level is the call site's.** The spec's `level` and `failure_level` declare
+the intended level (the catalogue's warning-level `*_rejected`/`*_failed` events
+set `failure_level="warning"`), and the contract validator reports a failure
+logged below warning; nothing picks the level for you.
 
 ### Timing: `event.duration` is nanoseconds
 
@@ -1994,39 +1977,20 @@ from ecsctx.events import timed
 with timed() as t:
     response = call_gateway()
 
-emit(logger, PG_RESPONSE_RECEIVED, "Gateway replied in %.1f ms", t.ms,
-     outcome="success", duration_ns=t.ns)
+logger.info(
+    "Gateway replied in %.1f ms", t.ms,
+    ecs_event=PG_RESPONSE_RECEIVED.ecs(outcome="success", duration_ns=t.ns),
+)
 ```
 
-`.ns` and `.ms` are separate, explicitly named properties, and the emit
-parameter is `duration_ns`, because **the unit is the thing most likely to go
+`.ns` and `.ms` are separate, explicitly named properties, and `.ecs()` takes
+`duration_ns`, because **the unit is the thing most likely to go
 wrong here**: a millisecond value is accepted, indexes cleanly, and misreports
 by six orders of magnitude while looking entirely plausible. There is no
 unit-less `duration` anywhere in this package to pass by accident.
 
 The timer stops whether the block completed or raised, so a failure path still
 reports how long it took to fail — usually the more interesting number.
-
-### Request/reply pairs
-
-`emit_pair` emits both halves and puts the duration on the reply:
-
-```python
-with emit_pair(logger, PG_REQUEST_SENT, PG_RESPONSE_RECEIVED,
-               "Gateway call", pg_code="mpgs") as call:
-    response = call_gateway()
-    call.set(status_code=response.status)
-```
-
-The outcome is inferred — `success` if the block completed, `failure` if it
-raised (which also attaches `exc_info`, so the traceback reaches `error.*`
-rather than the reply saying only that it failed quickly). Set `call.outcome`
-or `call.reason` inside the block to override.
-
-One message serves both lines: `event.action` is what distinguishes them
-(`pg.request_sent` from `pg.response_received`), and making the action
-authoritative rather than the prose is the point of the vocabulary. For two
-genuinely different messages, use `timed()` with two `emit()` calls.
 
 ### The one vocabulary this package does ship
 
@@ -2102,8 +2066,11 @@ from ecsctx.events import register_aliases
 register_aliases({"PG_CALL": "pg.request_sent"})
 ```
 
-`emit(logger, "PG_CALL", ...)` then resolves to the current spec and raises a
-`DeprecationWarning`, so old call sites migrate rather than break.
+A line still logging `ecs_event={"action": "PG_CALL"}` then resolves to the
+current spec in the contract validator instead of being reported as
+`unknown_action`, with a `DeprecationWarning` once per name. The document keeps
+the old name until the call site imports the constant, so aliases are a bridge
+for a migration, not a rename.
 
 ## License
 

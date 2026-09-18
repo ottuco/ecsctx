@@ -5,8 +5,8 @@ is ``network`` throughout — every event here crosses to/from a PSP over the
 wire.
 
 ``request_failed`` logs at ``warning`` on failure (the expected-4xx case); an
-unexpected failure overrides the level at the call site
-(``emit(..., level="error")``), because outcome alone cannot distinguish them.
+unexpected failure logs at ``error`` at the call site, because outcome alone
+cannot distinguish them.
 """
 
 from ecsctx.contrib.ottu.net import OUTBOUND_FAILURE_REASONS

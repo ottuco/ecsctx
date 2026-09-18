@@ -9,15 +9,12 @@ and threw it away (#159492).
 wrong here: a millisecond value is accepted, indexes cleanly, and misreports by
 six orders of magnitude while looking entirely plausible on a dashboard. That
 is why the timer exposes `.ns` and `.ms` as separate, explicitly named
-properties and why the emit parameter is `duration_ns` — there is no unit-less
+properties and why `EventSpec.ecs()` takes `duration_ns` — there is no unit-less
 `duration` anywhere in this package to pass by accident.
 """
 
 import time
 from contextlib import contextmanager
-from typing import Any
-
-from ecsctx.events.emit import emit
 
 
 class Timer:
@@ -53,8 +50,10 @@ def timed():
 
         with timed() as t:
             response = call_gateway()
-        emit(logger, PG_RESPONSE_RECEIVED, "Gateway replied in %.1f ms", t.ms,
-             outcome="success", duration_ns=t.ns)
+        logger.info(
+            "Gateway replied in %.1f ms", t.ms,
+            ecs_event=PG_RESPONSE_RECEIVED.ecs(outcome="success", duration_ns=t.ns),
+        )
 
     The timer stops on the way out whether the block succeeded or raised, so a
     failure path reports how long it took to fail — usually the more interesting
@@ -65,120 +64,3 @@ def timed():
         yield timer
     finally:
         timer._stop()
-
-
-# Exactly the names `emit_pair` passes to the closing `emit()` itself, and no
-# more. A field of the same name arrives twice and raises TypeError from inside
-# the except handler — which on the failure path demotes the real exception to
-# __context__ and propagates a kwargs error instead, at exactly the moment the
-# feature exists to help. `reason` is the easy one to hit, because Call exposes
-# `.reason` as an attribute, so `call.set(reason=...)` reads like it works.
-#
-# `level`, `stack_info` and `stacklevel` are deliberately NOT here: emit_pair
-# never passes them, so they bind once to emit()'s own parameters and work.
-# Blocking a name that does not collide would remove working behaviour and
-# leave the caller no replacement for it.
-RESERVED_FIELDS = frozenset(
-    {
-        "outcome",
-        "reason",
-        "duration_ns",
-        "exc_info",
-    }
-)
-
-
-def _reject_reserved(fields, where: str) -> None:
-    clashing = sorted(RESERVED_FIELDS & set(fields))
-    if not clashing:
-        return
-    raise TypeError(
-        f"{', '.join(clashing)} cannot be passed as {where}: emit_pair sets "
-        f"them on the closing event itself. Use call.outcome = ... and "
-        f"call.reason = ... inside the block instead."
-    )
-
-
-class Call:
-    """The in-flight half of an `emit_pair` block."""
-
-    __slots__ = ("fields", "outcome", "reason", "timer")
-
-    def __init__(self, timer: Timer, fields: dict[str, Any]) -> None:
-        self.timer = timer
-        self.outcome: str | None = None
-        self.reason: str | None = None
-        self.fields = fields
-
-    @property
-    def ns(self) -> int:
-        return self.timer.ns
-
-    @property
-    def ms(self) -> float:
-        return self.timer.ms
-
-    def set(self, **fields: Any) -> None:
-        """Add fields to the closing event — a status code, a byte count.
-
-        Not the outcome or the reason: those are attributes (`call.outcome`),
-        because emit_pair passes them to the closing event itself.
-        """
-        _reject_reserved(fields, "a call.set() field")
-        self.fields.update(fields)
-
-
-@contextmanager
-def emit_pair(logger, start, end, message: str, *args: Any, **fields: Any):
-    """Emit a request/reply pair, with the reply carrying the duration.
-
-        with emit_pair(logger, PG_REQUEST_SENT, PG_RESPONSE_RECEIVED,
-                       "Gateway call", pg_code="mpgs") as call:
-            response = call_gateway()
-            call.set(status_code=response.status)
-
-    One message serves both lines because `event.action` is what distinguishes
-    them — `pg.request_sent` from `pg.response_received` — and making the action
-    authoritative rather than the prose is the point of the whole vocabulary.
-    For two genuinely different messages, use `timed()` with two `emit()` calls.
-
-    The outcome is inferred: `failure` if the block raised, `success` if it did
-    not, unless the block set `call.outcome` itself. An exception also attaches
-    `exc_info`, so the traceback reaches `error.*` instead of being lost to a
-    duration that says only that it failed quickly.
-    """
-    _reject_reserved(fields, "an emit_pair field")
-    timer = Timer()
-    call = Call(timer, dict(fields))
-    emit(logger, start, message, *args, **fields)
-    failed = False
-    try:
-        yield call
-    except BaseException:
-        failed = True
-        timer._stop()
-        emit(
-            logger,
-            end,
-            message,
-            *args,
-            outcome=call.outcome or "failure",
-            reason=call.reason,
-            duration_ns=timer.ns,
-            exc_info=True,
-            **call.fields,
-        )
-        raise
-    finally:
-        if not failed:
-            timer._stop()
-            emit(
-                logger,
-                end,
-                message,
-                *args,
-                outcome=call.outcome or "success",
-                reason=call.reason,
-                duration_ns=timer.ns,
-                **call.fields,
-            )

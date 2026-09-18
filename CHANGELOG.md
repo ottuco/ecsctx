@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Removed (breaking)
+
+- **`emit()` and everything built on it:** `emit`, `emit_pair`, `Call`,
+  `UnknownEventError` (`ecsctx.events.emit`), and `route` / `FIELD_PATHS`
+  (`ecsctx.events.fields`). There is one way to log an event — the service's
+  own logger with the spec's payload:
+
+  ```python
+  # before
+  emit(logger, PG_REQUEST_FAILED, "PSP rejected the call",
+       outcome="failure", reason="http_client_error", status_code=400)
+  # after
+  logger.warning(
+      "PSP rejected the call",
+      ecs_event=PG_REQUEST_FAILED.ecs(outcome="failure", reason="http_client_error"),
+      http={"response": {"status_code": 400}},
+  )
+  ```
+
+  `emit()` chose the level out of sight of the call site, placed fields by
+  kwarg name (an unknown or misspelled one silently became a `labels.*`
+  value), and accepted an event as a string. `EventSpec.level` /
+  `failure_level` stay as the declared intent; the call site picks the level.
+  `Timer` and `timed()` stay: pass `duration_ns=t.ns` to `.ecs()`.
+  A service still calling `emit` must convert before upgrading.
+
+
 ## v0.7.3 (2026-09-18)
 
 ### Features
