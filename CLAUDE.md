@@ -16,6 +16,8 @@ ECS-compliant structured logging with W3C Trace Context support. Framework-agnos
 - `ecsctx/` - Core module (context, processors, formatters)
 - `ecsctx/masking/` - Unified PII/PCI masking engine (`MaskPIIFilter`, `install_maskers()`, content + key-name rules)
 - `ecsctx/contrib/django/` - Django middleware, lazy-loading processors, auditlog binder, masking boot-check
+- `ecsctx/events/` - `EventSpec`, `Outcome`, `Reason`, registry, contract validator; services log with `logger.<level>(msg, ecs_event=SPEC.ecs(...))` — there is no wrapper
+- `ecsctx/contrib/ottu/` - The shared Ottu event catalogue, its naming `rules`, and `render_docs` (→ `docs/events.md`). Changes are API changes for every service: see `.claude/rules/catalogue.md`
 
 ## Footguns ⚠️
 - ECS reserved fields (`client`, `user`, `host`, `span`, `trace`) must be nested objects, never flat strings

@@ -24,6 +24,10 @@ from ecsctx.events.spec import EventSpec, Reason
 
 API_REQUEST_RECEIVED = EventSpec(
     action="api.request_received",
+    description=(
+        "An inbound request reached the API, before the view runs. Closed by "
+        "api.response_sent, or api.request_rejected if it never reaches the view."
+    ),
     level="info",
     category=("web",),
     type=("access",),
@@ -33,6 +37,11 @@ API_REQUEST_RECEIVED = EventSpec(
 
 API_RESPONSE_SENT = EventSpec(
     action="api.response_sent",
+    description=(
+        "The view answered. Success below status 400, failure from 400; carries the "
+        "status code and duration. The call site logs warning from 400 and error from "
+        "500."
+    ),
     level="info",
     terminal=True,
     category=("web",),
@@ -45,15 +54,23 @@ class ApiRejection(Reason):
     """Why a request was refused at the boundary.
 
     Bounded, so "why were requests refused?" is one aggregation rather than a
-    scan of free text. Both are in-process refusals: the view never ran.
+    scan of free text. All are in-process refusals: the view never ran. A
+    header gate is one more place a request is refused before the view, so it
+    reports here rather than under an action of its own.
     """
 
     THROTTLED = "throttled"
     VALIDATION_FAILED = "validation_failed"
+    MISSING_HEADER = "missing_header"  # an integration that never sent it
+    INVALID_HEADER = "invalid_header"  # sent, and the validator refused the value
 
 
 API_REQUEST_REJECTED = EventSpec(
     action="api.request_rejected",
+    description=(
+        "A request was refused before the view ran: throttled, invalid input, or a "
+        "required header missing or invalid. Always a failure."
+    ),
     level="warning",
     terminal=True,
     category=("web",),

@@ -1,0 +1,6 @@
+# The shared Ottu event vocabulary: every service logs with it, so every
+# change to it is reviewed by the people who keep it one vocabulary.
+/ecsctx/contrib/ottu/ @jab3z @suliman-ottu
+/ecsctx/events/ @jab3z @suliman-ottu
+/docs/events.md @jab3z @suliman-ottu
+/docs/rules/ @jab3z @suliman-ottu

@@ -11,22 +11,69 @@ import warnings
 
 from ecsctx.events.spec import EventSpec
 
-# The ECS field-set names. A domain called `log` emitting `log.written` reads in
-# a query exactly like the `log.*` field set, and that ambiguity cannot be fixed
-# after the documents are written.
+# The ECS field-set names, plus the base fields a document already has at root.
+# A domain called `log` emitting `log.written` reads in a query exactly like the
+# `log.*` field set, and that ambiguity cannot be fixed after the documents are
+# written. https://www.elastic.co/docs/reference/ecs/ecs-field-reference
 RESERVED_PREFIXES = frozenset(
     {
+        "agent",
+        "as",
+        "client",
+        "cloud",
+        "code_signature",
+        "container",
+        "data_stream",
+        "destination",
+        "device",
+        "dll",
+        "dns",
         "ecs",
+        "elf",
+        "email",
         "error",
         "event",
+        "faas",
+        "file",
+        "gen_ai",
+        "geo",
+        "group",
+        "hash",
+        "host",
         "http",
+        "interface",
         "labels",
         "log",
+        "macho",
+        "message",
+        "network",
+        "observer",
+        "orchestrator",
+        "organization",
+        "os",
+        "package",
+        "pe",
+        "process",
+        "registry",
+        "related",
+        "risk",
+        "rule",
+        "server",
         "service",
+        "source",
         "span",
+        "tags",
+        "threat",
+        "tls",
         "trace",
+        "transaction",
         "url",
         "user",
+        "user_agent",
+        "vlan",
+        "volume",
+        "vulnerability",
+        "x509",
     }
 )
 

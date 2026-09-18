@@ -3,8 +3,10 @@
 One module per domain exporting UPPER_SNAKE ``EventSpec`` constants, so a
 typo is an ``AttributeError`` at import instead of a new value in the index.
 A service registers the catalogue together with its own events through
-``register_ottu()``, once, from an ``AppConfig.ready()`` — a plain ``Enum``
-cannot gain members locally, which is why this is constants, not enums.
+``register_ottu()``, once, from an ``AppConfig.ready()``. Its own events live
+in one module of that service, declared ahead of use, and are held to the same
+naming rules (``rules``) as these; ``docs/events.md`` lists the catalogue and
+``docs/rules/log-events.md`` is the rule every service follows.
 
 ``category``, ``type``, ``reasons`` and levels follow Connect's definitions,
 the first service to emit this vocabulary end to end. ``required`` lists the
@@ -29,6 +31,7 @@ from . import (
     net,
     payment,
     pg,
+    rules,
     task,
     threeds,
     webhook,
@@ -63,8 +66,13 @@ def register_ottu(
     merged into that domain here; prefixes the catalogue does not have
     (``wallet``, ``bus``) become domains of their own. Redefining a shared
     action raises. Call once, from an ``AppConfig.ready()``.
+
+    Every local event is checked against ``rules`` first, and all of them are
+    reported together: a badly named event fails the service at startup and in
+    its tests, before anything is registered.
     """
     extra = {prefix: tuple(specs) for prefix, specs in (local or {}).items()}
+    rules.check_all(spec for specs in extra.values() for spec in specs)
     for prefix, specs in ALL_DOMAINS.items():
         registry.register_domain(prefix, specs + extra.pop(prefix, ()))
     for prefix, specs in extra.items():
@@ -86,6 +94,7 @@ __all__ = [
     "payment",
     "pg",
     "register_ottu",
+    "rules",
     "task",
     "threeds",
     "webhook",

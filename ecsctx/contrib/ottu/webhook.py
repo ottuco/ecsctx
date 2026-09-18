@@ -10,6 +10,9 @@ from ecsctx.events.spec import EventSpec, Reason
 
 WEBHOOK_DELIVERY_ENQUEUED = EventSpec(
     action="webhook.delivery_enqueued",
+    description=(
+        "A notification to the merchant's webhook URL was queued (labels.webhook_type)."
+    ),
     category=("network",),
     type=("creation",),
     required=("payment.reference", "labels.webhook_type"),
@@ -17,6 +20,7 @@ WEBHOOK_DELIVERY_ENQUEUED = EventSpec(
 
 WEBHOOK_REQUEST_SENT = EventSpec(
     action="webhook.request_sent",
+    description="One delivery attempt (labels.attempt) was sent to the merchant's URL.",
     category=("network",),
     type=("connection",),
     required=("url.full", "payment.reference", "labels.attempt"),
@@ -39,6 +43,10 @@ class WebhookFailure(Reason):
 
 WEBHOOK_DELIVERY_COMPLETED = EventSpec(
     action="webhook.delivery_completed",
+    description=(
+        "A webhook delivery finished: success when the merchant answered 2xx, failure "
+        "after the last attempt."
+    ),
     terminal=True,
     category=("network",),
     type=("end",),
@@ -48,6 +56,7 @@ WEBHOOK_DELIVERY_COMPLETED = EventSpec(
 
 WEBHOOK_DELIVERY_RETRIED = EventSpec(
     action="webhook.delivery_retried",
+    description="A webhook attempt failed and another is scheduled.",
     level="warning",
     category=("network",),
     type=("info",),
@@ -64,6 +73,10 @@ class WebhookSkip(Reason):
 
 WEBHOOK_DELIVERY_SKIPPED = EventSpec(
     action="webhook.delivery_skipped",
+    description=(
+        "No webhook delivery was attempted, e.g. the merchant has not configured this "
+        "operation."
+    ),
     terminal=True,
     category=("network",),
     type=("denied",),

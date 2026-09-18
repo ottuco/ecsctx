@@ -10,6 +10,10 @@ from ecsctx.events.spec import EventSpec
 
 CARD_TOKENIZATION_COMPLETED = EventSpec(
     action="card.tokenization_completed",
+    description=(
+        "The gateway was asked to save a card as a token for a session; the outcome "
+        "says whether a token came back."
+    ),
     terminal=True,
     type=("end",),
     required=("event.outcome", "session_id", "payment.pg_code"),
@@ -17,6 +21,10 @@ CARD_TOKENIZATION_COMPLETED = EventSpec(
 
 CARD_TOKENIZATION_SKIPPED = EventSpec(
     action="card.tokenization_skipped",
+    description=(
+        "Card tokenization was not attempted for a session; the reason says why. The "
+        "outcome is unknown."
+    ),
     terminal=True,
     type=("denied",),
     required=("event.outcome", "event.reason", "session_id"),
@@ -24,6 +32,7 @@ CARD_TOKENIZATION_SKIPPED = EventSpec(
 
 CARD_TOKEN_UPDATED = EventSpec(
     action="card.token_updated",
+    description="A saved card token changed; labels.change says what.",
     terminal=True,
     type=("change",),
     required=("event.outcome", "labels.change", "labels.card_id"),
@@ -31,6 +40,10 @@ CARD_TOKEN_UPDATED = EventSpec(
 
 CARD_TOKEN_DELETED = EventSpec(
     action="card.token_deleted",
+    description=(
+        "A saved card token was deleted; labels.source says who asked. The call site "
+        "logs warning when the delete failed."
+    ),
     terminal=True,
     type=("deletion",),
     required=("event.outcome", "labels.source"),
@@ -38,6 +51,7 @@ CARD_TOKEN_DELETED = EventSpec(
 
 CARD_TOKEN_LOOKUP_FAILED = EventSpec(
     action="card.token_lookup_failed",
+    description="A saved card token could not be found or read; the reason says why.",
     level="warning",
     terminal=True,
     type=("error",),

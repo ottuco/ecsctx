@@ -31,6 +31,10 @@ OUTBOUND_FAILURE_REASONS: tuple[OutboundFailure, ...] = tuple(OutboundFailure)
 
 NET_REQUEST_SENT = EventSpec(
     action="net.request_sent",
+    description=(
+        "An outbound HTTP call to an upstream that is not a PSP (identity provider, PDF "
+        "service, another Ottu service) is about to be sent; labels.operation names it."
+    ),
     category=("network",),
     type=("connection",),
     required=("labels.operation", "http.request.method", "url.full"),
@@ -38,6 +42,10 @@ NET_REQUEST_SENT = EventSpec(
 
 NET_RESPONSE_RECEIVED = EventSpec(
     action="net.response_received",
+    description=(
+        "The upstream answered; carries the status code and duration. The call site "
+        "logs warning from status 400."
+    ),
     terminal=True,
     category=("network",),
     type=("connection",),
@@ -46,6 +54,10 @@ NET_RESPONSE_RECEIVED = EventSpec(
 
 NET_REQUEST_FAILED = EventSpec(
     action="net.request_failed",
+    description=(
+        "An outbound call produced no usable answer: a timeout, a connection error, an "
+        "error status or invalid JSON."
+    ),
     level="error",
     terminal=True,
     category=("network",),

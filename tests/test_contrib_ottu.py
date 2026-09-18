@@ -157,11 +157,16 @@ def test_register_ottu_merges_a_services_own_events() -> None:
     from ecsctx.contrib.ottu import register_ottu
     from ecsctx.events import EventSpec
 
-    local = EventSpec(action="pg.payer_redirected", type=("info",))
-    register_ottu(local={"pg": (local,), "wallet": (EventSpec(action="wallet.debited", type=("change",)),)})
+    local = EventSpec(
+        action="pg.payer_redirected", type=("info",), description="The payer left for the PSP."
+    )
+    debited = EventSpec(
+        action="wallet.balance_debited", type=("change",), description="A wallet was debited."
+    )
+    register_ottu(local={"pg": (local,), "wallet": (debited,)})
     assert resolve("pg.payer_redirected") is local
     assert resolve("pg.request_sent") is pg_events.PG_REQUEST_SENT
-    assert resolve("wallet.debited").action == "wallet.debited"
+    assert resolve("wallet.balance_debited") is debited
     assert registry.is_frozen()
 
 
