@@ -1806,8 +1806,39 @@ is always valid. Before this module, one service carried 34 hand-rolled names:
 88% with no namespace, two containing a literal space, one in SCREAMING_CASE.
 
 `ecsctx.events` ships the **mechanism** — how an event is declared, how a domain
-claims a prefix, where a field lands. It deliberately ships **no vocabulary**:
-your business events stay in your own codebase and register at startup.
+claims a prefix, where a field lands. The shared Ottu vocabulary is in
+`ecsctx.contrib.ottu` (below); anything else stays in your own codebase and
+registers at startup.
+
+### The shared Ottu catalogue (`ecsctx.contrib.ottu`)
+
+63 events in 11 domains (`pg`, `crypto`, `payment`, `card`, `threeds`, `net`,
+`task`, `cache`, `api`, `webhook`, `auth`), each an `EventSpec` constant with its
+ECS `category`/`type`, bounded `reasons` and levels, so every service names the
+same thing the same way. Import the constant; register once, together with your
+service's own events, from `AppConfig.ready()`:
+
+```python
+from ecsctx.contrib.ottu import register_ottu
+from ecsctx.contrib.ottu.pg import PG_REQUEST_FAILED
+
+register_ottu(
+    local={
+        "pg": (PG_PAYLOAD_BUILT,),            # your events under a shared prefix
+        "wallet": WALLET_EVENTS,              # a prefix of your own
+    },
+    aliases={"token_blacklist": "auth.token_revoked"},  # retired names you still emit
+)                                              # freezes the registry
+
+logger.warning("PSP rejected the call", ecs_event=PG_REQUEST_FAILED.ecs(
+    outcome="failure", reason="http_client_error"))
+```
+
+A prefix can be registered only once, which is why your events under a shared
+prefix go through `register_ottu(local=...)` rather than a second
+`register_domain`; redefining a shared action raises. The `api` domain is the
+one `@api_logging` emits, so it never conflicts with `register_http_events()`.
+A retired name warns once, not on every line.
 
 ### Declaring and registering
 
@@ -1853,8 +1884,9 @@ picks the level, and calls the logger. Positional args pass through untouched, s
 lazy `%s` formatting still works.
 
 **Level** comes from the spec: `level` on the success path, `level_on_failure`
-when `outcome="failure"` (defaulting to `error` for terminal events). Pass
-`level=` to override.
+when `outcome="failure"` (`failure_level` if the spec sets one — the catalogue's
+warning-level `*_rejected`/`*_failed` events do — else `error` for terminal
+events). Pass `level=` to override.
 
 ### Field placement
 

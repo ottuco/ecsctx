@@ -1,36 +1,65 @@
 """Shared ``webhook.*`` domain: merchant-facing outbound notification.
 
 Transcribed from ticket #159487 (Event catalogue, ``webhook`` table).
-``delivery_completed`` keeps base level ``info`` (the ticket's 2xx case);
-retryable/error branches override the level at the call site.
+``delivery_completed`` keeps base level ``info`` (the 2xx case); an error
+branch overrides the level at the call site. ``delivery_retried`` is
+``warning``: a retry means the merchant's endpoint failed once already.
 """
 
 from ecsctx.events.spec import EventSpec
 
 WEBHOOK_DELIVERY_ENQUEUED = EventSpec(
     action="webhook.delivery_enqueued",
+    category=("network",),
+    type=("creation",),
     required=("payment.reference", "labels.webhook_type"),
 )
 
 WEBHOOK_REQUEST_SENT = EventSpec(
     action="webhook.request_sent",
+    category=("network",),
+    type=("connection",),
     required=("url.full", "payment.reference", "labels.attempt"),
 )
 
 WEBHOOK_DELIVERY_COMPLETED = EventSpec(
     action="webhook.delivery_completed",
     terminal=True,
+    category=("network",),
+    type=("end",),
+    reasons=(
+        "timeout",
+        "http_error",
+        "connection_failed",
+        "invalid_request",
+        "job_timeout",
+        "unexpected_error",
+    ),
     required=("event.outcome", "event.duration", "labels.attempt"),
 )
 
 WEBHOOK_DELIVERY_RETRIED = EventSpec(
     action="webhook.delivery_retried",
+    level="warning",
+    category=("network",),
+    type=("info",),
+    reasons=(
+        "timeout",
+        "http_error",
+        "connection_failed",
+        "invalid_request",
+        "job_timeout",
+        "unexpected_error",
+    ),
     required=("labels.attempt", "payment.reference"),
 )
 
 WEBHOOK_DELIVERY_SKIPPED = EventSpec(
     action="webhook.delivery_skipped",
     terminal=True,
+    category=("network",),
+    type=("denied",),
+    reasons=("operations_not_configured",),
     required=("event.outcome", "event.reason", "payment.reference"),
 )
 

@@ -88,7 +88,7 @@ def test_terminal_specs_list_outcome_in_required() -> None:
 
 def test_failure_levels_match_ticket() -> None:
     assert pg_events.PG_REQUEST_FAILED.level == "warning"
-    assert pg_events.PG_REQUEST_FAILED.level_on_failure == "error"
+    assert pg_events.PG_REQUEST_FAILED.level_on_failure == "warning"
     assert pg_events.PG_CREDENTIALS_UNAVAILABLE.level == "error"
     assert crypto_events.CRYPTO_PAYLOAD_DECRYPTED.level_on_failure == "error"
     assert payment_events.PAYMENT_ELIGIBILITY_REJECTED.level == "warning"
@@ -103,10 +103,12 @@ def test_failure_levels_match_ticket() -> None:
 def test_emit_routes_level_from_outcome() -> None:
     _register_all()
     logger = _StubLogger()
-    emit(logger, pg_events.PG_REQUEST_FAILED, "PSP call broke", outcome="failure")
-    assert logger.calls[0][0] == "error"
+    emit(logger, pg_events.PG_REQUEST_FAILED, "PSP rejected the call", outcome="failure")
+    assert logger.calls[0][0] == "warning"
+    emit(logger, pg_events.PG_REQUEST_FAILED, "PSP call broke", outcome="failure", level="error")
+    assert logger.calls[1][0] == "error"
     emit(logger, pg_events.PG_REQUEST_SENT, "Calling PSP")
-    assert logger.calls[1][0] == "info"
+    assert logger.calls[2][0] == "info"
 
 
 def test_emit_unknown_name_raises() -> None:
@@ -149,3 +151,76 @@ def test_yaml_round_trip_preserves_action_set() -> None:
     assert _parse_list(parsed["pg.request_sent"]["required"]) == list(
         pg_events.PG_REQUEST_SENT.required
     )
+
+
+def test_every_shared_event_is_classified() -> None:
+    """event.type comes from ECS's closed list; Connect's definitions are the
+    reference the catalogue was aligned with."""
+    unclassified = [spec.action for specs in ALL_DOMAINS.values() for spec in specs if not spec.type]
+    assert unclassified == []
+
+
+def test_a_warning_level_terminal_event_fails_at_warning() -> None:
+    """A *_rejected/*_failed event declared at warning is logged at warning on
+    failure; an unexpected failure passes level="error" at the call site."""
+    wrong = [
+        spec.action
+        for specs in ALL_DOMAINS.values()
+        for spec in specs
+        if spec.terminal and spec.level == "warning" and spec.level_on_failure != "warning"
+    ]
+    assert wrong == []
+
+
+def test_outbound_failures_share_one_reason_set() -> None:
+    assert pg_events.PG_REQUEST_FAILED.reasons == net_events.NET_REQUEST_FAILED.reasons
+    assert "http_client_error" in net_events.OUTBOUND_FAILURE_REASONS
+
+
+def test_the_api_domain_is_the_one_api_logging_emits() -> None:
+    from ecsctx.events.http import HTTP_EVENTS, register_http_events
+
+    assert ALL_DOMAINS["api"] == HTTP_EVENTS
+    _register_all()
+    register_http_events()  # identical specs: not a second, conflicting claim
+
+
+def test_register_ottu_merges_a_services_own_events() -> None:
+    from ecsctx.contrib.ottu import register_ottu
+    from ecsctx.events import EventSpec
+
+    local = EventSpec(action="pg.payer_redirected", type=("info",))
+    register_ottu(local={"pg": (local,), "wallet": (EventSpec(action="wallet.debited", type=("change",)),)})
+    assert resolve("pg.payer_redirected") is local
+    assert resolve("pg.request_sent") is pg_events.PG_REQUEST_SENT
+    assert resolve("wallet.debited").action == "wallet.debited"
+    assert registry.is_frozen()
+
+
+def test_register_ottu_refuses_to_redefine_a_shared_event() -> None:
+    from ecsctx.contrib.ottu import register_ottu
+    from ecsctx.events import EventSpec
+
+    with pytest.raises(ValueError):
+        register_ottu(local={"pg": (EventSpec(action="pg.request_sent", level="debug"),)})
+
+
+def test_register_ottu_registers_aliases_before_freezing() -> None:
+    from ecsctx.contrib.ottu import register_ottu
+
+    register_ottu(aliases={"token_blacklist": "auth.token_revoked"})
+    with pytest.warns(DeprecationWarning):
+        assert resolve("token_blacklist") is auth_events.AUTH_TOKEN_REVOKED
+
+
+def test_a_retired_name_warns_once_not_on_every_line() -> None:
+    import warnings
+
+    from ecsctx.contrib.ottu import register_ottu
+
+    register_ottu(aliases={"session_revoke": "auth.session_terminated"})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(3):
+            resolve("session_revoke")
+    assert len([w for w in caught if issubclass(w.category, DeprecationWarning)]) == 1

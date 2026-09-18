@@ -2,14 +2,14 @@
 
 Transcribed from ticket #159487 (Event catalogue, ``pg`` table). ``category``
 is ``network`` throughout — every event here crosses to/from a PSP over the
-wire. ``type: connection`` is set only on the two events ecsctx itself uses
-as the precedent (``request_sent`` / ``response_received``).
+wire.
 
-``request_failed`` keeps base level ``warning`` (the ticket's expected-4xx
-case); an unexpected failure overrides the level at the call site
+``request_failed`` logs at ``warning`` on failure (the expected-4xx case); an
+unexpected failure overrides the level at the call site
 (``emit(..., level="error")``), because outcome alone cannot distinguish them.
 """
 
+from ecsctx.contrib.ottu.net import OUTBOUND_FAILURE_REASONS
 from ecsctx.events.spec import EventSpec
 
 PG_REQUEST_SENT = EventSpec(
@@ -37,6 +37,9 @@ PG_REQUEST_FAILED = EventSpec(
     level="warning",
     terminal=True,
     category=("network",),
+    type=("error",),
+    reasons=OUTBOUND_FAILURE_REASONS,
+    failure_level="warning",
     required=("event.outcome", "event.reason", "error.type", "labels.operation"),
 )
 
@@ -44,12 +47,15 @@ PG_CHECKOUT_CREATED = EventSpec(
     action="pg.checkout_created",
     terminal=True,
     category=("network",),
+    type=("creation",),
+    reasons=("pg_url_unavailable",),
     required=("event.outcome", "payment.reference", "payment.pg_code", "session_id"),
 )
 
 PG_CALLBACK_RECEIVED = EventSpec(
     action="pg.callback_received",
     category=("network",),
+    type=("connection",),
     required=("payment.reference", "payment.pg_code", "url.path"),
 )
 
@@ -57,6 +63,7 @@ PG_CALLBACK_ANSWERED = EventSpec(
     action="pg.callback_answered",
     terminal=True,
     category=("network",),
+    type=("end",),
     required=("event.outcome", "http.response.status_code", "payment.reference"),
 )
 
@@ -65,6 +72,15 @@ PG_CALLBACK_REJECTED = EventSpec(
     level="warning",
     terminal=True,
     category=("network",),
+    type=("denied",),
+    reasons=(
+        "invalid_signature",
+        "decryption_failed",
+        "missing_signature",
+        "attempt_not_found",
+        "malformed_payload",
+    ),
+    failure_level="warning",
     required=("event.outcome", "event.reason", "url.path"),
 )
 
@@ -72,6 +88,8 @@ PG_CALLBACK_SKIPPED = EventSpec(
     action="pg.callback_skipped",
     terminal=True,
     category=("network",),
+    type=("denied",),
+    reasons=("already_final", "duplicate", "not_applicable"),
     required=("event.outcome", "event.reason", "payment.reference"),
 )
 
@@ -80,6 +98,8 @@ PG_SIGNATURE_VERIFICATION_SKIPPED = EventSpec(
     level="warning",
     terminal=True,
     category=("network",),
+    type=("denied",),
+    failure_level="warning",
     required=("event.outcome", "payment.pg_code"),
 )
 
@@ -88,6 +108,7 @@ PG_CREDENTIALS_UNAVAILABLE = EventSpec(
     level="error",
     terminal=True,
     category=("network",),
+    type=("error",),
     required=("event.outcome", "event.reason", "payment.pg_code", "error.type"),
 )
 
