@@ -18,11 +18,13 @@ produces the same token.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import Any
 
+from ecsctx.masking.config import _normalise, get_masking_packs
 from ecsctx.masking.exemptions import _get_exempt_patterns, _path_is_exempt
 from ecsctx.masking.fields_rules import get_field_rule
-from ecsctx.masking.patterns import check_if_sensitive_keyword, mask_by_all_patterns
+from ecsctx.masking.patterns import check_if_sensitive_keyword, mask_by_patterns, rules_for
 from ecsctx.masking.tokens import mask_by_field_type
 
 _IS_MASKED_ = "_IS_MASKED_"
@@ -59,9 +61,20 @@ class MaskPIIFilter(logging.Filter):
     pass skip_keys=() for a fully generic filter with nothing skipped.
     """
 
-    def __init__(self, *, skip_keys: "list[str] | frozenset[str]" = STRUCTURAL_ECS_KEYS) -> None:
+    def __init__(
+        self,
+        *,
+        skip_keys: "list[str] | frozenset[str]" = STRUCTURAL_ECS_KEYS,
+        packs: Iterable[str] | None = None,
+    ) -> None:
         super().__init__()
         self._skip_keys = frozenset(skip_keys)
+        # None follows ecsctx.masking.config at mask time, so a filter built by
+        # dictConfig before settings are loaded still honours them.
+        self._packs = None if packs is None else _normalise(packs)
+
+    def _packs_in_force(self) -> frozenset[str]:
+        return self._packs if self._packs is not None else get_masking_packs()
 
     def _mask_string(self, text: str) -> str:
         # No already_masked() early-exit here: that helper is a whole-string
@@ -70,7 +83,7 @@ class MaskPIIFilter(logging.Filter):
         # for real PII elsewhere in the same string. A second regex pass
         # over already-masked markers is a noop (pinned by test), and
         # leaf-level idempotency still lives in mask_by_field_type.
-        return mask_by_all_patterns(text)
+        return mask_by_patterns(text, rules_for(self._packs_in_force()))
 
     def _mask_dict(self, data: dict, path: tuple = ()) -> dict:
         exempt = _get_exempt_patterns()

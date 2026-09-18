@@ -1,0 +1,92 @@
+"""Masking packs: which content rules run, and where the choice comes from.
+
+Card and CVV content scanning (and the financial-id rules) cost every service
+CPU and correlation fields, but only PCI services ever see such data, so they
+are opt-in packs a PCI service enables in its logging config. The default pack
+(credentials, PEM, JWT, email, phone) is always on.
+"""
+
+import logging
+
+import pytest
+
+from ecsctx.contrib.django import get_logging_config
+from ecsctx.masking.config import (
+    _reset_masking_config,
+    configure_masking_packs,
+    get_masking_packs,
+)
+from ecsctx.masking.filters import MaskPIIFilter
+from ecsctx.masking.patterns import ALL_PACKS
+
+
+@pytest.fixture(autouse=True)
+def _reset_packs():
+    yield
+    _reset_masking_config()
+
+
+def _mask(msg, packs=None):
+    record = logging.LogRecord("t", logging.INFO, __file__, 0, msg, None, None)
+    MaskPIIFilter(packs=packs).filter(record)
+    return record.msg
+
+
+class TestPacks:
+    def test_default_pack_leaves_card_shaped_text_alone(self):
+        text = "card 4111111111111111 cvv 123 HTTP 200 OK took 1500 ms"
+        assert _mask(text) == text
+
+    def test_pci_pack_truncates_the_pan_and_masks_the_cvv(self):
+        assert _mask("card 4111111111111111 cvv 123", packs=("pci",)) == (
+            "card [CARD-MASKED:411111******1111] cvv [CVV-MASKED]"
+        )
+
+    def test_pci_pack_masks_a_cvv_sent_with_a_saved_card_token(self):
+        assert _mask("token=tok_9f8e7d cvv 123", packs=("pci",)) == (
+            "token=[SECRET-MASKED] cvv [CVV-MASKED]"
+        )
+
+    def test_financial_ids_pack_masks_iban(self):
+        assert _mask("iban GB33BUKB20201555555555", packs=("financial_ids",)) == (
+            "iban [IBAN-MASKED]"
+        )
+        assert _mask("iban GB33BUKB20201555555555") == "iban GB33BUKB20201555555555"
+
+    def test_default_pack_still_masks_email_and_bearer(self):
+        assert _mask("a@b.co Bearer abc12345def") == "[EMAIL-MASKED] Bearer [SECRET-MASKED]"
+
+    def test_all_packs_is_every_pack(self):
+        assert ALL_PACKS == frozenset({"default", "pci", "financial_ids"})
+
+
+class TestPackSelection:
+    def test_packs_default_to_default_only(self, monkeypatch):
+        monkeypatch.delenv("ECSCTX_MASKING_PACKS", raising=False)
+        assert get_masking_packs() == frozenset({"default"})
+
+    def test_env_selects_packs(self, monkeypatch):
+        monkeypatch.setenv("ECSCTX_MASKING_PACKS", "pci, financial_ids")
+        assert get_masking_packs() == frozenset({"default", "pci", "financial_ids"})
+
+    def test_django_setting_wins_over_env(self, monkeypatch, settings):
+        monkeypatch.setenv("ECSCTX_MASKING_PACKS", "financial_ids")
+        settings.ECSCTX_MASKING_PACKS = ["pci"]
+        assert get_masking_packs() == frozenset({"default", "pci"})
+
+    def test_explicit_configuration_wins_over_settings(self, settings):
+        settings.ECSCTX_MASKING_PACKS = ["pci"]
+        configure_masking_packs(["financial_ids"])
+        assert get_masking_packs() == frozenset({"default", "financial_ids"})
+
+    def test_get_logging_config_selects_packs(self):
+        get_logging_config(masking_packs=("pci",))
+        assert get_masking_packs() == frozenset({"default", "pci"})
+
+    def test_unknown_pack_is_rejected(self):
+        with pytest.raises(ValueError, match="unknown masking pack"):
+            configure_masking_packs(["pcii"])
+
+    def test_filter_without_packs_follows_the_configuration(self):
+        configure_masking_packs(["pci"])
+        assert _mask("cvv 123") == "cvv [CVV-MASKED]"

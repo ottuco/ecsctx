@@ -12,6 +12,7 @@ See ecsctx.masking.patterns for the masking rules themselves and
 ecsctx.masking.exemptions for the configure_masking() path-exemption API.
 """
 
+from ecsctx.masking.config import configure_masking_packs, get_masking_packs
 from ecsctx.masking.exemptions import (
     configure_masking,
     configure_masking_from_env,
@@ -19,9 +20,14 @@ from ecsctx.masking.exemptions import (
 )
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.install import install_maskers, uninstall_maskers
+from ecsctx.masking.patterns import ALL_PACKS, PACK_NAMES
 from ecsctx.masking.tokens import mask_by_field_type, safe_tokenize
 
 __all__ = [
+    "ALL_PACKS",
+    "PACK_NAMES",
+    "configure_masking_packs",
+    "get_masking_packs",
     "MaskPIIFilter",
     "install_maskers",
     "uninstall_maskers",

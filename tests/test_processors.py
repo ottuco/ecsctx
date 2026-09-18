@@ -28,6 +28,8 @@ from ecsctx.processors import (
 # ecsctx.processors._safe_dump_and_mask used to wrap — mask_sensitive_data
 # (the structlog processor) now delegates to the same MaskPIIFilter instance.
 _mask = MaskPIIFilter()._mask_value
+# Card-number and CVV content rules are the opt-in `pci` pack.
+_mask_pci = MaskPIIFilter(packs=("pci",))._mask_value
 
 
 class TestTokenizeInProcessor:
@@ -681,7 +683,7 @@ class TestCardholderDataMasking:
             },
             "order": {"reference": "deltabRKJ5X_0", "amount": 20},
         }
-        masked = _mask(payload)
+        masked = _mask_pci(payload)
         card = masked["sourceOfFunds"]["provided"]["card"]
         assert "4111111111111111" not in str(masked)
         assert card["number"].startswith("[CARD-MASKED")
@@ -733,14 +735,14 @@ class TestPanDisplayMasking:
     def test_engine_output_contains_mask_pan_core(self, length, pan):
         """The engine rule and mask_pan share _truncate_pan: the labeled
         engine output always embeds the helper's bare core."""
-        assert mask_pan(pan) in _mask(f"pay {pan} ok")
+        assert mask_pan(pan) in _mask_pci(f"pay {pan} ok")
 
     @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
     def test_pans_masked_in_every_grouping(self, length, pan):
         grouped = " ".join(pan[i : i + 4] for i in range(0, len(pan), 4))
         dashed = "-".join(pan[i : i + 4] for i in range(0, len(pan), 4))
         for body in (grouped, dashed):
-            masked = _mask(f"pay {body} ok")
+            masked = _mask_pci(f"pay {body} ok")
             assert body not in masked
             assert pan not in masked
             assert masked == f"pay [CARD-MASKED:{_display(pan)}] ok"

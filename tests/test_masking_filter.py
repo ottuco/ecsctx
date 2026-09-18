@@ -28,7 +28,12 @@ from ecsctx.masking.filters import (
     MaskPIIFilter,
     is_masked_object,
 )
-from ecsctx.masking.patterns import SAFE_KEYS, check_if_sensitive_keyword, mask_by_all_patterns
+from ecsctx.masking.patterns import (
+    ALL_PACKS,
+    SAFE_KEYS,
+    check_if_sensitive_keyword,
+    mask_by_all_patterns,
+)
 from ecsctx.masking.tokens import (
     already_masked,
     make_label,
@@ -39,9 +44,10 @@ from ecsctx.pii import configure_pii
 
 
 def _mask(msg):
-    """Run a message through MaskPIIFilter and return the (mutated) record.msg."""
+    """Run a message through MaskPIIFilter with every pack on, and return the
+    (mutated) record.msg — the case tables below cover all 17 rules."""
     record = logging.LogRecord("test", logging.INFO, __file__, 0, msg, None, None)
-    MaskPIIFilter().filter(record)
+    MaskPIIFilter(packs=ALL_PACKS).filter(record)
     return record.msg
 
 
@@ -1063,7 +1069,7 @@ class TestMaskPIIFilterAsLoggingFilter:
     def test_second_regex_pass_over_masked_markers_is_a_noop(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         record = self._record("contact victim@example.com, card 4111111111111111")
-        MaskPIIFilter().filter(record)
+        MaskPIIFilter(packs=ALL_PACKS).filter(record)
         once = record.msg
         assert "victim@example.com" not in once
         assert mask_by_all_patterns(once) == once

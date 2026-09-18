@@ -22,6 +22,8 @@ are truncated to first 6 + last 4 (`[CARD-MASKED:411111******1111]`, PCI DSS
 from __future__ import annotations
 
 import re
+from functools import lru_cache
+from typing import Callable, NamedTuple
 
 from ecsctx.masking.tokens import make_label, mask_by_field_type
 
@@ -224,6 +226,91 @@ def _ssn(m: re.Match) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Rules, packs and pre-checks
+# ---------------------------------------------------------------------------
+# Each rule belongs to one pack. `default` is always on; `pci` (card numbers,
+# CVV) and `financial_ids` (IBAN, SSN, payment ids) are opt-in: only a PCI
+# service ever sees that data, and scanning every string of every log line
+# for it costs every other service CPU and mangles its numeric ids.
+PACK_NAMES = ("default", "pci", "financial_ids")
+ALL_PACKS = frozenset(PACK_NAMES)
+
+
+class Rule(NamedTuple):
+    name: str
+    pack: str
+    pattern: re.Pattern
+    repl: Callable[[re.Match], str]
+    # Cheap test on (text, text.lower()) that must pass before the regex runs.
+    # Each one only checks for something its rule cannot match without, so a
+    # gate can skip work but never change a result.
+    gate: Callable[[str, str], bool]
+
+
+# Spelled the way the credential rules spell them: "authori" would also match
+# "AUTHORIZED", which appears in most gateway responses, while the rule itself
+# needs "authorization". "key" covers the *_key compounds.
+_CRED_LITERALS = (
+    "token", "secret", "password", "passwd", "bearer", "basic", "digest",
+    "credential", "authorization", "authorisation", "key",
+)
+_CVV_LITERALS = ("cvv", "cvc", "security")
+_PHONE_SHAPE = re.compile(r"\+\d|\d{3}\D{0,2}\d{3}\D?\d{4}")
+_CARD_SHAPE = re.compile(r"\d(?:[-\s]?\d){11}")
+_SSN_SHAPE = re.compile(r"\d{3}[-\s]?\d{2}[-\s]?\d{4}")
+_IBAN_SHAPE = re.compile(r"[A-Za-z]{2}\d{2}")
+_THREE_DIGITS = re.compile(r"\d{3}")
+
+
+def _has_pem(_text: str, lowered: str) -> bool:
+    return "-----begin" in lowered
+
+
+def _has_credential(_text: str, lowered: str) -> bool:
+    return any(word in lowered for word in _CRED_LITERALS)
+
+
+def _has_cvv_keyword(_text: str, lowered: str) -> bool:
+    return any(word in lowered for word in _CVV_LITERALS)
+
+
+def _has_id(_text: str, lowered: str) -> bool:
+    return "id" in lowered
+
+
+def _has_iban_shape(text: str, _lowered: str) -> bool:
+    return _IBAN_SHAPE.search(text) is not None
+
+
+def _has_phone_shape(text: str, _lowered: str) -> bool:
+    return _PHONE_SHAPE.search(text) is not None
+
+
+def _has_at(text: str, _lowered: str) -> bool:
+    return "@" in text
+
+
+def _has_jwt_prefix(text: str, _lowered: str) -> bool:
+    return "eyJ" in text
+
+
+def _has_card_shape(text: str, _lowered: str) -> bool:
+    return _CARD_SHAPE.search(text) is not None
+
+
+def _has_ssn_shape(text: str, _lowered: str) -> bool:
+    return _SSN_SHAPE.search(text) is not None
+
+
+def _has_three_digits(text: str, _lowered: str) -> bool:
+    return _THREE_DIGITS.search(text) is not None
+
+
+def _rule(pack, regex, repl, gate):
+    return (pack, regex, repl, gate)
+
+
+# ---------------------------------------------------------------------------
 # The 17 content rules, in execution order. DO NOT REORDER — several rules
 # only behave correctly because a more specific rule ran first:
 #   1. Credential/CVV/payment-id keyword rules before all shape rules —
@@ -243,84 +330,112 @@ def _ssn(m: re.Match) -> str:
 #      boundary over-masks.
 # ---------------------------------------------------------------------------
 
-REGEX_MASKER = (
+_RULE_TABLE = (
     # 1. PEM key block.
-    (
+    _rule(
+        "default",
         r"-----BEGIN [A-Z ]*KEY-----[\s\S]*?-----END [A-Z ]*KEY-----",
         _mask_pem,
+        _has_pem,
     ),
     # 2. Credential — quoted key ("token": "abc123").
-    (
+    _rule(
+        "default",
         rf"([\"'])({_CRED_KEYWORD})\1(\s*:\s*)\1([^\"']*)\1",
         _cred_quoted,
+        _has_credential,
     ),
     # 3. Credential — ":" / "=" (secret_key=abc123).
-    (
+    _rule(
+        "default",
         rf"\b({_CRED_KEYWORD}[\"'\s]*[:=][\"'\s]*)({_CRED_VALUE}+={{0,2}})",
         _cred_kv,
+        _has_credential,
     ),
     # 4. CVV — quoted key ("cvv": "123").
-    (
+    _rule(
+        "pci",
         rf"([\"'])({_CVV_KEYWORD})\1(\s*:\s*)\1\d{{3,4}}\1",
         _cvv_quoted,
+        _has_cvv_keyword,
     ),
     # 5. CVV — ":" / "=" (cvv=123).
-    (
+    _rule(
+        "pci",
         rf"\b({_CVV_KEYWORD}[\"'\s]*[:=][\"'\s]*)\d{{3,4}}",
         _cvv_kv,
+        _has_cvv_keyword,
     ),
     # 6. Payment/transaction/auth id — quoted key ("payment_id": "abc12345").
-    (
+    _rule(
+        "financial_ids",
         rf"([\"'])({_PAYMENT_ID_KEYWORD})\1(\s*:\s*)\1([A-Za-z0-9_\-]+)\1",
         _payid_quoted,
+        _has_id,
     ),
     # 7. Payment/transaction/auth id (payment_id: abc12345).
-    (
+    _rule(
+        "financial_ids",
         rf"\b({_PAYMENT_ID_KEYWORD}\s*[:=]\s*)([A-Za-z0-9_\-]{{8,}})\b",
         _payid_kv,
+        _has_id,
     ),
     # 8. Credential — bare space (Bearer abc12345).
-    (
+    _rule(
+        "default",
         
         rf"\b({_CRED_KEYWORD})\s+(?=(?:{_CRED_VALUE})*\d)({_CRED_VALUE}{{8,}}={{0,2}})",
         _cred_space,
+        _has_credential,
     ),
     # 9. CVV — bare space (CVV 123).
-    (
+    _rule(
+        "pci",
         rf"\b({_CVV_KEYWORD})\s+\d{{3,4}}\b",
         _cvv_space,
+        _has_cvv_keyword,
     ),
     # 10. Payment/transaction/auth id — bare space (payment_id abc12345).
-    (
+    _rule(
+        "financial_ids",
         
         rf"\b({_PAYMENT_ID_KEYWORD})\s+(?=[A-Za-z0-9_\-]*\d)([A-Za-z0-9_\-]{{8,}})\b",
         _payid_space,
+        _has_id,
     ),
     # 11. IBAN (GB33BUKB20201555555555).
-    (
+    _rule(
+        "financial_ids",
         rf"(?-i:\b(?:{_IBAN_PREFIX})\d{{2}}[A-Z0-9]{{11,30}}\b)",
         _iban,
+        _has_iban_shape,
     ),
     # 12. Phone — international E.164-style or a bare local number. Union of
     # ecsctx's and the ported filter's patterns: dash/space/dot all count as
     # separators, since real phone numbers appear with all three and neither
     # source pattern alone caught every real case.
-    (
+    _rule(
+        "default",
         
         _CARD_LEAD_GUARD
         + r"(?:\+[1-9]\d{0,2}(?:[-.\s]?\d){6,13}|\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})"
         + _CARD_TAIL_GUARD,
         _phone,
+        _has_phone_shape,
     ),
     # 13. Email (user@example.com).
-    (
+    _rule(
+        "default",
         r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
         _email,
+        _has_at,
     ),
     # 14. JWT (eyJhbGciOi....).
-    (
+    _rule(
+        "default",
         r"\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{3,}\.[A-Za-z0-9_\-]{3,}",
         _jwt,
+        _has_jwt_prefix,
     ),
     # 15. Card number — truncated to first 6 + last 4
     # ([CARD-MASKED:411111******1111]). PCI DSS 3.4.1 allows at most the
@@ -328,32 +443,60 @@ REGEX_MASKER = (
     # The output stays inside the [LABEL…] convention so already_masked()
     # idempotency holds, and the stars break the digit run so a second
     # pass cannot re-match it.
-    (
+    _rule(
+        "pci",
         _CARD_LEAD_GUARD + r"\d" + _CARD_BODY + _CARD_TAIL_GUARD,
         _mask_truncated_card,
+        _has_card_shape,
     ),
     # 16. SSN (123-45-6789).
-    (
+    _rule(
+        "financial_ids",
         _CARD_LEAD_GUARD + r"\d{3}[-\s]?\d{2}[-\s]?\d{4}\b",
         _ssn,
+        _has_ssn_shape,
     ),
     # 17. CVV standalone — bare 3-4 digit group, no keyword (call 123 now).
-    (
+    _rule(
+        "pci",
         r"(?:^|(?<=\s))\d{3,4}(?=\s|$)",
         _standalone_cvv,
+        _has_three_digits,
     ),
 )
 
-PATTERN_MASKER = tuple(
-    (re.compile(regex, re.IGNORECASE), masker)
-    for regex, masker in REGEX_MASKER
+
+RULES: tuple[Rule, ...] = tuple(
+    Rule(f"{index}:{repl.__name__}", pack, re.compile(regex, re.IGNORECASE), repl, gate)
+    for index, (pack, regex, repl, gate) in enumerate(_RULE_TABLE, start=1)
 )
 
 
-def mask_by_all_patterns(text: str):
-    for pattern, repl in PATTERN_MASKER:
-        text = pattern.sub(repl, text)
+@lru_cache(maxsize=16)
+def rules_for(packs: frozenset[str]) -> tuple[Rule, ...]:
+    """The rules of `packs`, in the global order above.
+
+    Keeping the global order within any combination is what keeps the
+    ordering invariants true whichever packs a service enables.
+    """
+    return tuple(rule for rule in RULES if rule.pack in packs)
+
+
+def mask_by_patterns(text: str, rules: tuple[Rule, ...]) -> str:
+    lowered = text.lower()
+    for rule in rules:
+        if not rule.gate(text, lowered):
+            continue
+        masked = rule.pattern.sub(rule.repl, text)
+        if masked != text:
+            text = masked
+            lowered = text.lower()
     return text
+
+
+def mask_by_all_patterns(text: str) -> str:
+    """Every rule of every pack — what the engine did before packs existed."""
+    return mask_by_patterns(text, rules_for(ALL_PACKS))
 
 
 KEYWORD_REGEX_FIELD_TYPE = (
