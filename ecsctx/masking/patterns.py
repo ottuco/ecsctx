@@ -104,9 +104,12 @@ _IBAN_PREFIX = (
 # or glued to a letter. The extra (?<!\d ) blocks a space that's itself
 # preceded by a digit, so a differently-grouped longer number's tail chunk
 # isn't mistaken for a fresh match.
-# _CARD_TAIL_GUARD: a match may not be followed by more digits.
+# _CARD_TAIL_GUARD: a match may not be followed by more digits, nor by a
+# letter — a digit run that runs straight into letters is part of an id
+# (a hex session_id or trace.id that happens to start with digits), not a
+# phone number or a PAN.
 _CARD_LEAD_GUARD = r"(?:^|(?<=[\s,.:=\"'([{]))(?<!\d )"
-_CARD_TAIL_GUARD = r"(?![-\s]?\d)"
+_CARD_TAIL_GUARD = r"(?![-\s]?\d)(?![A-Za-z])"
 # 11 more digits after the leading one = 12 total; 18 more = 19 total.
 _CARD_BODY = r"(?:[-\s]?\d){11,18}"
 
@@ -123,14 +126,16 @@ def _digits_only(text: str) -> str:
 def _truncate_pan(digits: str) -> str:
     """Keep at most the first 6 (BIN) and last 4 digits of a PAN.
 
-    PCI DSS 3.4.1 permits showing at most the BIN + last 4 when a PAN is
-    displayed — enough to identify the card for support without ever storing
-    the full number. Separators are already stripped by the caller, so
-    grouped input comes back as one contiguous masked value. No token is
-    emitted alongside: an unkeyed hash next to a truncated PAN would itself
-    be a finding, and a keyed one buys nothing over BIN/last-4.
+    Logs are stored data, so PCI DSS 3.5.1 truncation applies. FAQ 1091
+    allows first 6 + last 4 for the 15- and 16-digit PANs of every brand it
+    lists, and covers shorter PANs only for Discover — so below 15 digits
+    only the last 4 survive. Separators are already stripped by the caller.
+    No token is emitted alongside: a hash of the full PAN next to its
+    truncated form is the correlation FAQ 1117 warns about.
     """
-    return f"{digits[:6]}{'*' * (len(digits) - 10)}{digits[-4:]}"
+    if len(digits) >= 15:
+        return f"{digits[:6]}{'*' * (len(digits) - 10)}{digits[-4:]}"
+    return f"{'*' * (len(digits) - 4)}{digits[-4:]}"
 
 
 def _mask_truncated_card(match: re.Match) -> str:

@@ -708,12 +708,16 @@ PAN_BY_LENGTH = {
 }
 
 def _display(pan: str) -> str:
-    return f"{pan[:6]}{'*' * (len(pan) - 10)}{pan[-4:]}"
+    # First 6 + last 4 from 15 digits up; last 4 only for shorter PANs, which
+    # FAQ 1091 covers only for Discover.
+    if len(pan) >= 15:
+        return f"{pan[:6]}{'*' * (len(pan) - 10)}{pan[-4:]}"
+    return f"{'*' * (len(pan) - 4)}{pan[-4:]}"
 
 
 class TestPanDisplayMasking:
     @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
-    def test_mask_pan_keeps_first_six_and_last_four(self, length, pan):
+    def test_mask_pan_keeps_at_most_the_bin_and_last_four(self, length, pan):
         assert mask_pan(pan) == _display(pan)
         assert pan not in mask_pan(pan)
 

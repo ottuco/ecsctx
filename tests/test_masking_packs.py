@@ -18,6 +18,7 @@ from ecsctx.masking.config import (
 )
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, classify_key
+from ecsctx.processors import mask_pan
 
 
 @pytest.fixture(autouse=True)
@@ -170,3 +171,31 @@ class TestKeyNames:
 
     def test_a_card_key_holding_no_pan_is_labelled_not_truncated(self):
         assert _mask({"pan": "n/a"}) == {"pan": "[CARD-MASKED]"}
+
+
+class TestBoundariesAndTruncation:
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "8231045567ab34cd9f0e1a2b3c4d5e6f7a8b9c0d",  # session_id: 10 digits, then hex
+            "1726650000123456789abcdef0123456",  # trace.id: 19 digits, then hex
+            "5551234567abc",  # phone-shaped run glued to letters
+        ],
+    )
+    def test_a_digit_run_touching_letters_is_not_a_phone_or_pan(self, value):
+        assert _mask(value, packs=ALL_PACKS) == value
+
+    def test_a_pan_between_separators_is_still_truncated(self):
+        assert _mask('"pan":"4111111111111111",', packs=("pci",)) == (
+            '"pan":"[CARD-MASKED:411111******1111]",'
+        )
+
+    def test_a_short_pan_keeps_only_its_last_four(self):
+        assert _mask("pay 5018123456789 ok", packs=("pci",)) == (
+            "pay [CARD-MASKED:*********6789] ok"
+        )
+
+    def test_mask_pan_agrees_with_the_rule(self):
+        assert mask_pan("4111111111111111") == "411111******1111"
+        assert mask_pan("378282246310005") == "378282*****0005"
+        assert mask_pan("5018123456789") == "*********6789"
