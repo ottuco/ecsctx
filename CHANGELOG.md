@@ -71,7 +71,6 @@
   `Timer` and `timed()` stay: pass `duration_ns=t.ns` to `.ecs()`.
   A service still calling `emit` must convert before upgrading.
 
-
 ## v0.7.3 (2026-09-18)
 
 ### Features
