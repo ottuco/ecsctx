@@ -115,7 +115,9 @@ class _GitTagFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         self.tag = tag
 
     def _source(self, path):
-        done = subprocess.run(["git", "show", f"{self.tag}:{path}"], capture_output=True, text=True)
+        done = subprocess.run(
+            ["git", "show", f"{self.tag}:{path}"], capture_output=True, text=True, check=False
+        )
         return done.stdout if done.returncode == 0 else None
 
     def find_spec(self, name, path, target=None):
@@ -138,7 +140,8 @@ class _GitTagFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
     def exec_module(self, module):
         spec = module.__spec__
-        exec(compile(spec.loader_state, spec.origin, "exec"), module.__dict__)
+        # Source from this repository's own git history, not external input.
+        exec(compile(spec.loader_state, spec.origin, "exec"), module.__dict__)  # noqa: S102
 
 
 def run_tag(tag: str) -> dict[str, float]:
@@ -146,6 +149,7 @@ def run_tag(tag: str) -> dict[str, float]:
         [sys.executable, __file__, "--json-for-tag", tag],
         capture_output=True,
         text=True,
+        check=False,
         env={**os.environ, "DJANGO_SETTINGS_MODULE": ""},
     )
     if done.returncode != 0:

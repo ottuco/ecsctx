@@ -15,7 +15,10 @@ import pytest
 from structlog.stdlib import ProcessorFormatter
 
 from ecsctx.contrib.django import get_logging_config
-from ecsctx.contrib.django.checks import find_masking_config_errors, find_unmasked_live_handlers
+from ecsctx.contrib.django.checks import (
+    find_masking_config_errors,
+    find_unmasked_live_handlers,
+)
 from ecsctx.formatters import ECSFormatter
 from ecsctx.masking.config import (
     _reset_masking_config,
@@ -332,14 +335,14 @@ class TestCredentialScanMatchesFullScan:
     must never change their output. Checked against pattern.sub on the
     ported samples and on generated text."""
 
-    FRAGMENTS = [
+    FRAGMENTS = (
         '"', "'", ":", "=", " ", "  ", "-", "_", ",", "{", "}", "\n",
         "token", "Token", "access_token", "x-api-key", "api_key", "apiKey", "Bearer",
         "basic", "Digest", "credentials", "Authorization", "authorisation_header",
         "secret", "client_secret", "password", "PASSWD", "key", "monkey", "keyboard",
         "tokenization", "abc123", "abcdefghij", "a1b2c3d4e5f6", "eyJhbGciOi.x.y",
         "12345678", "value", "İ", "straße", "==", "/+~.",
-    ]
+    )
 
     def _credential_rules(self):
         return [rule for rule in RULES if rule.scan is not None]

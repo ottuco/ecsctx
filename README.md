@@ -797,28 +797,59 @@ This ensures the receiving service can correlate its logs with yours under the s
 
 ## 13. PII Masking & Tokenization
 
-ecsctx automatically detects and protects sensitive data in logs. The `mask_sensitive_data` processor walks payload structures recursively (path-aware) to find and tokenize PII, and scans every string value for email/phone patterns.
+ecsctx detects and protects sensitive data in logs. `mask_sensitive_data`
+walks each record (path-aware), masks values by their key name, and scans
+string values with content rules. Each record is masked once:
+`get_logging_config()`'s formatter runs `mask_sensitive_data`, and
+`MaskPIIFilter` is attached only to handlers whose formatter does not.
 
 **Log processor path** (automatic via `mask_sensitive_data`):
-- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`) for fraud correlation. Same input always produces the same token.
-- When PII is not configured: detected values are replaced with `[PII_REDACTED]` — raw PII never appears in logs.
-- Two types bypass tokenization: PANs truncate to first 6 + last 4 (`[CARD-MASKED:411111******1111]`, no token alongside, regardless of PII configuration) and CVV is always the bare `[CVV-MASKED]`.
+- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens, labelled by type (`[EMAIL-MASKED:ptok:v1:...]`), for fraud correlation. Same input always produces the same token.
+- When PII is not configured: detected values become the bare label (`[EMAIL-MASKED]`) — raw PII never appears in logs.
+- Cardholder data is never tokenized: PANs are truncated (`[CARD-MASKED:411111******1111]`), and CVV and expiry are always the bare `[CVV-MASKED]` / `[EXPIRY-MASKED]`.
 
 **Explicit encryption API** (standalone, NOT part of the log processor pipeline):
 - `protect()` / `reveal()` use **AES-256-GCM** for randomized ciphertext (`penc:v1:<kid>:...`) when reversible encryption is needed. Requires `PII_ACCESS=full`.
 
 Keys are delivered via mounted keyset files or fetched from Vault.
 
-### PAN display-masking (`mask_pan`)
+### Masking packs — PCI services must opt in
 
-PANs are **display-masked, not tokenized**: the engine emits
-`[CARD-MASKED:411111******1111]` for any 12–19 digit run (spaces/dashes
-allowed), and `mask_pan("378282246310005")` returns the bare core
-`"378282*****0005"`. Rationale: support and debugging identify a card by BIN +
-last4, and PCI DSS explicitly permits showing at most the first six and last
-four — an opaque token would force a vault lookup per log line. Everything
-else PII keeps tokenization. `mask_pan` is also exported for call sites that
-must mask a PAN before logging (e.g. replacing a hand-rolled helper):
+Content rules come in packs. Only a service that handles card data needs the
+card and CVV rules, and running them on every string of every line costs CPU
+and mangles numeric ids (a hex `session_id` starting with ten digits reads
+as a phone number to a careless rule).
+
+| Pack | Content rules | On by default |
+|------|---------------|---------------|
+| `default` | PEM keys, credentials (`token=…`, `"secret": …`, `Bearer …`), phone numbers, emails, JWTs | always |
+| `pci` | PANs (truncated), CVV — keyed (`cvv=123`, `"securityCode": "123"`, `CVV 123`) and bare 3–4 digit groups | no |
+| `financial_ids` | IBANs, SSNs, payment/transaction/auth ids (content and key names) | no |
+
+A PCI-scoped service enables them in its logging config:
+
+```python
+LOGGING = get_logging_config(masking_packs=("pci", "financial_ids"))
+```
+
+or with `ECSCTX_MASKING_PACKS = ["pci", "financial_ids"]` in Django settings,
+or `ECSCTX_MASKING_PACKS=pci,financial_ids` in the environment (precedence:
+the argument, then the setting, then the env var). `default` is always on.
+Upgrading from 0.7.x without opting in turns PAN and CVV content scanning
+**off**.
+
+Key names are checked in every service regardless of packs: a key named
+`card`, `pan`, `card_number`, `cvv`, `securityCode`, `expiry`, `exp_month`, …
+masks its value wherever it appears.
+
+### PAN truncation (`mask_pan`)
+
+Logs are stored data, so PCI DSS 3.5.1 truncation applies. PANs of 15–19
+digits keep the first 6 and last 4 (`411111******1111`), the format every
+brand accepts (PCI SSC FAQ 1091); shorter PANs keep only the last 4
+(`*********6789`), because FAQ 1091 covers them only for Discover. No token
+or hash is emitted beside a truncated PAN (FAQ 1117). `mask_pan` returns the
+same bare core for call sites that must mask a PAN before logging:
 `from ecsctx import mask_pan`.
 
 ### Network-boundary redaction (`ecsctx.contrib.net`)
@@ -900,23 +931,41 @@ ECSCTX_REDACT_BODY_LOG_CAP=8192
 
 ### What Gets Detected
 
-| Type | Detection | Output |
-|------|-----------|--------|
-| **Emails** | Regex: `user@domain.com` patterns | `"ptok:v1:KeND..."` |
-| **Phone numbers** | Regex: 10-15 digits with +/spaces/dashes | `"ptok:v1:x8Fp..."` |
-| **Names** | Keys containing: `name`, `customer`, `payer`, `billing`, `shipping`, `cardholder`, `email`, `phone`, `mobile`, `contact`, `recipient`, `beneficiary`, `address`, `udf` | `"ptok:v1:..."` |
-| **Auth headers** | `authorization`, `api-key`, `x-api-key` keys | `"Bearer <first4>****<last4>"` (masked, not tokenized; `"Bearer ****"` when the secret is ≤8 chars) |
-| **PANs** | 12–19 digit runs (spaces/dashes allowed); no Luhn gate, no card-key propagation — detection is shape-only | `"[CARD-MASKED:411111******1111]"` — first 6 (BIN) + last 4 visible, the most PCI DSS permits in clear; no token alongside; a second pass is a noop |
+Keys are split into words (`cardHolderName` → card, holder, name) and matched
+word by word, so `namespace`, `hostname` or `telemetry` are not mistaken for a
+name or a phone number.
+
+| Type | Key names (whole words) | Content rule (pack) | Output |
+|------|-------------------------|---------------------|--------|
+| **Secrets** | `*token`, `*secret`, `*password`, `authorization`, `bearer`, `credentials`, `api_key`/`x-api-key`/`*_key` compounds | credential forms (`default`) | `[SECRET-MASKED…]` |
+| **Emails / phones** | `email`, `phone`, `mobile`, `tel`, `msisdn` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]` |
+| **Names / addresses / other PII** | `name`, `first_name`, `cardholder`, `payer`, `address`, `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
+| **PANs** | `card`, `pan`, `card_number` | 12–19 digit runs (`pci`) | `[CARD-MASKED:411111******1111]` |
+| **CVV / expiry** | `cvv`, `cvc`, `security_code`; `expiry`, `exp_month`, … | keyed and bare CVV (`pci`) | `[CVV-MASKED]`, `[EXPIRY-MASKED]` |
+| **IBAN / SSN / payment ids** | `payment_id`, `transaction_id` (`financial_ids`) | `financial_ids` | `[IBAN-MASKED…]`, … |
+
+A digit run that touches a letter on either side is never a phone number or a
+PAN — it is part of an id.
+
+### Structural fields (never scanned)
+
+Correlation ids and ECS metadata are left alone: masking them breaks the
+joins logs exist for. Never scanned: `session_id`, `trace`, `span`, `host`,
+`labels`, `service`, `project`, `log`, and the leaves `transaction.id`,
+`user.name`, `http.request.method`, `http.response.status_code`, `url.domain`.
+Add more with `ECSCTX_MASK_SKIP_PATHS` (Django setting or env var, same path
+syntax as exemptions, anchored at the root of the record).
 
 ### Whitelist (NOT Masked)
 
-These keys are safe even though they contain "name":
+These keys are never masked by name, although a word in them matches a rule:
 
 ```
 gateway_name, vendor_name, module_name, func_name, task_name, service_name,
 app_name, project_name, class_name, method_name, view_name, username,
 site_name, domain_name, bank_name, display_name, install_name,
-installation_name, event_name, customer_id, id, pk
+installation_name, event_name, pathname, customer_id, id, pk,
+token_type, ip_address, mac_address
 ```
 
 ### Path exemptions
@@ -937,7 +986,9 @@ from ecsctx import configure_masking
 configure_masking(exempt_paths=["payment_methods[*].name", "audit"])
 ```
 
-**Path syntax** (matched relative to the masked container, e.g. inside `payload`):
+**Path syntax.** A pattern may start at any depth of the record, so
+`payment_methods[*].name` and `payload.payment_methods[*].name` both exempt the
+same field:
 
 | Segment | Meaning |
 |---------|---------|
@@ -950,6 +1001,19 @@ Matching is a **prefix match**, so a pattern also exempts everything nested belo
 - `payment_methods[*].name` — exempts just that field in every array element
 - `payment_methods` — exempts the entire `payment_methods` subtree
 - `order.customer.name`, `items[*].tags[*].name` — arbitrary nesting works
+
+### Boot check (Django)
+
+Importing `ecsctx.contrib.django` registers a `Tags.security` system check
+(`ecsctx.E00x`) that fails `manage.py check`, `migrate` and `runserver` if a
+handler that ships logs off-host is unmasked. A handler counts as masked if it
+carries `mask_pii_filter` (itself or through its logger) or its formatter runs
+`mask_sensitive_data`. Console `StreamHandler`/`NullHandler` never ship;
+Django's `AdminEmailHandler` ships only when `ADMINS` is set. The check is
+skipped when `ENVIRONMENT` is `local`, `test` or `dev`
+(`ECSCTX_MASKING_CHECK_ENV_VAR`, `ECSCTX_MASKING_CHECK_SKIP_ENVS`), or with
+`ECSCTX_SKIP_MASKING_CHECK = True`; `assert_no_masking_errors(settings.LOGGING)`
+enforces it in a test suite regardless of environment.
 
 ### Configuration
 

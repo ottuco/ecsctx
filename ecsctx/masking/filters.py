@@ -22,9 +22,18 @@ from collections.abc import Iterable
 from typing import Any, NamedTuple
 
 from ecsctx.masking.config import _normalise, get_extra_skip_paths, get_masking_packs
-from ecsctx.masking.exemptions import _get_exempt_patterns, _path_is_exempt, _path_matches
+from ecsctx.masking.exemptions import (
+    _get_exempt_patterns,
+    _path_is_exempt,
+    _path_matches,
+)
 from ecsctx.masking.fields_rules import get_field_rule
-from ecsctx.masking.patterns import classify_key, mask_by_patterns, mask_card_value, rules_for
+from ecsctx.masking.patterns import (
+    classify_key,
+    mask_by_patterns,
+    mask_card_value,
+    rules_for,
+)
 from ecsctx.masking.tokens import mask_by_field_type
 
 _IS_MASKED_ = "_IS_MASKED_"
@@ -93,7 +102,7 @@ class MaskPIIFilter(logging.Filter):
         self,
         *,
         skip_keys: "list[str] | frozenset[str]" = DEFAULT_SKIP_KEYS,
-        skip_leaves: "Iterable[tuple[str, ...]]" = DEFAULT_SKIP_LEAVES,
+        skip_leaves: Iterable[tuple[str, ...]] = DEFAULT_SKIP_LEAVES,
         packs: Iterable[str] | None = None,
     ) -> None:
         super().__init__()

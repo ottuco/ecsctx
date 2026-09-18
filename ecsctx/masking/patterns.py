@@ -3,27 +3,32 @@
 Ported from ottu_pg's MaskPIIFilter (utils/log/filters.py), merged with
 ecsctx's own PII key-name list. Two independent detection strategies:
 
-1. Content-based (CONTENT_RULES): 17 ordered regexes applied to every string
-   the filter reaches. Rule order is load-bearing — see the comments on each
-   rule and the ordering invariants they protect. Do not reorder.
-2. Key-based (key_label): in a dict, a key that is itself a sensitive keyword
-   masks the whole value outright, regardless of the value's type or content.
+1. Content-based (RULES): 17 ordered regexes in three packs — `default`
+   always on, `pci` and `financial_ids` opt-in (ecsctx.masking.config) — each
+   behind a literal pre-check, applied to every string the filter reaches.
+   Rule order is load-bearing — see the comments on each rule and the
+   ordering invariants they protect. Do not reorder.
+2. Key-based (classify_key): in a dict, a key whose words name a sensitive
+   field masks the whole value outright, regardless of the value's type or
+   content.
    This is what catches structlog kwargs (log.info("x", token="abcd1234")),
    where the key and value never appear together in one string for a regex
    to match.
 
 Every masked value becomes `[LABEL]` or `[LABEL:token]` via mask_by_field_type —
-never a bare `***`. Two exceptions: CVV must never carry a token, not even
-an HMAC digest, because PCI forbids storing CVV in any form; card numbers
-are truncated to first 6 + last 4 (`[CARD-MASKED:411111******1111]`, PCI DSS
-3.4.1) with no token alongside.
+never a bare `***`. Cardholder data never carries a token: CVV and expiry
+are bare labels, because PCI forbids storing CVV in any form; card numbers
+are truncated — first 6 + last 4 from 15 digits up, last 4 only below
+(`[CARD-MASKED:411111******1111]`, PCI DSS 3.5.1, FAQ 1091).
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from functools import lru_cache
-from typing import Callable, NamedTuple
+from itertools import pairwise
+from typing import NamedTuple
 
 from ecsctx.masking.tokens import already_masked, make_label, mask_by_field_type
 
@@ -522,9 +527,9 @@ _RULE_TABLE = (
         _jwt,
         _has_jwt_prefix,
     ),
-    # 15. Card number — truncated to first 6 + last 4
-    # ([CARD-MASKED:411111******1111]). PCI DSS 3.4.1 allows at most the
-    # BIN + last 4 on display; the middle never survives, starred or not.
+    # 15. Card number — truncated ([CARD-MASKED:411111******1111]; last 4
+    # only below 15 digits, see _truncate_pan); the middle never survives,
+    # starred or not.
     # The output stays inside the [LABEL…] convention so already_masked()
     # idempotency holds, and the stars break the digit run so a second
     # pass cannot re-match it.
@@ -642,7 +647,7 @@ def _key_words(key: str) -> tuple[str, ...]:
 
 def _follows(words: tuple[str, ...], first: frozenset[str], second: str | frozenset[str]) -> bool:
     seconds = second if isinstance(second, frozenset) else frozenset({second})
-    return any(a in first and b in seconds for a, b in zip(words, words[1:]))
+    return any(a in first and b in seconds for a, b in pairwise(words))
 
 
 @lru_cache(maxsize=4096)

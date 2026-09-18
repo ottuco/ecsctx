@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+**Upgrading a PCI service (ottu_pg): enable the `pci` pack, or it loses PAN
+and CVV content masking.** Card-number and CVV content rules, and the
+IBAN/SSN/payment-id rules, are now opt-in packs:
+`get_logging_config(masking_packs=("pci", "financial_ids"))`, or
+`ECSCTX_MASKING_PACKS` as a Django setting or env var. That pair reproduces
+0.7.x's content coverage. Key names (`card`, `pan`, `card_number`, `cvv`,
+`securityCode`, `expiry`, `exp_month`, …) are masked in every service.
+
+- Masking cost on a Connect gateway-response line: 250 µs → 28 µs per record
+  (0.6.8: 19 µs; `scripts/bench_masking.py`). Each record is masked once —
+  `get_logging_config()` no longer puts `MaskPIIFilter` on a handler whose
+  formatter already runs `mask_sensitive_data`; content rules sit behind
+  literal pre-checks; credential rules are tried only near credential words;
+  key decisions are cached.
+- Correlation fields are never scanned: `session_id`, `trace`, `span`,
+  `transaction.id`, `host`, `labels`, `user.name`, `http.request.method`,
+  `http.response.status_code`, `url.domain` (extend with
+  `ECSCTX_MASK_SKIP_PATHS`). A hex id starting with 10–19 digits was being
+  masked as a phone number or a PAN.
+- A digit run touching a letter is never a phone number, PAN or SSN.
+- Key names match by whole word: `namespace`, `hostname`, `telemetry`,
+  `tokenization_status`, `card_id` are no longer masked. `token_type`,
+  `ip_address`, `mac_address` are safe keys.
+- PANs below 15 digits keep only their last 4 (PCI SSC FAQ 1091 covers them
+  only for Discover); 15–19 digits keep first 6 + last 4.
+- Card keys mask as in 0.6.8: a PAN value is truncated, a card object is one
+  `[CARD-MASKED]`; expiry keys give `[EXPIRY-MASKED]` (they logged in clear
+  since 0.7.0). Card values are never tokenized.
+- `logger.info("%.3f", Decimal(...))` formats again (the filter no longer
+  turns non-string args into strings unless it masked something in them).
+- Exemption paths match from any depth: 0.6.x container-relative patterns
+  (`payment_methods[*].name`) work again next to root-relative ones.
+- Boot check: a handler whose formatter runs `mask_sensitive_data` counts as
+  masked; Django's `AdminEmailHandler` counts as shipping only when `ADMINS`
+  is set, so a stock project passes `manage.py check` with
+  `ENVIRONMENT=prod`.
+
 ## v0.7.2 (2026-09-17)
 
 ### Fixes
