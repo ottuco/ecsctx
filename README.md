@@ -893,7 +893,7 @@ from ecsctx.contrib.net import (
 
 Configure per deploy without code changes. Precedence: explicit call >
 Django settings > env vars > defaults (same lazy pattern as the masking
-settings bridge — settings are read via a guarded import, so there is no
+exemptions — settings are read via a guarded import, so there is no
 hard Django dependency; pure-Python/FastAPI consumers use the call/env path):
 
 ```python
@@ -961,6 +961,12 @@ Card and expiry keys are matched precisely.
 | **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no` | 12–19 digit runs (`pci`) | `[CARD-MASKED:411111******1111]` |
 | **CVV / expiry** | containing `cvv`, `cvc`, `security code`; `expiry`, `expiration`, `exp_month`, … | keyed and bare CVV (`pci`) | `[CVV-MASKED]`, `[EXPIRY-MASKED]` |
 | **IBAN / SSN / payment ids** | `payment_id`, `transaction_id`, `auth_id` (`financial_ids`) | `financial_ids` | `[IBAN-MASKED…]`, … |
+
+A PII container — a dict or list under a key such as `customer`, `billing` or
+`contact` — keeps its shape: each field is masked on its own (an `email` field
+gets an email token, so the same address correlates across records), a safe key
+such as `id` stays readable, and any other field is tokenized as the container's
+type. Card, CVV, expiry and secret containers are masked as one unit.
 
 A digit run that touches a letter is never a phone number — it is part of an
 id. The card rule still matches a PAN followed by a letter, because Track 2
