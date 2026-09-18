@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `pg.payload_decrypted` (`PG_PAYLOAD_DECRYPTED`): a KNET-family PSP's
+  encrypted `trandata` was decrypted, logged on failure at error. Connect and
+  ottu_pg both decrypt it (ottu_pg's local `benefit.decryption_failed` is this
+  event), so it is shared.
+
+### Fixed
+
+- `loggable_request_body` masks a body the caller serialised itself
+  (`data=json.dumps(payload)`) by key, as it does a dict. A string body skipped
+  key masking entirely, so only the eight OAuth-shaped body keys were redacted.
+- `authkey` (Telr's merchant credential) joins the default secret body keys.
+
 ## v0.8.1 (2026-09-18)
 
 ### Features

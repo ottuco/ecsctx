@@ -1,13 +1,16 @@
 """Tests for network-boundary credential redaction (ecsctx.contrib.net)."""
 
+import json
+
 from django.test import override_settings
+
 from ecsctx.contrib.net import (
     configure_redaction,
     ecs_http,
     ecs_url,
     loggable_body,
-    parse_json_or_raw,
     loggable_request_body,
+    parse_json_or_raw,
     redact_body,
     redact_url,
     url_host,
@@ -236,6 +239,19 @@ class TestLoggableRequestBody:
         logged = loggable_request_body("client_secret=s3cr3t&x=" + "y" * 9000, None)
         assert "s3cr3t" not in logged
         assert len(logged) == 4096
+
+    def test_a_body_the_caller_serialised_is_masked_by_key(self):
+        # `data=json.dumps(payload)`: the keys are still there to mask by, and
+        # Telr's merchant credential is `authkey`.
+        body = json.dumps({"authkey": "telr-s3cret", "cvv": "737", "amount": "1.000"})
+        logged = loggable_request_body(body, None)
+        assert "telr-s3cret" not in logged
+        assert "737" not in logged
+        assert '"amount": "1.000"' in logged
+
+    def test_a_form_encoded_authkey_is_redacted(self):
+        logged = loggable_request_body("ivp_method=create&authkey=telr-s3cret", None)
+        assert "telr-s3cret" not in logged
 
     def test_an_unserialisable_body_is_not_logged(self):
         loop = {}

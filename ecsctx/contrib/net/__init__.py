@@ -83,6 +83,8 @@ _DEFAULT_SECRET_BODY_KEYS = (
     "password",
     "api_key",
     "apikey",
+    # Telr's merchant credential, sent in the request body.
+    "authkey",
     "secret",
 )
 
@@ -316,6 +318,14 @@ def loggable_request_body(data: Any, json_body: Any) -> str | None:
     body = json_body if json_body is not None else data
     if body is None:
         return None
+    if isinstance(body, str):
+        # A caller that serialised the body itself (`data=json.dumps(payload)`)
+        # gets the same key masking as one that passed a dict. Only a string that
+        # is not a JSON object or list stays text, left to `redact_body`.
+        with contextlib.suppress(ValueError):
+            parsed = json.loads(body)
+            if isinstance(parsed, (dict, list)):
+                body = parsed
     try:
         text = body if isinstance(body, str) else _masked_json(body)
     except (TypeError, ValueError, RecursionError):  # RecursionError: a cyclic structure
