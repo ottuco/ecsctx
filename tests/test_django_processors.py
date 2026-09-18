@@ -9,15 +9,14 @@ from django.contrib.auth import get_user_model
 from django.test import override_settings
 
 from ecsctx.contrib.django.processors import (
-    _auto_configure_masking,
     _auto_configure_root_fields,
     _get_django_user_model,
     _is_django_user,
-    _reset_masking_settings_flag,
     _reset_root_fields_settings_flag,
     _serialize_django_user,
     contextvars_injector,
 )
+import ecsctx.contrib.django.processors as processors_module
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.pii import configure_pii
 from ecsctx.processors import (
@@ -125,18 +124,21 @@ class TestLazyImport:
         importlib.reload(mod)
 
 
-class TestMaskingSettingsBridge:
-    @pytest.fixture(autouse=True)
-    def _reset_flag(self):
-        _reset_masking_settings_flag()
-        yield
-        _reset_masking_settings_flag()
+class TestMaskingExemptionSetting:
+    """`ECSCTX_MASK_EXEMPT_PATHS` is resolved by the exemptions themselves.
+
+    There is no bridge in the structlog chain any more: whatever masks first —
+    a structlog line, the handler filter on a stdlib record, a body masker —
+    reads the setting, so no call order can leave it unapplied.
+    """
+
+    def test_there_is_no_second_resolution_path(self):
+        assert not hasattr(processors_module, "_auto_configure_masking")
+        assert not hasattr(processors_module, "_reset_masking_settings_flag")
 
     @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["payment_methods[*].name"])
-    def test_setting_applied_via_auto_configure(self, token_keyset_path):
+    def test_setting_applies_on_the_first_mask(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        _auto_configure_masking()
-        assert masking_is_configured()
         # "profile" (not "customer") — "customer" is itself a sensitive
         # keyword (see ecsctx.masking.patterns) and would blanket-mask the
         # whole dict instead of just its nested "name".
@@ -147,18 +149,17 @@ class TestMaskingSettingsBridge:
         assert re.fullmatch(r"\[NAME-MASKED:ptok:v1:[\w-]+\]", out["profile"]["name"])
 
     @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["payment_methods[*].name"])
-    def test_setting_applied_via_processor_first_call(self, token_keyset_path):
-        # A real log record through the Django contextvars_injector must
-        # trigger the settings bridge — no setup_logging() required.
+    def test_a_log_line_through_the_injector_honours_it(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         contextvars_injector(None, None, {"event": "hello"})
-        assert masking_is_configured()
         out = _mask({"payment_methods": [{"name": "KNET"}]})
         assert out["payment_methods"][0]["name"] == "KNET"
 
-    def test_absent_setting_is_noop(self):
-        _auto_configure_masking()
-        assert not masking_is_configured()
+    def test_absent_setting_falls_back_to_the_env_var(self, monkeypatch, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "payment_methods[*].name")
+        out = _mask({"payment_methods": [{"name": "KNET"}]})
+        assert out["payment_methods"][0]["name"] == "KNET"
 
     @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["profile.name"])
     def test_explicit_configure_beats_setting(self, token_keyset_path):
@@ -166,30 +167,24 @@ class TestMaskingSettingsBridge:
 
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=[])  # explicit empty wins over the setting
-        _auto_configure_masking()
         out = _mask({"profile": {"name": "John"}})
         assert re.fullmatch(r"\[NAME-MASKED:ptok:v1:[\w-]+\]", out["profile"]["name"])
 
-    def test_retries_when_settings_not_ready(self, token_keyset_path):
-        """Regression for the original bug: if settings access raises (e.g.
-        called during settings.py import, before Django is configured), the
-        bridge must NOT burn its one-shot flag — it retries at real log time."""
+    def test_settings_not_ready_are_not_cached(self, token_keyset_path):
+        """A record masked while settings.py is still importing must not pin
+        the env-only answer: the setting applies once settings are ready."""
         configure_pii(token_keyset_path=token_keyset_path, env="test")
 
         class _NotReady:
-            def __getattr__(self, name):
-                raise RuntimeError("Requested setting, but settings are not configured.")
+            configured = False
 
-        # First call: settings not ready -> no-op, flag NOT burned.
         with patch("django.conf.settings", _NotReady()):
-            _auto_configure_masking()
+            _mask({"payment_methods": [{"name": "KNET"}]})
         assert not masking_is_configured()
 
-        # Later call: settings now available -> exemption is applied.
         with override_settings(ECSCTX_MASK_EXEMPT_PATHS=["payment_methods[*].name"]):
-            _auto_configure_masking()
+            out = _mask({"payment_methods": [{"name": "KNET"}]})
         assert masking_is_configured()
-        out = _mask({"payment_methods": [{"name": "KNET"}]})
         assert out["payment_methods"][0]["name"] == "KNET"
 
 
