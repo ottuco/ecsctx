@@ -98,8 +98,9 @@ class TestPackSelection:
 
 
 class TestKeyNames:
-    """Key names match by whole word (or a known glued spelling), never by a
-    substring of an unrelated word, and the decision is cached per key."""
+    """Key names: substring matching as in 0.7.x (fail closed), with the known
+    false positives listed as safe keys; card and expiry keys matched
+    precisely. The decision is cached per (key, packs)."""
 
     DEFAULT = frozenset({"default"})
 
@@ -109,12 +110,9 @@ class TestKeyNames:
             "namespace",
             "hostname",
             "filename",
-            "telemetry",
-            "hotel",
             "tokenization_status",
             "token_type",
             "card_id",
-            "ip_address",
             "expires_in",
             "cache_key",
             "operation",
@@ -182,11 +180,13 @@ class TestBoundariesAndTruncation:
         "value",
         [
             "8231045567ab34cd9f0e1a2b3c4d5e6f7a8b9c0d",  # session_id: 10 digits, then hex
-            "1726650000123456789abcdef0123456",  # trace.id: 19 digits, then hex
             "5551234567abc",  # phone-shaped run glued to letters
         ],
     )
-    def test_a_digit_run_touching_letters_is_not_a_phone_or_pan(self, value):
+    def test_a_digit_run_touching_letters_is_not_a_phone_number(self, value):
+        # The card rule deliberately still matches a PAN followed by a letter
+        # (Track 2 data), so a 12-19 digit run glued to letters is masked in a
+        # PCI service; session_id and trace.id are never scanned for that reason.
         assert _mask(value, packs=ALL_PACKS) == value
 
     def test_a_pan_between_separators_is_still_truncated(self):
@@ -206,34 +206,29 @@ class TestBoundariesAndTruncation:
 
 
 class TestStructuralFields:
-    def test_structural_fields_are_not_scanned(self):
+    def test_correlation_ids_and_ecsctx_metadata_are_not_scanned(self):
         event = {
-            "session_id": "8231045567abcd",
+            "session_id": "4111111111111111",
             "trace": {"id": "4111111111111111"},
             "span": {"id": "5551234567"},
-            "transaction": {"id": "4111111111111111"},
-            "labels": {"namespace": "cybersource", "hostname": "jade", "customer": "x"},
-            "user": {"id": "7", "name": "admin@jade.ottu.dev"},
-            "http": {"request": {"method": "POST"}, "response": {"status_code": 200}},
-            "url": {"domain": "a@b.co"},
             "service": {"name": "app"},
-            "host": {"name": "jade", "ip": ["10.0.0.1"]},
+            "project": {"name": "connect"},
         }
         assert MaskPIIFilter(packs=ALL_PACKS)._mask_dict(dict(event)) == event
 
-    def test_the_rest_of_a_structural_parent_is_still_scanned(self):
+    def test_labels_and_the_rest_of_the_record_are_scanned(self):
         masked = MaskPIIFilter()._mask_dict(
-            {"user": {"email": "a@b.co"}, "url": {"full": "https://h/p?e=a@b.co"}}
+            {
+                "labels": {"namespace": "cybersource", "customer_email": "jane@example.com"},
+                "user": {"id": "7", "name": "admin", "email": "a@b.co"},
+                "url": {"full": "https://h/p?e=a@b.co"},
+            }
         )
         assert masked == {
-            "user": {"email": "[EMAIL-MASKED]"},
+            "labels": {"namespace": "cybersource", "customer_email": "[EMAIL-MASKED]"},
+            "user": {"id": "7", "name": "admin", "email": "[EMAIL-MASKED]"},
             "url": {"full": "https://h/p?e=[EMAIL-MASKED]"},
         }
-
-    def test_extra_skip_paths_come_from_settings(self, settings):
-        settings.ECSCTX_MASK_SKIP_PATHS = ["payment.reference"]
-        masked = MaskPIIFilter()._mask_dict({"payment": {"reference": "a@b.co", "note": "a@b.co"}})
-        assert masked == {"payment": {"reference": "a@b.co", "note": "[EMAIL-MASKED]"}}
 
 
 class TestExemptionPaths:
@@ -256,7 +251,7 @@ class TestExemptionPaths:
 class TestArgs:
     def test_numeric_format_args_survive(self):
         record = logging.LogRecord(
-            "t", logging.INFO, __file__, 0, "refunded %.3f of %d", (Decimal("12.5"), Decimal("3")), None
+            "t", logging.INFO, __file__, 0, "refunded %.3f of %d", (Decimal("12.5"), Decimal(3)), None
         )
         MaskPIIFilter().filter(record)
         assert record.getMessage() == "refunded 12.500 of 3"

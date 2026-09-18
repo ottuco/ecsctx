@@ -1,10 +1,11 @@
 """Unified PII/PCI masking engine.
 
 MaskPIIFilter is the single engine every masking path calls into:
+- get_logging_config() puts it on every handler it builds: it masks the
+  record in place, before anything else reads it.
 - ecsctx.processors.mask_sensitive_data (a structlog processor) delegates to
-  it — the formatter get_logging_config() builds runs it on every record.
-- get_logging_config() defines it in LOGGING["filters"] and attaches it to
-  handlers whose formatter does not mask, so each record is masked once.
+  it in the formatter chain; that second pass skips strings already known
+  clean, so it costs little.
 - install_maskers() sweeps any live handler ecsctx did not build.
 
 See ecsctx.masking.patterns for the rules and packs, ecsctx.masking.config

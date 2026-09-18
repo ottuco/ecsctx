@@ -8,10 +8,11 @@ exempted; secrets (cvv/credential/payment-id) never are — see
 ecsctx.masking.patterns.key_label.
 
 Path syntax: dict step "key", array step "[*]", single dict-key wildcard "*".
-A pattern may start at any depth of the record, and matching is a PREFIX
-match from there, so it also exempts the whole subtree below it
-("payment_methods" exempts everything under it wherever it appears;
-"payment_methods[*].name" only that leaf).
+A pattern is anchored at the root of the record or at a payload container
+(payload, args, kwargs, extra, http request/response body), and matching is a
+PREFIX match from there, so it also exempts the whole subtree below it
+("payment_methods" exempts everything under it; "payment_methods[*].name"
+only that leaf).
 """
 
 from __future__ import annotations
@@ -90,11 +91,32 @@ def _path_matches(path: tuple, pattern: tuple) -> bool:
     return True
 
 
+# Where 0.6.x's container-relative patterns ("payment_methods[*].name") were
+# anchored: the payload containers the processor used to scan, before and
+# after namespace_ecs_fields moves non-root keys under `extra`.
+_CONTAINERS = (
+    ("payload",),
+    ("args",),
+    ("args", "[*]"),
+    ("kwargs",),
+    ("extra",),
+    ("extra", "payload"),
+    ("http", "request", "body"),
+    ("http", "response", "body"),
+)
+
+
 def _path_is_exempt(path: tuple, patterns: tuple) -> bool:
-    """True if a pattern matches the path from the root or from any key below it.
+    """True if a pattern matches from the root of the record or from one of the
+    payload containers.
 
     Patterns were written relative to the payload container in 0.6.x
     ("payment_methods[*].name") and relative to the whole record since 0.7.0
-    ("payload.payment_methods[*].name"); anchoring at any depth honours both.
+    ("payload.payment_methods[*].name"); both anchors are honoured. Nothing
+    deeper: a short pattern such as "audit" must not exempt an "audit" key
+    nested anywhere in a payload.
     """
-    return any(_path_matches(path[start:], p) for p in patterns for start in range(len(path)))
+    if not patterns:
+        return False
+    starts = [0] + [len(c) for c in _CONTAINERS if path[: len(c)] == c]
+    return any(_path_matches(path[start:], p) for p in patterns for start in starts)

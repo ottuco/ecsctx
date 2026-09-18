@@ -27,10 +27,9 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from functools import lru_cache
-from itertools import pairwise
 from typing import NamedTuple
 
-from ecsctx.masking.tokens import already_masked, make_label, mask_by_field_type
+from ecsctx.masking.tokens import make_label, mask_by_field_type
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -60,10 +59,13 @@ SAFE_KEYS = frozenset({
     "customer_id",
     "id",
     "pk",
-    # OAuth token metadata and network addresses, not secrets or postal addresses.
+    # Substring matching's known false positives: a gateway namespace, a
+    # host or file name, OAuth token metadata.
+    "namespace",
+    "hostname",
+    "filename",
     "token_type",
-    "ip_address",
-    "mac_address",
+    "tokenization_status",
 })
 
 # Sensitive credential keywords / auth schemes. Matched case-insensitively.
@@ -73,7 +75,7 @@ _CRED_KEYWORD = (
     r"(?:"
     r"bearer|basic|digest|credentials?"  # auth schemes
     r"|authori[sz]ation(?:[_-]?header)?"  # Authorization / Authorisation (+ _header)
-    r"|(?:[\w-]*[_-])?(?:token|secret|password|passwd)"  # *_token / *_secret / *_password
+    r"|(?:[\w-]{0,128}[_-])?(?:token|secret|password|passwd)"  # *_token / *_secret / *_password
     r"|(?:secret|private|public|encryption|decryption|signing|"  # sensitive *_key compounds only
     r"access|master|root|session|api)[_-]?key"
     r")"
@@ -85,6 +87,21 @@ _CVV_KEYWORD = r"(?:cvv|cvc|security[_\s]?code)"
 
 # Payment/transaction/auth id keywords.
 _PAYMENT_ID_KEYWORD = r"(?:payment|transaction|auth)[_\s-]?id"
+
+# The key prefix before a credential word is bounded ({0,128}) in the content
+# rules: unbounded, "a-a-a-…token" backtracks quadratically, seconds for one
+# 20 KB string. A key-name match searches a short key, where the bound would
+# only get in the way, so it keeps the unbounded form.
+_CRED_KEY_NAME = _CRED_KEYWORD.replace("[\\w-]{0,128}", "[\\w-]*")
+
+# Substring matching on the lowercased key, as since 0.7.0: it fails closed on
+# glued and plural names payloads use (phonenumber, cardcvv, nameoncard,
+# tokens). Its known false positives are listed in SAFE_KEYS instead.
+_EMAIL_KEY_WORDS = r"email"
+_PHONE_KEY_WORDS = r"phone|mobile|tel"
+_ADDRESS_KEY_WORDS = r"address"
+_NAME_KEY_WORDS = r"name|cardholder|beneficiary|recipient|payer"
+_GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
 
 
 
@@ -113,12 +130,14 @@ _IBAN_PREFIX = (
 # or glued to a letter. The extra (?<!\d ) blocks a space that's itself
 # preceded by a digit, so a differently-grouped longer number's tail chunk
 # isn't mistaken for a fresh match.
-# _CARD_TAIL_GUARD: a match may not be followed by more digits, nor by a
-# letter — a digit run that runs straight into letters is part of an id
-# (a hex session_id or trace.id that happens to start with digits), not a
-# phone number or a PAN.
+# _CARD_TAIL_GUARD: a match may not be followed by more digits. A letter may
+# follow: Track 2 equivalent data puts a "D" separator straight after the PAN.
+# _PHONE_TAIL_GUARD also refuses a following letter — a digit run that runs
+# into letters is part of an id (a hex session_id starting with digits), and
+# the phone rule runs in every service, not only PCI ones.
 _CARD_LEAD_GUARD = r"(?:^|(?<=[\s,.:=\"'([{]))(?<!\d )"
-_CARD_TAIL_GUARD = r"(?![-\s]?\d)(?![A-Za-z])"
+_CARD_TAIL_GUARD = r"(?![-\s]?\d)"
+_PHONE_TAIL_GUARD = _CARD_TAIL_GUARD + r"(?![A-Za-z])"
 # 11 more digits after the leading one = 12 total; 18 more = 19 total.
 _CARD_BODY = r"(?:[-\s]?\d){11,18}"
 
@@ -156,6 +175,9 @@ def _mask_truncated_card(match: re.Match) -> str:
 
 
 _PAN_VALUE = re.compile(r"\d(?:[-\s]?\d){11,18}")
+# A value that is exactly one marker, e.g. from an earlier pass. A marker
+# somewhere inside a longer value does not make the rest of it safe.
+_SINGLE_MARKER = re.compile(r"\[[A-Z0-9-]+-MASKED(?::[^\]]*)?\]")
 
 
 def mask_card_value(value) -> str:
@@ -165,7 +187,7 @@ def mask_card_value(value) -> str:
     correlation FAQ 1117 warns about. A whole card object (number, expiry,
     holder) is one label.
     """
-    if isinstance(value, str) and already_masked(value):
+    if isinstance(value, str) and _SINGLE_MARKER.fullmatch(value):
         return value
     if isinstance(value, (str, int)) and not isinstance(value, bool):
         text = str(value).strip()
@@ -362,23 +384,36 @@ def _credential_word_starts(lowered: str) -> list[int]:
     return sorted(starts)
 
 
+# A credential match starts at most this far before its credential word: the
+# bounded key prefix (128), its separator, and rule 2's opening quote.
+_CRED_REACH = 130
+
+
 def _sub_near_credential_words(pattern: re.Pattern, repl, text: str) -> str:
-    """pattern.sub(repl, text), trying only positions a credential match can start at."""
+    """pattern.sub(repl, text), trying only positions a credential match can start at.
+
+    Only called on ASCII text (see mask_by_patterns), where lowercasing keeps
+    every position.
+    """
     lowered = text.lower()
-    if len(lowered) != len(text):
-        # Lowercasing changed the length (a few non-ASCII characters do), so
-        # its positions are not the text's: fall back to the full scan.
-        return pattern.sub(repl, text)
     parts = []
     copied = 0  # text[:copied] is already in parts
     tried = 0  # every position below this has been tried or lies inside a match
+    run_start = run_end = -1  # the [\w-] run found for the previous word
     for word_start in _credential_word_starts(lowered):
         if word_start < tried:
             continue
-        run_start = word_start
-        while run_start > 0 and _KEY_CHAR.match(text, run_start - 1):
-            run_start -= 1
-        for position in range(max(tried, run_start - 1), word_start + 1):
+        if not run_start <= word_start <= run_end:
+            # Walk back once per run, not once per word: a run holding many
+            # credential words ("keykeykey…") would otherwise be quadratic.
+            run_start = word_start
+            while run_start > 0 and _KEY_CHAR.match(text, run_start - 1):
+                run_start -= 1
+            run_end = word_start
+            while run_end < len(text) and _KEY_CHAR.match(text, run_end):
+                run_end += 1
+        first = max(tried, run_start - 1, word_start - _CRED_REACH)
+        for position in range(first, word_start + 1):
             match = pattern.match(text, position)
             if match:
                 parts.append(text[copied:match.start()])
@@ -510,7 +545,7 @@ _RULE_TABLE = (
         r"(?=[+(\d])"
         + _CARD_LEAD_GUARD
         + r"(?:\+[1-9]\d{0,2}(?:[-.\s]?\d){6,13}|\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})"
-        + _CARD_TAIL_GUARD,
+        + _PHONE_TAIL_GUARD,
         _phone,
         _has_phone_shape,
     ),
@@ -573,16 +608,68 @@ def rules_for(packs: frozenset[str]) -> tuple[Rule, ...]:
     return tuple(rule for rule in RULES if rule.pack in packs)
 
 
+# Strings known to need no masking under a given rule set: the filter masks a
+# record, then the formatter masks the same values again, and log lines repeat
+# the same values constantly. A masked result counts as clean too — masking is
+# idempotent (pinned by tests), so the second pass over it is a lookup.
+# Bounded, and emptied rather than evicted when full.
+_CLEAN_LIMIT = 2048
+_CLEAN_MAX_LENGTH = 8192
+_clean: dict[int, tuple[tuple, dict[str, None]]] = {}
+
+
+def _clean_set(rules: tuple) -> dict[str, None]:
+    entry = _clean.get(id(rules))
+    if entry is None or entry[0] is not rules:
+        # Keeping `rules` in the entry keeps its id from being reused.
+        entry = _clean[id(rules)] = (rules, {})
+    return entry[1]
+
+
 def mask_by_patterns(text: str, rules: tuple[Rule, ...]) -> str:
+    clean = _clean_set(rules)
+    if text in clean:
+        return text
+    if not text.isascii():
+        # IGNORECASE folds a few non-ASCII letters onto ASCII ones ("ſ" is an
+        # "s", "ı" an "i"), which neither str.lower() nor the credential word
+        # search sees: run every rule plainly rather than risk a skipped match.
+        for rule in rules:
+            text = rule.pattern.sub(rule.repl, text)
+    else:
+        text = _mask_ascii(text, rules)
+    if len(text) <= _CLEAN_MAX_LENGTH:
+        if len(clean) >= _CLEAN_LIMIT:
+            clean.clear()
+        clean[text] = None
+    return text
+
+
+@lru_cache(maxsize=16)
+def _distinct_gates(rules: tuple[Rule, ...]) -> tuple:
+    return tuple(dict.fromkeys(rule.gate for rule in rules))
+
+
+def _passing_gates(text: str, lowered: str, gates: tuple) -> set:
+    return {gate for gate in gates if gate(text, lowered)}
+
+
+def _mask_ascii(text: str, rules: tuple[Rule, ...]) -> str:
+    gates = _distinct_gates(rules)
     lowered = text.lower()
-    # Several rules share a gate (the three credential forms, the three CVV
-    # forms): evaluate each gate once per version of the text.
-    gates: dict = {}
+    # Each distinct pre-check runs once per version of the text, and most
+    # strings in a log line (a pg code, an operation name) pass none of them.
+    passed = _passing_gates(text, lowered, gates)
+    if not passed:
+        return text
+    # After a substitution the text changed, so each later gate is asked again
+    # on the new text — lazily, only when a rule behind it comes up.
+    verdicts = {gate: gate in passed for gate in gates}
     for rule in rules:
-        passed = gates.get(rule.gate)
-        if passed is None:
-            passed = gates[rule.gate] = rule.gate(text, lowered)
-        if not passed:
+        verdict = verdicts.get(rule.gate)
+        if verdict is None:
+            verdict = verdicts[rule.gate] = rule.gate(text, lowered)
+        if not verdict:
             continue
         if rule.scan is not None:
             masked = rule.scan(rule.pattern, rule.repl, text)
@@ -591,7 +678,7 @@ def mask_by_patterns(text: str, rules: tuple[Rule, ...]) -> str:
         if masked != text:
             text = masked
             lowered = text.lower()
-            gates.clear()
+            verdicts.clear()
     return text
 
 
@@ -603,52 +690,46 @@ def mask_by_all_patterns(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Key-name rules
 # ---------------------------------------------------------------------------
-# A key is split into words ("cardHolderName" -> card, holder, name;
-# "x-api-key" -> x, api, key; trailing digits dropped, so "cvv2" -> cvv) and
-# matched word by word. Matching a substring of the whole key is what made
-# "namespace", "hostname" and "telemetry" read as a name and a phone number.
-# Glued spellings that real payloads use ("cardtoken", "firstname") are
-# listed or suffix-matched explicitly instead.
+# A key whose lowercased name contains a sensitive keyword masks its whole
+# value. Substring matching fails closed on the glued and plural names real
+# payloads use (phonenumber, cardcvv, nameoncard, tokens); its known false
+# positives are SAFE_KEYS. Card and expiry keys are matched precisely instead:
+# "card" alone is in card_id and discard, and "exp" in export and expected.
+KEYWORD_REGEX_FIELD_TYPE = (
+    (_CVV_KEYWORD, "cvv"),
+    (_CRED_KEY_NAME, "secret"),
+    (_PAYMENT_ID_KEYWORD, "payment_id"),
+    (_EMAIL_KEY_WORDS, "email"),
+    (_PHONE_KEY_WORDS, "phone"),
+    (_ADDRESS_KEY_WORDS, "address"),
+    (_NAME_KEY_WORDS, "name"),
+    (_GENERIC_PII_KEY_WORDS, "generic"),
+)
+
+KEYWORD_PATTERN_FIELD_TYPE = tuple(
+    (re.compile(regex, re.IGNORECASE), field_type)
+    for regex, field_type in KEYWORD_REGEX_FIELD_TYPE
+)
+
+_KEY_SEPARATORS = re.compile(r"[_\-.\s]+")
 _KEY_SPLIT = re.compile(r"[_\-.\s]+|(?<=[a-z0-9])(?=[A-Z])")
-_TRAILING_DIGITS = re.compile(r"\d+$")
-
-_CVV_WORDS = frozenset({"cvv", "cvc", "cvn", "csc", "securitycode"})
-_CARD_WORDS = frozenset({"pan", "cardnumber", "cardno"})
-_EXPIRY_PREFIXES = ("expiry", "expiration")
-_EXP_PARTS = frozenset({"month", "year", "date", "mm", "yy", "yyyy"})
-_SECRET_WORDS = frozenset({
-    "bearer", "basic", "digest", "credential", "credentials",
-    "authorization", "authorisation",
-})
-_SECRET_SUFFIXES = ("token", "secret", "password", "passwd")
-_KEY_PREFIXES = frozenset({
-    "secret", "private", "public", "encryption", "decryption", "signing",
-    "access", "master", "root", "session", "api",
-})
-_GLUED_KEYS = frozenset(prefix + "key" for prefix in _KEY_PREFIXES)
-_PAYMENT_ID_PREFIXES = frozenset({"payment", "transaction", "auth"})
-_GLUED_PAYMENT_IDS = frozenset(prefix + "id" for prefix in _PAYMENT_ID_PREFIXES)
-_PHONE_WORDS = frozenset({"phone", "mobile", "tel", "telephone", "msisdn", "cellphone"})
-_NAME_WORDS = frozenset({
-    "name", "cardholder", "beneficiary", "recipient", "payer",
-    "firstname", "lastname", "fullname", "middlename", "surname",
-    "givenname", "familyname", "holdername", "cardholdername",
-})
-_GENERIC_WORDS = frozenset({"billing", "shipping", "customer", "contact", "udf"})
 
 
-def _key_words(key: str) -> tuple[str, ...]:
-    words = []
-    for part in _KEY_SPLIT.split(key):
-        word = _TRAILING_DIGITS.sub("", part.lower())
-        if word:
-            words.append(word)
-    return tuple(words)
+def _is_card_key(lowered: str, joined: str, words: list[str]) -> bool:
+    return (
+        lowered == "card"
+        or "pan" in words
+        or "cardnumber" in joined
+        or joined.endswith("cardno")
+    )
 
 
-def _follows(words: tuple[str, ...], first: frozenset[str], second: str | frozenset[str]) -> bool:
-    seconds = second if isinstance(second, frozenset) else frozenset({second})
-    return any(a in first and b in seconds for a, b in pairwise(words))
+def _is_expiry_key(joined: str) -> bool:
+    return (
+        "expiry" in joined
+        or "expiration" in joined
+        or joined in {"expmonth", "expyear", "expdate", "cardexpmonth", "cardexpyear"}
+    )
 
 
 @lru_cache(maxsize=4096)
@@ -656,46 +737,25 @@ def classify_key(key: str, packs: frozenset[str]) -> str | None:
     """The field type a key name marks its value as, or None.
 
     Cached: a service logs a small, fixed set of key names, so after warm-up
-    this is a dict lookup instead of a scan per key per line.
+    this is a dict lookup instead of a regex scan per key per line.
     """
     lowered = key.lower()
     if lowered in SAFE_KEYS:
         return None
-    words = _key_words(key)
-    if not words:
-        return None
-    word_set = frozenset(words)
-    if word_set & _CVV_WORDS or _follows(words, frozenset({"security"}), "code"):
-        return "cvv"
-    if words == ("card",) or word_set & _CARD_WORDS or _follows(
-        words, frozenset({"card"}), frozenset({"number", "no"})
-    ):
-        return "card"
-    if any(word.startswith(_EXPIRY_PREFIXES) for word in words) or _follows(
-        words, frozenset({"exp"}), _EXP_PARTS
-    ):
-        return "expiry"
-    if (
-        word_set & _SECRET_WORDS
-        or word_set & _GLUED_KEYS
-        or any(word.endswith(_SECRET_SUFFIXES) for word in words)
-        or _follows(words, _KEY_PREFIXES, "key")
-    ):
-        return "secret"
-    if "financial_ids" in packs and (
-        word_set & _GLUED_PAYMENT_IDS or _follows(words, _PAYMENT_ID_PREFIXES, "id")
-    ):
-        return "payment_id"
-    if any(word.endswith("email") for word in words):
-        return "email"
-    if word_set & _PHONE_WORDS:
-        return "phone"
-    if any(word.endswith("address") for word in words):
-        return "address"
-    if word_set & _NAME_WORDS:
-        return "name"
-    if word_set & _GENERIC_WORDS:
-        return "generic"
+    joined = _KEY_SEPARATORS.sub("", lowered)
+    words = [word.lower() for word in _KEY_SPLIT.split(key) if word]
+    for pattern, field_type in KEYWORD_PATTERN_FIELD_TYPE:
+        if field_type == "secret":
+            # Card and expiry are checked after CVV and before credentials,
+            # so "card_expiry" is expiry and "cardtoken" stays a secret.
+            if _is_card_key(lowered, joined, words):
+                return "card"
+            if _is_expiry_key(joined):
+                return "expiry"
+        if field_type == "payment_id" and "financial_ids" not in packs:
+            continue
+        if pattern.search(lowered):
+            return field_type
     return None
 
 

@@ -19,16 +19,17 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from numbers import Number
 from typing import Any, NamedTuple
 
-from ecsctx.masking.config import _normalise, get_extra_skip_paths, get_masking_packs
+from ecsctx.masking.config import _normalise, get_masking_packs
 from ecsctx.masking.exemptions import (
     _get_exempt_patterns,
     _path_is_exempt,
-    _path_matches,
 )
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import (
+    ALL_PACKS,
     classify_key,
     mask_by_patterns,
     mask_card_value,
@@ -39,12 +40,16 @@ from ecsctx.masking.tokens import mask_by_field_type
 _IS_MASKED_ = "_IS_MASKED_"
 
 
-def mark_object_as_masked(obj: Any) -> None:
-    setattr(obj, _IS_MASKED_, True)
+def mark_object_as_masked(obj: Any, packs: frozenset[str] = ALL_PACKS) -> None:
+    """Record which packs masked ``obj``, so a filter with more packs (a PCI
+    handler after a default one) still masks it."""
+    done = getattr(obj, _IS_MASKED_, None)
+    setattr(obj, _IS_MASKED_, packs | done if isinstance(done, frozenset) else packs)
 
 
-def is_masked_object(obj: Any) -> bool:
-    return bool(getattr(obj, _IS_MASKED_, False))
+def is_masked_object(obj: Any, packs: frozenset[str] = frozenset()) -> bool:
+    done = getattr(obj, _IS_MASKED_, None)
+    return isinstance(done, frozenset) and packs <= done
 
 # service/project/log are ecsctx's own injected metadata, not user payload —
 # service/project come from SERVICE_TYPE/PROJECT_NAME env vars; log.origin.
@@ -53,24 +58,16 @@ def is_masked_object(obj: Any) -> bool:
 # PII name, so every filter skips them at the top level by default.
 STRUCTURAL_ECS_KEYS = frozenset({"service", "project", "log"})
 
-# Never scanned by default: correlation ids and ECS metadata, which are never
-# PII and whose whole purpose is to be joined on — a masked session_id or
-# trace.id breaks every query that follows a payment across services — plus
-# labels, which the event contract keeps to bounded scalars.
-DEFAULT_SKIP_KEYS = STRUCTURAL_ECS_KEYS | frozenset(
-    {"session_id", "trace", "span", "host", "labels", "ecs_event"}
-)
-# Nested leaves of the same kind, under parents whose other children are
-# scanned as usual (user.email, url.full, http.request.body).
-DEFAULT_SKIP_LEAVES = frozenset(
-    {
-        ("transaction", "id"),
-        ("user", "name"),
-        ("http", "request", "method"),
-        ("http", "response", "status_code"),
-        ("url", "domain"),
-    }
-)
+# Never scanned: ecsctx's own metadata, and the correlation ids services
+# generate themselves — their whole purpose is to be joined on, and a masked
+# session_id or trace.id breaks every query that follows a payment across
+# services.
+DEFAULT_SKIP_KEYS = STRUCTURAL_ECS_KEYS | frozenset({"session_id", "trace", "span"})
+
+# Keys whose name must not mask them, though their content is still scanned:
+# user.name is a login, which audit trails need, but where the login is an
+# email address the email rule still masks it.
+_NAME_RULE_EXEMPT = frozenset({("user", "name")})
 
 
 class _Pass(NamedTuple):
@@ -79,7 +76,6 @@ class _Pass(NamedTuple):
     packs: frozenset[str]
     rules: tuple
     exempt: tuple
-    extra_skip: tuple
 
 
 class MaskPIIFilter(logging.Filter):
@@ -102,12 +98,10 @@ class MaskPIIFilter(logging.Filter):
         self,
         *,
         skip_keys: "list[str] | frozenset[str]" = DEFAULT_SKIP_KEYS,
-        skip_leaves: Iterable[tuple[str, ...]] = DEFAULT_SKIP_LEAVES,
         packs: Iterable[str] | None = None,
     ) -> None:
         super().__init__()
         self._skip_keys = frozenset(skip_keys)
-        self._skip_leaves = frozenset(skip_leaves)
         # None follows ecsctx.masking.config at mask time, so a filter built by
         # dictConfig before settings are loaded still honours them.
         self._packs = None if packs is None else _normalise(packs)
@@ -117,7 +111,7 @@ class MaskPIIFilter(logging.Filter):
 
     def _context(self) -> _Pass:
         packs = self._packs_in_force()
-        return _Pass(packs, rules_for(packs), _get_exempt_patterns(), get_extra_skip_paths())
+        return _Pass(packs, rules_for(packs), _get_exempt_patterns())
 
     def _mask_string(self, text: str, ctx: _Pass | None = None) -> str:
         # No already_masked() early-exit here: that helper is a whole-string
@@ -138,17 +132,14 @@ class MaskPIIFilter(logging.Filter):
                 continue
             lookup_key = str(key)
             child_path = path + (lookup_key,)
-            if child_path in self._skip_leaves or (
-                ctx.extra_skip and any(_path_matches(child_path, p) for p in ctx.extra_skip)
-            ):
-                result[key] = value
-                continue
             field_type = classify_key(lookup_key, ctx.packs)
             if field_type is None:
                 result[key] = self._mask_value(value, child_path, ctx)
                 continue
             field_rule = get_field_rule(field_type)
-            if field_rule.exemptable and _path_is_exempt(child_path, ctx.exempt):
+            if field_rule.exemptable and (
+                child_path in _NAME_RULE_EXEMPT or _path_is_exempt(child_path, ctx.exempt)
+            ):
                 result[key] = self._mask_value(value, child_path, ctx)
             elif field_type == "card":
                 result[key] = mask_card_value(value)
@@ -182,17 +173,18 @@ class MaskPIIFilter(logging.Filter):
             return self._mask_dict(value, path, ctx)
         if isinstance(value, str):
             return self._mask_string(value, ctx)
-        # Scan the object's text, but hand back the object itself when that
-        # text holds nothing to mask: a Decimal or UUID turned into a string
-        # breaks a "%d"/"%f" placeholder and logging drops the whole line.
-        text = str(value)
-        masked = self._mask_string(text, ctx)
-        return value if masked == text else masked
+        if isinstance(value, Number):
+            # A Decimal or Fraction holds no PII, and turning it into a string
+            # breaks a "%d"/"%f" placeholder: logging would drop the line.
+            return value
+        # Any other object is replaced by its masked text: its repr() may be
+        # what a formatter renders, and that can hold what its str() hides.
+        return self._mask_string(str(value), ctx)
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if not is_masked_object(record):
-            ctx = self._context()
+        ctx = self._context()
+        if not is_masked_object(record, ctx.packs):
             record.msg = self._mask_value(record.msg, (), ctx)
             record.args = self._mask_value(record.args, (), ctx)
-            mark_object_as_masked(record)
+            mark_object_as_masked(record, ctx.packs)
         return True

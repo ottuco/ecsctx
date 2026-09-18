@@ -10,33 +10,41 @@ IBAN/SSN/payment-id rules, are now opt-in packs:
 0.7.x's content coverage. Key names (`card`, `pan`, `card_number`, `cvv`,
 `securityCode`, `expiry`, `exp_month`, …) are masked in every service.
 
-- Masking cost on a Connect gateway-response line: 250 µs → 28 µs per record
-  (0.6.8: 19 µs; `scripts/bench_masking.py`). Each record is masked once —
-  `get_logging_config()` no longer puts `MaskPIIFilter` on a handler whose
-  formatter already runs `mask_sensitive_data`; content rules sit behind
-  literal pre-checks; credential rules are tried only near credential words;
-  key decisions are cached.
-- Correlation fields are never scanned: `session_id`, `trace`, `span`,
-  `transaction.id`, `host`, `labels`, `user.name`, `http.request.method`,
-  `http.response.status_code`, `url.domain` (extend with
-  `ECSCTX_MASK_SKIP_PATHS`). A hex id starting with 10–19 digits was being
-  masked as a phone number or a PAN.
-- A digit run touching a letter is never a phone number, PAN or SSN.
-- Key names match by whole word: `namespace`, `hostname`, `telemetry`,
-  `tokenization_status`, `card_id` are no longer masked. `token_type`,
-  `ip_address`, `mac_address` are safe keys.
+- Masking a Connect gateway-response record through `get_logging_config()`
+  (handler filter + formatter): 487 µs → 43 µs (0.6.8, formatter only:
+  18 µs; `scripts/bench_masking.py`). Content rules sit behind literal
+  pre-checks with an early exit for strings no rule can match, credential
+  rules are tried only near credential words, key decisions are cached, and
+  the formatter's second pass skips strings already known clean.
+- The correlation ids `session_id`, `trace` and `span` are never scanned
+  (with `service`, `project`, `log`). A hex id starting with ten digits was
+  being masked as a phone number: a digit run touching a letter is no longer
+  a phone number. The card rule still matches a PAN followed by a letter
+  (Track 2 data).
+- Key names still match by substring, failing closed; `namespace`,
+  `hostname`, `filename`, `token_type`, `tokenization_status` are safe keys.
+  `user.name` is exempt from the name rule but content-scanned.
 - PANs below 15 digits keep only their last 4 (PCI SSC FAQ 1091 covers them
   only for Discover); 15–19 digits keep first 6 + last 4.
 - Card keys mask as in 0.6.8: a PAN value is truncated, a card object is one
   `[CARD-MASKED]`; expiry keys give `[EXPIRY-MASKED]` (they logged in clear
   since 0.7.0). Card values are never tokenized.
-- `logger.info("%.3f", Decimal(...))` formats again (the filter no longer
-  turns non-string args into strings unless it masked something in them).
-- Exemption paths match from any depth: 0.6.x container-relative patterns
-  (`payment_methods[*].name`) work again next to root-relative ones.
-- Boot check: a handler whose formatter runs `mask_sensitive_data` counts as
-  masked; Django's `AdminEmailHandler` counts as shipping only when `ADMINS`
-  is set, so a stock project passes `manage.py check` with
+- `logger.info("%.3f", Decimal(...))` formats again: numbers are kept as
+  numbers; any other object is replaced by its masked text.
+- Exemption paths anchor at the root or a payload container, so 0.6.x
+  container-relative patterns (`payment_methods[*].name`) work again.
+- A record masked with fewer packs is masked again by a filter with more
+  (a PCI handler after a default one).
+- `mask_sensitive_data` masks free-text `event.*` fields such as
+  `event.reason`; only the bounded ones (action, kind, category, type,
+  outcome, duration) are left alone.
+- `ECSCTX_MASKING_PACKS` may be a list or a comma-separated string; an
+  unknown pack name turns every pack on, warns once, and fails the boot
+  check.
+- The credential key prefix is bounded to 128 characters: a 20 KB run of
+  `a-a-a-…token` took seconds to scan.
+- Boot check: Django's `AdminEmailHandler` counts as shipping only when
+  `ADMINS` is set, so a stock project passes `manage.py check` with
   `ENVIRONMENT=prod`.
 
 ## v0.7.2 (2026-09-17)

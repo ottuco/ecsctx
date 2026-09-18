@@ -6,6 +6,8 @@
 --compare loads each tag's ecsctx straight from git (nothing is checked out)
 and prints its numbers beside this checkout's. Figures are microseconds per
 call, best of several runs, with the cost of copying the event subtracted.
+"(full record)" is one record through get_logging_config()'s masking: the
+handler filter, then the formatter's processor (processor only before 0.7.0).
 Compare numbers from the same machine only.
 """
 
@@ -16,6 +18,7 @@ import copy
 import importlib.abc
 import importlib.util
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -84,12 +87,47 @@ FIXTURES = {
 }
 
 
+def _forget_clean_strings():
+    """Every call must see its strings for the first time, as a real gateway
+    body is: otherwise the clean-string cache answers from the previous call."""
+    try:
+        from ecsctx.masking import patterns
+    except ImportError:
+        return lambda: None
+    clean = getattr(patterns, "_clean", None)
+    return clean.clear if clean is not None else (lambda: None)
+
+
 def _measure(mask, event, number=2000, repeat=7):
-    copy_cost = min(timeit.repeat(lambda: copy.deepcopy(event), number=number, repeat=repeat))
-    total = min(
-        timeit.repeat(lambda: mask(None, "info", copy.deepcopy(event)), number=number, repeat=repeat)
-    )
+    forget = _forget_clean_strings()
+
+    def baseline():
+        forget()
+        copy.deepcopy(event)
+
+    def call():
+        forget()
+        mask(None, "info", copy.deepcopy(event))
+
+    copy_cost = min(timeit.repeat(baseline, number=number, repeat=repeat))
+    total = min(timeit.repeat(call, number=number, repeat=repeat))
     return (total - copy_cost) / number * 1e6
+
+
+def _full_record(mask_sensitive_data, filter_class):
+    """What get_logging_config() does per structlog record: the handler's
+    filter masks record.msg in place, then the formatter's processor masks the
+    event again. Before 0.7.0 there was no filter, so the processor alone."""
+    if filter_class is None:
+        return mask_sensitive_data
+    masking_filter = filter_class()
+
+    def run(_logger, method, event):
+        record = logging.LogRecord("bench", logging.INFO, __file__, 0, event, None, None)
+        masking_filter.filter(record)
+        return mask_sensitive_data(_logger, method, record.msg)
+
+    return run
 
 
 def run_here() -> dict[str, float]:
@@ -99,12 +137,18 @@ def run_here() -> dict[str, float]:
         from ecsctx.masking.config import configure_masking_packs
     except ImportError:  # a tag from before packs existed
         configure_masking_packs = None
+    try:
+        from ecsctx.masking.filters import MaskPIIFilter
+    except ImportError:  # before 0.7.0
+        MaskPIIFilter = None
 
+    full = _full_record(mask_sensitive_data, MaskPIIFilter)
     results = {}
     for name, (event, packs) in FIXTURES.items():
         if configure_masking_packs is not None:
             configure_masking_packs(packs)
         results[name] = _measure(mask_sensitive_data, event)
+        results[f"{name} (full record)"] = _measure(full, event)
     return results
 
 
@@ -170,10 +214,11 @@ def main() -> None:
 
     columns = {tag: run_tag(tag) for tag in args.compare}
     columns["this checkout"] = run_here()
-    width = max(len(name) for name in FIXTURES)
+    rows = [row for name in FIXTURES for row in (name, f"{name} (full record)")]
+    width = max(len(row) for row in rows)
     print(f"{'µs per call':<{width}}  " + "  ".join(f"{c:>14}" for c in columns))
-    for name in FIXTURES:
-        print(f"{name:<{width}}  " + "  ".join(f"{columns[c][name]:>14.1f}" for c in columns))
+    for row in rows:
+        print(f"{row:<{width}}  " + "  ".join(f"{columns[c][row]:>14.1f}" for c in columns))
 
 
 if __name__ == "__main__":

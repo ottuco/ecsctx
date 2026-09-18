@@ -1,4 +1,4 @@
-# Masking packs, one pass, and precise rules (ecsctx 0.8.0)
+# Masking packs, cheap passes, and precise rules (ecsctx 0.8.0)
 
 ## Why
 
@@ -38,8 +38,8 @@ line for PANs and CVVs costs them CPU and correlation for nothing.
    token or hash beside a truncated PAN (FAQ 1117).
 4. **CVV is masked in full, never tokenized**, in every form the `pci` pack detects,
    including a token + CVV payment (no PAN present).
-5. **One masking pass per record per handler.**
-6. **Structural fields are never content-scanned.**
+5. **Masking twice stays; the second pass is made cheap.** (Revised after review — see below.)
+6. **Correlation ids are never scanned.**
 
 Released as **0.8.0**: a PCI service that upgrades without enabling `pci` loses PAN and
 CVV content masking. The CHANGELOG says so first.
@@ -188,3 +188,49 @@ script prints 0.6.8 / 0.7.2 / new numbers for the PR.
   warnings once).
 - `contrib.net` parity with Connect (`url_host`, `loggable_request_body`,
   `redact_url(secrets=)`, deny-list `loggable_body`, precise query hints).
+
+## What the review changed
+
+An adversarial review ran the branch against v0.7.2 and found leaks; each is
+now a test in `tests/test_masking_review.py`. The design above is revised as
+follows, and where a section above says otherwise, this section wins.
+
+- **Masking twice stays.** Dropping the filter from the console handler left
+  the record itself unmasked — the formatter only masks a copy — so Sentry's
+  logging integration, `Handler.handleError` and handlers that never call
+  `format()` (`AdminEmailHandler`, `HTTPHandler`, socket handlers) saw raw
+  values, and stdlib `%(name)s` dict args lost key-based masking. The filter
+  is back on every handler; the boot check again requires it (a masking
+  formatter does not count). The formatter's second pass is cheap because
+  `mask_by_patterns` remembers strings already known clean.
+- **Key names match by substring, as in 0.7.x.** Whole-word matching failed
+  open on glued and plural names (`phonenumber`, `cardcvv`, `nameoncard`,
+  `tokens`). Known false positives are safe keys instead: `namespace`,
+  `hostname`, `filename`, `token_type`, `tokenization_status`. Card and
+  expiry keys stay precise.
+- **The skip set is only ecsctx metadata and correlation ids**: `service`,
+  `project`, `log`, `session_id`, `trace`, `span`. Labels and `event.*` free
+  text (`event.reason`) are scanned; `user.name` is exempt from the name rule
+  but content-scanned (an email login is masked). `ECSCTX_MASK_SKIP_PATHS` is
+  dropped: a string value was iterated character by character and a bare
+  "." disabled all masking.
+- **The card rule keeps 0.7.x's tail guard.** Track 2 data puts a `D` right
+  after the PAN; only the phone rule refuses a following letter.
+- **Arguments:** numbers are kept (so `%d`/`%f` format); any other object is
+  replaced by its masked text, because a formatter may render its `repr()`.
+- **The record marker stores the packs that masked it**, so a PCI filter
+  after a default one still masks.
+- **Pack configuration fails closed**: a string setting is a CSV list; an
+  unknown pack name turns every pack on, warns once, and fails the boot check.
+- **Exemptions anchor at the root or a payload container**, not at any depth.
+- **Credential rules are linear**: the scanner walks back once per `[\w-]`
+  run and tries at most 130 positions per credential word, and the key
+  prefix in the regex is bounded to 128 characters.
+- **Non-ASCII strings skip the pre-checks and the scanner**: `IGNORECASE`
+  folds `ſ` onto `s` and `ı` onto `i`, which neither `str.lower()` nor
+  `str.find` sees.
+- **Budget, measured:** a Connect record through `get_logging_config()` costs
+  43 µs (0.7.2: 487 µs; 0.6.8, formatter only: 18 µs) — 2.4× 0.6.8, over the
+  2× budget set when one pass looked safe. The remaining cost is Python-level
+  dict walking in two passes.
+

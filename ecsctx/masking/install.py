@@ -3,15 +3,16 @@
 install_maskers_in_config() takes the LOGGING config dict (the one
 get_logging_config() returns, before dictConfig() runs on it) and injects
 the filter definition into it: adds "mask_pii_filter" to filters and
-references it from every handler whose formatter does not already run
-mask_sensitive_data — a handler whose formatter masks would only be masked
-twice. Call it before dictConfig() so the handlers dictConfig builds carry
-the filter from the start.
+references it from every handler. The filter masks the record in place, which
+is what protects whatever reads the record besides the formatter: Sentry's
+logging integration, Handler.handleError, handlers that never call format().
+Call it before dictConfig() so the handlers dictConfig builds carry the filter
+from the start.
 
 install_maskers_on_handlers() sweeps any handler that already exists as a
 live object right now (third-party handlers, hand-built ones, or a logging
-setup that predates this feature), skipping the same formatter-masked ones
-— the explicit escape hatch for handlers ecsctx never configured. Deliberately does NOT patch logging.Handler or
+setup that predates this feature) — the explicit escape hatch for handlers
+ecsctx never configured. Deliberately does NOT patch logging.Handler or
 anything else in the standard library — only handlers that exist at the
 moment it is called are covered. A handler created after the call and
 outside the LOGGING dict is not covered by this layer; it is still covered

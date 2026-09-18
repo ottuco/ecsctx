@@ -215,8 +215,12 @@ def find_masking_errors(logging_config: dict[str, Any]) -> list[str]:
     The entry points below all go through this, so none of them can pass while
     the other half is broken.
     """
-    return find_masking_config_errors(logging_config) + find_unmasked_live_handlers(
-        logging_config
+    from ecsctx.masking.config import masking_pack_errors
+
+    return (
+        find_masking_config_errors(logging_config)
+        + find_unmasked_live_handlers(logging_config)
+        + masking_pack_errors()
     )
 
 

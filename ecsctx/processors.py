@@ -382,6 +382,12 @@ def contextvars_injector(_logger, _method_name, event_dict):
 # DEFAULT_SKIP_KEYS in ecsctx.masking.filters.
 _default_filter = MaskPIIFilter()
 
+# ECS event fields whose values come from closed sets or the event registry.
+# event.reason and anything else under event.* is free text and is masked.
+_BOUNDED_EVENT_FIELDS = frozenset(
+    {"event.action", "event.kind", "event.category", "event.type", "event.outcome", "event.duration"}
+)
+
 
 def mask_pan(number: str) -> str:
     """Truncate a PAN: first 6 + last 4 from 15 digits up, last 4 below.
@@ -441,15 +447,15 @@ def mask_sensitive_data(_logger, _method_name, event_dict):
     """Structlog processor for PII/PCI masking and tokenization.
 
     Delegates to MaskPIIFilter, which walks the whole event_dict (except
-    the structural fields in DEFAULT_SKIP_KEYS/DEFAULT_SKIP_LEAVES and the
-    `event.*` dotted ECS event fields) recursively, masking sensitive
+    the structural fields in DEFAULT_SKIP_KEYS and the bounded `event.*`
+    fields — action, kind, category, type, outcome, duration) recursively, masking sensitive
     content and dict keys with the packs in force. Idempotent: masked
     markers are left as they are.
 
     Bytes ``payload=`` must be parsed by ``normalize_payload_field``
     earlier in the chain — this processor never parses raw bytes itself.
     """
-    to_mask = {k: v for k, v in event_dict.items() if not (isinstance(k, str) and k.startswith("event."))}
+    to_mask = {k: v for k, v in event_dict.items() if k not in _BOUNDED_EVENT_FIELDS}
     masked = _default_filter._mask_dict(to_mask)
     event_dict.update(masked)
     return event_dict
