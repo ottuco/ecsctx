@@ -863,7 +863,9 @@ two boundary shapes need dedicated helpers — import them instead of copying
 them per service:
 
 ```python
-from ecsctx.contrib.net import loggable_body, redact_body, redact_url
+from ecsctx.contrib.net import (
+    loggable_body, loggable_request_body, redact_body, redact_url, url_host,
+)
 ```
 
 - `redact_url(url)` — masks credential-looking query params (`password`,
@@ -874,9 +876,20 @@ from ecsctx.contrib.net import loggable_body, redact_body, redact_url
   `client_secret`, …) in JSON and form-encoded bodies. A bare `token` key is
   deliberately left alone: gateways reuse it for non-secret payment/session
   identifiers that log readers rely on.
-- `loggable_body(response)` — the response body to log: capped text for
-  textual responses, else `None`. Redacts **before** capping, so a cap landing
-  mid-value cannot leave a token head exposed.
+- `redact_url(url, secrets=[token])` also masks literal values anywhere in
+  the URL — a saved-card token in a path such as `/card/<token>/`.
+- `url_host(url)` — the host to name in a log *message*; the full URL belongs
+  in `url.full`, because a message is a grouping key.
+- `loggable_body(response)` — the response body to log, or `None`. A
+  deny-list (`UNREADABLE_CONTENT_TYPES`: HTML, CSV, PDF, images, archives)
+  rather than an allow-list, because gateways mislabel JSON as `text/plain`
+  or omit `Content-Type`; an HTML/PDF body is still kept when the status is
+  4xx/5xx, since an edge proxy's block page is the whole explanation. A JSON
+  body is masked by its keys before it is serialised (so `"securityCode"` is
+  caught without the `pci` pack), then redacted **before** capping, so a cap
+  landing mid-value cannot leave a token head exposed.
+- `loggable_request_body(data, json_body)` — the same for the outbound half
+  (`json_body` wins over form `data`); never raises.
 
 Configure per deploy without code changes. Precedence: explicit call >
 Django settings > env vars > defaults (same lazy pattern as the masking
@@ -1864,8 +1877,39 @@ is always valid. Before this module, one service carried 34 hand-rolled names:
 88% with no namespace, two containing a literal space, one in SCREAMING_CASE.
 
 `ecsctx.events` ships the **mechanism** — how an event is declared, how a domain
-claims a prefix, where a field lands. It deliberately ships **no vocabulary**:
-your business events stay in your own codebase and register at startup.
+claims a prefix, where a field lands. The shared Ottu vocabulary is in
+`ecsctx.contrib.ottu` (below); anything else stays in your own codebase and
+registers at startup.
+
+### The shared Ottu catalogue (`ecsctx.contrib.ottu`)
+
+63 events in 11 domains (`pg`, `crypto`, `payment`, `card`, `threeds`, `net`,
+`task`, `cache`, `api`, `webhook`, `auth`), each an `EventSpec` constant with its
+ECS `category`/`type`, bounded `reasons` and levels, so every service names the
+same thing the same way. Import the constant; register once, together with your
+service's own events, from `AppConfig.ready()`:
+
+```python
+from ecsctx.contrib.ottu import register_ottu
+from ecsctx.contrib.ottu.pg import PG_REQUEST_FAILED
+
+register_ottu(
+    local={
+        "pg": (PG_PAYLOAD_BUILT,),            # your events under a shared prefix
+        "wallet": WALLET_EVENTS,              # a prefix of your own
+    },
+    aliases={"token_blacklist": "auth.token_revoked"},  # retired names you still emit
+)                                              # freezes the registry
+
+logger.warning("PSP rejected the call", ecs_event=PG_REQUEST_FAILED.ecs(
+    outcome="failure", reason="http_client_error"))
+```
+
+A prefix can be registered only once, which is why your events under a shared
+prefix go through `register_ottu(local=...)` rather than a second
+`register_domain`; redefining a shared action raises. The `api` domain is the
+one `@api_logging` emits, so it never conflicts with `register_http_events()`.
+A retired name warns once, not on every line.
 
 ### Declaring and registering
 
@@ -1911,8 +1955,9 @@ picks the level, and calls the logger. Positional args pass through untouched, s
 lazy `%s` formatting still works.
 
 **Level** comes from the spec: `level` on the success path, `level_on_failure`
-when `outcome="failure"` (defaulting to `error` for terminal events). Pass
-`level=` to override.
+when `outcome="failure"` (`failure_level` if the spec sets one — the catalogue's
+warning-level `*_rejected`/`*_failed` events do — else `error` for terminal
+events). Pass `level=` to override.
 
 ### Field placement
 

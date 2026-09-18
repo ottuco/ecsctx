@@ -9,17 +9,23 @@ from ecsctx.events.spec import EventSpec
 
 THREEDS_AUTHENTICATION_REQUESTED = EventSpec(
     action="threeds.authentication_requested",
+    category=("authentication",),
+    type=("start",),
     required=("payment.reference", "payment.pg_code"),
 )
 
 THREEDS_CHALLENGE_ISSUED = EventSpec(
     action="threeds.challenge_issued",
+    category=("authentication",),
+    type=("creation",),
     required=("payment.reference", "session_id"),
 )
 
 THREEDS_AUTHENTICATION_COMPLETED = EventSpec(
     action="threeds.authentication_completed",
     terminal=True,
+    category=("authentication",),
+    type=("end",),
     required=("event.outcome", "labels.auth_status", "payment.reference"),
 )
 
