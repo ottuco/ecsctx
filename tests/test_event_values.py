@@ -98,6 +98,26 @@ class TestCatalogueReasons:
         assert all(isinstance(r, Reason) for r in spec.reasons)
         assert len({type(r) for r in spec.reasons}) == 1
 
+    def test_events_that_require_a_reason_but_declare_no_set_are_pinned(self):
+        # These require `event.reason` (ticket #159487) but no service logs one
+        # yet, so there are no values to declare. They take no reason until the
+        # first service that needs one adds the `Reason` class here. Pinned so
+        # the list only shrinks: a new event that requires a reason declares
+        # its set.
+        pending = {
+            s.action for s in _catalogue() if "event.reason" in s.required and not s.reasons
+        }
+        assert pending == {
+            "auth.identity_sync_failed",
+            "auth.session_check_skipped",
+            "auth.session_terminated",
+            "card.token_lookup_failed",
+            "card.tokenization_skipped",
+            "payment.duplicate_suppressed",
+            "payment.state_change_skipped",
+            "pg.credentials_unavailable",
+        }
+
     def test_both_request_failed_events_share_the_outbound_set(self):
         assert PG_REQUEST_FAILED.reasons == tuple(OutboundFailure)
         assert OUTBOUND_FAILURE_REASONS == tuple(OutboundFailure)

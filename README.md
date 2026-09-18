@@ -2032,9 +2032,11 @@ until the line runs, usually on the failure path. The document carries the
 plain value (`"failure"`, `"invalid_signature"`), so nothing changes in the
 index. A member of another event's set is rejected even when its value matches
 — `WebhookFailure.TIMEOUT` does not explain a `pg.request_failed`. Plain strings
-are still accepted for a declared value. A set with members cannot be
-subclassed, so a new reason for a shared event is added where the set is
-declared.
+are still accepted for a declared value. An event that declares no set takes no
+reason at all: a reason is a bounded value or it aggregates nothing, so the
+event's `Reason` class is declared before the first call site passes one. A set
+with members cannot be subclassed, so a new reason for a shared event is added
+where the set is declared.
 
 **The level is the call site's.** The spec's `level` and `failure_level` declare
 the intended level (the catalogue's warning-level `*_rejected`/`*_failed` events
