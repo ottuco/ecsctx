@@ -320,8 +320,9 @@ def _has_at(text: str, _lowered: str) -> bool:
     return "@" in text
 
 
-def _has_jwt_prefix(text: str, _lowered: str) -> bool:
-    return "eyJ" in text
+def _has_jwt_prefix(_text: str, lowered: str) -> bool:
+    # The rules compile with IGNORECASE, so the JWT rule matches "EYJ…" too.
+    return "eyj" in lowered
 
 
 def _has_card_shape(text: str, _lowered: str) -> bool:

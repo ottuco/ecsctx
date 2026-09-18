@@ -366,3 +366,22 @@ class TestCredentialScanMatchesFullScan:
         for sample in samples:
             for rule in self._credential_rules():
                 assert rule.scan(rule.pattern, rule.repl, sample) == rule.pattern.sub(rule.repl, sample)
+
+
+class TestGatesNeverChangeAResult:
+    """A gate may only skip a rule that could not have matched."""
+
+    def test_each_rule_matches_the_same_with_and_without_its_gate(self):
+        samples = [
+            "EYJhbGciOiJIUzI1NiJ9.EYJzdWIiOiIxIn0.abcdefghij",
+            "-----begin rsa private key-----\nMIIB\n-----end rsa private key-----",
+            "CVV: 123", "Security Code 1234", "TRANSACTION_ID=abc12345xyz",
+            "gb33BUKB20201555555555", "(555) 123-4567", "+965 5555 1234",
+            "A@B.CO", "4111-1111-1111-1111", "123-45-6789", "call 123 now",
+            "AUTHORIZATION: Bearer abc12345def", "Api-Key=abc123",
+        ]
+        for rule in RULES:
+            for text in samples:
+                gated = rule.gate(text, text.lower())
+                if not gated:
+                    assert rule.pattern.sub(rule.repl, text) == text, (rule.name, text)
