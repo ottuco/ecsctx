@@ -1808,14 +1808,16 @@ service's own events, from `AppConfig.ready()`:
 ```python
 from ecsctx.contrib.ottu import register_ottu
 from ecsctx.contrib.ottu.pg import PG_REQUEST_FAILED
+from ecsctx.events import EventSpec
+
+# Your own events: one under a shared prefix, one under a prefix of your own.
+PG_PAYLOAD_BUILT = EventSpec(action="pg.payload_built", terminal=True, type=("info",))
+WALLET_DEBITED = EventSpec(action="wallet.debited", terminal=True, type=("change",))
 
 register_ottu(
-    local={
-        "pg": (PG_PAYLOAD_BUILT,),            # your events under a shared prefix
-        "wallet": WALLET_EVENTS,              # a prefix of your own
-    },
+    local={"pg": (PG_PAYLOAD_BUILT,), "wallet": (WALLET_DEBITED,)},
     aliases={"token_blacklist": "auth.token_revoked"},  # retired names you still emit
-)                                              # freezes the registry
+)                                                      # freezes the registry
 
 logger.warning("PSP rejected the call", ecs_event=PG_REQUEST_FAILED.ecs(
     outcome="failure", reason="http_client_error"))
