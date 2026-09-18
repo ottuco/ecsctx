@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 
+from ecsctx.masking.exemptions import _compile_path
 from ecsctx.masking.patterns import ALL_PACKS
 
 _ENV_VAR = "ECSCTX_MASKING_PACKS"
@@ -29,6 +30,10 @@ _ALWAYS = frozenset({"default"})
 
 _explicit: frozenset[str] | None = None
 _resolved: frozenset[str] | None = None
+
+_SKIP_ENV_VAR = "ECSCTX_MASK_SKIP_PATHS"
+_skip_explicit: tuple[tuple[str, ...], ...] | None = None
+_skip_resolved: tuple[tuple[str, ...], ...] | None = None
 
 
 def _normalise(packs: Iterable[str]) -> frozenset[str]:
@@ -48,7 +53,7 @@ def configure_masking_packs(packs: Iterable[str] | None) -> None:
     _resolved = None
 
 
-def _from_django_settings() -> tuple[bool, Iterable[str] | None]:
+def _from_django_settings(name: str = "ECSCTX_MASKING_PACKS") -> tuple[bool, Iterable[str] | None]:
     """(settings_ready, value). Django is an optional extra."""
     try:
         from django.conf import settings
@@ -56,7 +61,7 @@ def _from_django_settings() -> tuple[bool, Iterable[str] | None]:
         return True, None
     if not settings.configured:
         return False, None
-    return True, getattr(settings, "ECSCTX_MASKING_PACKS", None)
+    return True, getattr(settings, name, None)
 
 
 def get_masking_packs() -> frozenset[str]:
@@ -75,8 +80,35 @@ def get_masking_packs() -> frozenset[str]:
     return packs
 
 
+def configure_masking_skip_paths(paths: Iterable[str] | None) -> None:
+    """Extra paths never scanned, on top of the structural ones in
+    ``ecsctx.masking.filters``. Same syntax as exemption paths, anchored at
+    the root of the record. ``None`` goes back to settings/env."""
+    global _skip_explicit, _skip_resolved
+    _skip_explicit = None if paths is None else tuple(_compile_path(p) for p in paths if p)
+    _skip_resolved = None
+
+
+def get_extra_skip_paths() -> tuple[tuple[str, ...], ...]:
+    """``ECSCTX_MASK_SKIP_PATHS``: explicit, then Django setting, then env (CSV)."""
+    global _skip_resolved
+    if _skip_explicit is not None:
+        return _skip_explicit
+    if _skip_resolved is not None:
+        return _skip_resolved
+    settings_ready, from_settings = _from_django_settings("ECSCTX_MASK_SKIP_PATHS")
+    if from_settings is None:
+        from_settings = os.environ.get(_SKIP_ENV_VAR, "").split(",")
+    paths = tuple(_compile_path(p.strip()) for p in from_settings if p and p.strip())
+    if settings_ready:
+        _skip_resolved = paths
+    return paths
+
+
 def _reset_masking_config() -> None:
     """Forget every choice. For tests."""
-    global _explicit, _resolved
+    global _explicit, _resolved, _skip_explicit, _skip_resolved
     _explicit = None
     _resolved = None
+    _skip_explicit = None
+    _skip_resolved = None

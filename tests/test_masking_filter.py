@@ -24,6 +24,7 @@ import pytest
 
 from ecsctx.masking.fields_rules import FIELD_RULES, get_field_rule
 from ecsctx.masking.filters import (
+    DEFAULT_SKIP_KEYS,
     STRUCTURAL_ECS_KEYS,
     MaskPIIFilter,
     is_masked_object,
@@ -985,8 +986,9 @@ class TestMaskPIIFilterEngine:
         out = flt._mask_value({"service": {"name": "John Doe should be masked"}})
         assert out["service"]["name"] != "John Doe should be masked"
 
-    def test_default_skip_keys_is_structural_ecs_keys(self):
-        assert MaskPIIFilter()._skip_keys == STRUCTURAL_ECS_KEYS
+    def test_default_skip_keys_cover_structural_and_correlation_keys(self):
+        assert MaskPIIFilter()._skip_keys == DEFAULT_SKIP_KEYS
+        assert STRUCTURAL_ECS_KEYS <= DEFAULT_SKIP_KEYS
 
     @pytest.mark.parametrize("container", [list, tuple, set])
     def test_iterable_container_type_is_preserved(self, container):

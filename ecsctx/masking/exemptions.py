@@ -8,9 +8,10 @@ exempted; secrets (cvv/credential/payment-id) never are — see
 ecsctx.masking.patterns.key_label.
 
 Path syntax: dict step "key", array step "[*]", single dict-key wildcard "*".
-Matching is a PREFIX match, so a pattern also exempts the whole subtree below
-it ("payment_methods" exempts everything under it; "payment_methods[*].name"
-only that leaf).
+A pattern may start at any depth of the record, and matching is a PREFIX
+match from there, so it also exempts the whole subtree below it
+("payment_methods" exempts everything under it wherever it appears;
+"payment_methods[*].name" only that leaf).
 """
 
 from __future__ import annotations
@@ -90,4 +91,10 @@ def _path_matches(path: tuple, pattern: tuple) -> bool:
 
 
 def _path_is_exempt(path: tuple, patterns: tuple) -> bool:
-    return any(_path_matches(path, p) for p in patterns)
+    """True if a pattern matches the path from the root or from any key below it.
+
+    Patterns were written relative to the payload container in 0.6.x
+    ("payment_methods[*].name") and relative to the whole record since 0.7.0
+    ("payload.payment_methods[*].name"); anchoring at any depth honours both.
+    """
+    return any(_path_matches(path[start:], p) for p in patterns for start in range(len(path)))

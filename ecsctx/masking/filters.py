@@ -21,8 +21,8 @@ import logging
 from collections.abc import Iterable
 from typing import Any
 
-from ecsctx.masking.config import _normalise, get_masking_packs
-from ecsctx.masking.exemptions import _get_exempt_patterns, _path_is_exempt
+from ecsctx.masking.config import _normalise, get_extra_skip_paths, get_masking_packs
+from ecsctx.masking.exemptions import _get_exempt_patterns, _path_is_exempt, _path_matches
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import classify_key, mask_by_patterns, mask_card_value, rules_for
 from ecsctx.masking.tokens import mask_by_field_type
@@ -44,6 +44,25 @@ def is_masked_object(obj: Any) -> bool:
 # PII name, so every filter skips them at the top level by default.
 STRUCTURAL_ECS_KEYS = frozenset({"service", "project", "log"})
 
+# Never scanned by default: correlation ids and ECS metadata, which are never
+# PII and whose whole purpose is to be joined on — a masked session_id or
+# trace.id breaks every query that follows a payment across services — plus
+# labels, which the event contract keeps to bounded scalars.
+DEFAULT_SKIP_KEYS = STRUCTURAL_ECS_KEYS | frozenset(
+    {"session_id", "trace", "span", "host", "labels", "ecs_event"}
+)
+# Nested leaves of the same kind, under parents whose other children are
+# scanned as usual (user.email, url.full, http.request.body).
+DEFAULT_SKIP_LEAVES = frozenset(
+    {
+        ("transaction", "id"),
+        ("user", "name"),
+        ("http", "request", "method"),
+        ("http", "response", "status_code"),
+        ("url", "domain"),
+    }
+)
+
 
 class MaskPIIFilter(logging.Filter):
     """Masks PII and PCI-sensitive data in log records before they reach a handler.
@@ -64,11 +83,13 @@ class MaskPIIFilter(logging.Filter):
     def __init__(
         self,
         *,
-        skip_keys: "list[str] | frozenset[str]" = STRUCTURAL_ECS_KEYS,
+        skip_keys: "list[str] | frozenset[str]" = DEFAULT_SKIP_KEYS,
+        skip_leaves: "Iterable[tuple[str, ...]]" = DEFAULT_SKIP_LEAVES,
         packs: Iterable[str] | None = None,
     ) -> None:
         super().__init__()
         self._skip_keys = frozenset(skip_keys)
+        self._skip_leaves = frozenset(skip_leaves)
         # None follows ecsctx.masking.config at mask time, so a filter built by
         # dictConfig before settings are loaded still honours them.
         self._packs = None if packs is None else _normalise(packs)
@@ -88,6 +109,7 @@ class MaskPIIFilter(logging.Filter):
     def _mask_dict(self, data: dict, path: tuple = ()) -> dict:
         exempt = _get_exempt_patterns()
         packs = self._packs_in_force()
+        extra_skip = get_extra_skip_paths()
         result = {}
         for key, value in data.items():
             if path == () and key in self._skip_keys:
@@ -95,6 +117,11 @@ class MaskPIIFilter(logging.Filter):
                 continue
             lookup_key = str(key)
             child_path = path + (lookup_key,)
+            if child_path in self._skip_leaves or (
+                extra_skip and any(_path_matches(child_path, p) for p in extra_skip)
+            ):
+                result[key] = value
+                continue
             field_type = classify_key(lookup_key, packs)
             if field_type is None:
                 result[key] = self._mask_value(value, child_path)

@@ -16,6 +16,7 @@ from ecsctx.masking.config import (
     configure_masking_packs,
     get_masking_packs,
 )
+from ecsctx.masking.exemptions import configure_masking
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, classify_key
 from ecsctx.processors import mask_pan
@@ -199,3 +200,51 @@ class TestBoundariesAndTruncation:
         assert mask_pan("4111111111111111") == "411111******1111"
         assert mask_pan("378282246310005") == "378282*****0005"
         assert mask_pan("5018123456789") == "*********6789"
+
+
+class TestStructuralFields:
+    def test_structural_fields_are_not_scanned(self):
+        event = {
+            "session_id": "8231045567abcd",
+            "trace": {"id": "4111111111111111"},
+            "span": {"id": "5551234567"},
+            "transaction": {"id": "4111111111111111"},
+            "labels": {"namespace": "cybersource", "hostname": "jade", "customer": "x"},
+            "user": {"id": "7", "name": "admin@jade.ottu.dev"},
+            "http": {"request": {"method": "POST"}, "response": {"status_code": 200}},
+            "url": {"domain": "a@b.co"},
+            "service": {"name": "app"},
+            "host": {"name": "jade", "ip": ["10.0.0.1"]},
+        }
+        assert MaskPIIFilter(packs=ALL_PACKS)._mask_dict(dict(event)) == event
+
+    def test_the_rest_of_a_structural_parent_is_still_scanned(self):
+        masked = MaskPIIFilter()._mask_dict(
+            {"user": {"email": "a@b.co"}, "url": {"full": "https://h/p?e=a@b.co"}}
+        )
+        assert masked == {
+            "user": {"email": "[EMAIL-MASKED]"},
+            "url": {"full": "https://h/p?e=[EMAIL-MASKED]"},
+        }
+
+    def test_extra_skip_paths_come_from_settings(self, settings):
+        settings.ECSCTX_MASK_SKIP_PATHS = ["payment.reference"]
+        masked = MaskPIIFilter()._mask_dict({"payment": {"reference": "a@b.co", "note": "a@b.co"}})
+        assert masked == {"payment": {"reference": "a@b.co", "note": "[EMAIL-MASKED]"}}
+
+
+class TestExemptionPaths:
+    def test_a_container_relative_exemption_applies_anywhere_below(self):
+        configure_masking(exempt_paths=["payment_methods[*].name"])
+        masked = MaskPIIFilter()._mask_dict(
+            {"payload": {"payment_methods": [{"name": "KNET"}]}, "profile": {"name": "John"}}
+        )
+        assert masked == {
+            "payload": {"payment_methods": [{"name": "KNET"}]},
+            "profile": {"name": "[NAME-MASKED]"},
+        }
+
+    def test_a_root_relative_exemption_still_applies(self):
+        configure_masking(exempt_paths=["payload.payment_methods[*].name"])
+        masked = MaskPIIFilter()._mask_dict({"payload": {"payment_methods": [{"name": "KNET"}]}})
+        assert masked == {"payload": {"payment_methods": [{"name": "KNET"}]}}
