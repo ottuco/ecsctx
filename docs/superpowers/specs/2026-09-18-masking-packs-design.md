@@ -230,7 +230,31 @@ follows, and where a section above says otherwise, this section wins.
   folds `ſ` onto `s` and `ı` onto `i`, which neither `str.lower()` nor
   `str.find` sees.
 - **Budget, measured:** a Connect record through `get_logging_config()` costs
-  43 µs (0.7.2: 487 µs; 0.6.8, formatter only: 18 µs) — 2.4× 0.6.8, over the
-  2× budget set when one pass looked safe. The remaining cost is Python-level
-  dict walking in two passes.
+  47 µs, 111 µs when its body holds a secret (0.7.2: 486/515 µs; 0.6.8,
+  formatter only: 18 µs) — over the 2× budget set when one pass looked safe.
+  The remaining cost is Python-level dict walking in two passes, and a masked
+  string needing a second, verifying pass.
 
+## What the second review changed
+
+- **The clean cache holds only fixed points.** It first cached every masked
+  output, assuming masking is idempotent; it is not (a PAN followed by a
+  4-digit group: the group masks as a CVV on one pass, freeing the PAN for the
+  card rule on the next), so the formatter's pass became a cache hit and full
+  PANs reached the output. `mask_by_patterns` now masks each string until a
+  pass changes nothing (at most 4) and caches only that fixed point — which
+  also makes the record masked in place complete on its own.
+- **Numbers:** kept as numbers only as %-format arguments, and only when
+  their text holds nothing to mask; in structured fields a `Decimal` becomes
+  its text, as in 0.7.x (the JSON renderer would print its `repr`).
+- **Non-ASCII:** instead of skipping pre-checks, the four letters IGNORECASE
+  folds onto ASCII (`İ`, `ı`, `ſ`, `K` — the same set on Python 3.10–3.14)
+  are folded before lowercasing; text whose length lowercasing changes still
+  gets the plain rules.
+- **Email rule bounded** to RFC 5321 lengths (it was quadratic too).
+- **Card keys** accept only an exact ecsctx marker as already masked.
+- **A non-string pack setting** (`True`, `1`) fails closed like a typo.
+- **The 128-character credential bound** changes behaviour only for a key with
+  129+ characters of `[\w]` before `_token`/`_secret`/`_password` and no
+  hyphen within 128 of it, or a quoted key with 129+ characters before its last
+  `_`/`-`; such values are no longer masked by content.

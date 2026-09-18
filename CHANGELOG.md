@@ -11,11 +11,15 @@ IBAN/SSN/payment-id rules, are now opt-in packs:
 `securityCode`, `expiry`, `exp_month`, …) are masked in every service.
 
 - Masking a Connect gateway-response record through `get_logging_config()`
-  (handler filter + formatter): 487 µs → 43 µs (0.6.8, formatter only:
-  18 µs; `scripts/bench_masking.py`). Content rules sit behind literal
-  pre-checks with an early exit for strings no rule can match, credential
-  rules are tried only near credential words, key decisions are cached, and
-  the formatter's second pass skips strings already known clean.
+  (handler filter + formatter): 486 µs → 47 µs, or 515 µs → 111 µs when the
+  body holds a secret (0.6.8, formatter only: 18 µs; `scripts/bench_masking.py`).
+  Content rules sit behind literal pre-checks with an early exit, credential
+  rules are tried only near credential words, and key decisions are cached.
+- A string is masked until a pass changes nothing (masking the CVV-shaped
+  group after a PAN frees the PAN on the next pass), so the record the filter
+  masks in place — what Sentry's logging integration reads — is complete on
+  its own. Those fixed points are remembered, so the formatter's pass over
+  them is a lookup.
 - The correlation ids `session_id`, `trace` and `span` are never scanned
   (with `service`, `project`, `log`). A hex id starting with ten digits was
   being masked as a phone number: a digit run touching a letter is no longer
@@ -29,8 +33,10 @@ IBAN/SSN/payment-id rules, are now opt-in packs:
 - Card keys mask as in 0.6.8: a PAN value is truncated, a card object is one
   `[CARD-MASKED]`; expiry keys give `[EXPIRY-MASKED]` (they logged in clear
   since 0.7.0). Card values are never tokenized.
-- `logger.info("%.3f", Decimal(...))` formats again: numbers are kept as
-  numbers; any other object is replaced by its masked text.
+- `logger.info("%.3f", Decimal(...))` formats again: a number passed as a
+  format argument stays a number unless its text holds something to mask. In
+  structured fields every object, `Decimal` included, becomes its masked text,
+  as in 0.7.x.
 - Exemption paths anchor at the root or a payload container, so 0.6.x
   container-relative patterns (`payment_methods[*].name`) work again.
 - A record masked with fewer packs is masked again by a filter with more
@@ -41,8 +47,13 @@ IBAN/SSN/payment-id rules, are now opt-in packs:
 - `ECSCTX_MASKING_PACKS` may be a list or a comma-separated string; an
   unknown pack name turns every pack on, warns once, and fails the boot
   check.
-- The credential key prefix is bounded to 128 characters: a 20 KB run of
-  `a-a-a-…token` took seconds to scan.
+- The credential key prefix is bounded to 128 characters and the email rule
+  to RFC 5321's lengths: a 20 KB run of `a-a-a-…` before `token` or `@` took
+  seconds to scan. A credential whose key has 129+ characters before `_token`
+  with no hyphen in them, or an email with a local part over 64 characters, is
+  no longer masked by content (key-name masking is unchanged).
+- The four non-ASCII letters `IGNORECASE` folds onto ASCII ones (`İ`, `ı`,
+  `ſ`, `K`) are folded before the pre-checks, so they cannot skip a match.
 - Boot check: Django's `AdminEmailHandler` counts as shipping only when
   `ADMINS` is set, so a stock project passes `manage.py check` with
   `ENVIRONMENT=prod`.

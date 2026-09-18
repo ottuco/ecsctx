@@ -173,18 +173,38 @@ class MaskPIIFilter(logging.Filter):
             return self._mask_dict(value, path, ctx)
         if isinstance(value, str):
             return self._mask_string(value, ctx)
-        if isinstance(value, Number):
-            # A Decimal or Fraction holds no PII, and turning it into a string
-            # breaks a "%d"/"%f" placeholder: logging would drop the line.
-            return value
-        # Any other object is replaced by its masked text: its repr() may be
-        # what a formatter renders, and that can hold what its str() hides.
+        # Any other object — a Decimal included — is replaced by its masked
+        # text: a JSON renderer falls back to repr() ("Decimal('100.000')"),
+        # and that can hold what str() hides. Positional args are the
+        # exception, see _mask_arg.
         return self._mask_string(str(value), ctx)
+
+    def _mask_args(self, args: Any, ctx: _Pass) -> Any:
+        if isinstance(args, tuple):
+            return tuple(self._mask_arg(arg, ctx) for arg in args)
+        if isinstance(args, dict):
+            # "%(amount).3f": key rules still apply, numbers stay numbers.
+            masked = self._mask_dict(args, (), ctx)
+            return {
+                key: args[key] if isinstance(args[key], Number) and masked[key] == str(args[key]) else masked[key]
+                for key in masked
+            }
+        return self._mask_value(args, (), ctx)
+
+    def _mask_arg(self, value: Any, ctx: _Pass) -> Any:
+        """A %-format argument: a number whose text holds nothing to mask stays
+        a number, so "%d"/"%f" still format — a Decimal turned into a string
+        makes logging drop the whole line."""
+        if isinstance(value, Number) and not isinstance(value, bool):
+            text = str(value)
+            masked = self._mask_string(text, ctx)
+            return value if masked == text else masked
+        return self._mask_value(value, (), ctx)
 
     def filter(self, record: logging.LogRecord) -> bool:
         ctx = self._context()
         if not is_masked_object(record, ctx.packs):
             record.msg = self._mask_value(record.msg, (), ctx)
-            record.args = self._mask_value(record.args, (), ctx)
+            record.args = self._mask_args(record.args, ctx)
             mark_object_as_masked(record, ctx.packs)
         return True

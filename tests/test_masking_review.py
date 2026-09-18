@@ -234,3 +234,63 @@ class TestProcessorOnly:
             {"event.action": "payment.declined", "event.outcome": "failure", "event.reason": "for a@b.co"},
         )
         assert out == {"event.action": "payment.declined", "event.outcome": "failure", "event.reason": "for [EMAIL-MASKED]"}
+
+
+class TestSecondPassIsReal:
+    """Masking is not idempotent: masking the CVV-shaped group after a PAN on
+    the first pass frees the PAN for the card rule on the second. The
+    formatter's pass must really rescan what the filter produced."""
+
+    def test_the_formatter_pass_masks_what_the_filter_pass_uncovered(self):
+        masking_filter = MaskPIIFilter(packs=("pci",))
+        once = masking_filter._mask_string("pan 4111111111111111 1225")
+        assert masking_filter._mask_string(once) == "pan [CARD-MASKED:411111******1111] [CVV-MASKED]"
+
+    def test_a_partly_masked_string_seen_before_is_not_trusted(self):
+        masking_filter = MaskPIIFilter(packs=("pci",))
+        masking_filter._mask_string("pan 4111111111111111 1225")
+        assert "4111111111111111" not in masking_filter._mask_string("pan 4111111111111111 [CVV-MASKED]")
+
+
+class TestNumbersInStructuredFields:
+    def test_a_decimal_field_renders_as_its_text(self):
+        assert MaskPIIFilter()._mask_dict({"amount": Decimal("100.000")}) == {"amount": "100.000"}
+
+    def test_a_decimal_arg_holding_a_pan_is_masked(self):
+        record = _filter("ref %s", (Decimal("4111111111111111"),), packs=("pci",))
+        assert record.getMessage() == "ref [CARD-MASKED:411111******1111]"
+
+
+class TestMoreLinearTime:
+    @pytest.mark.parametrize(
+        "text",
+        ["a-" * 10000 + " a@b.co", "é" + "a-" * 20000 + "token=x"],
+        ids=["long_run_then_email", "non_ascii_long_run_then_token"],
+    )
+    def test_pathological_input_is_fast(self, text):
+        rules = rules_for(ALL_PACKS)
+        started = time.perf_counter()
+        mask_by_patterns(text, rules)
+        assert time.perf_counter() - started < 0.25
+
+
+class TestMarkersAndSettings:
+    def test_a_card_key_holding_a_fake_marker_with_a_pan_is_masked(self):
+        assert mask_card_value("[CARD-MASKED:4111111111111111]") == "[CARD-MASKED]"
+        assert mask_card_value("[X-MASKED:4111111111111111 exp 1225]") == "[CARD-MASKED]"
+
+    @pytest.mark.parametrize("value", [True, 1, ["pci", 1]])
+    def test_a_non_string_pack_setting_fails_closed(self, settings, value):
+        from ecsctx.masking.config import masking_pack_errors
+
+        settings.ECSCTX_MASKING_PACKS = value
+        assert get_masking_packs() == ALL_PACKS
+        assert masking_pack_errors() != []
+
+
+class TestFixedPoint:
+    def test_the_filter_pass_alone_masks_to_a_fixed_point(self):
+        # What Sentry's logging integration reads is the record the filter
+        # masked; it must not need the formatter's pass to be complete.
+        record = _filter("charge pan 4111111111111111 0827 ok", packs=("pci",))
+        assert record.msg == "charge pan [CARD-MASKED:411111******1111] [CVV-MASKED] ok"

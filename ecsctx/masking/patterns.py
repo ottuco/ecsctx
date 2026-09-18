@@ -175,9 +175,12 @@ def _mask_truncated_card(match: re.Match) -> str:
 
 
 _PAN_VALUE = re.compile(r"\d(?:[-\s]?\d){11,18}")
-# A value that is exactly one marker, e.g. from an earlier pass. A marker
-# somewhere inside a longer value does not make the rest of it safe.
-_SINGLE_MARKER = re.compile(r"\[[A-Z0-9-]+-MASKED(?::[^\]]*)?\]")
+# A value that is exactly one marker ecsctx itself produces: a bare label, a
+# label with a token, or a truncated card. A marker somewhere inside a longer
+# value, or brackets around anything else, do not make it safe.
+_SINGLE_MARKER = re.compile(
+    r"\[[A-Z0-9-]+-MASKED(?::ptok:[\w:.-]+)?\]|\[CARD-MASKED:(?:\d{6})?\*+\d{4}\]"
+)
 
 
 def mask_card_value(value) -> str:
@@ -390,12 +393,10 @@ _CRED_REACH = 130
 
 
 def _sub_near_credential_words(pattern: re.Pattern, repl, text: str) -> str:
-    """pattern.sub(repl, text), trying only positions a credential match can start at.
-
-    Only called on ASCII text (see mask_by_patterns), where lowercasing keeps
-    every position.
-    """
-    lowered = text.lower()
+    """pattern.sub(repl, text), trying only positions a credential match can start at."""
+    lowered = _folded_lower(text)
+    if lowered is None:
+        return pattern.sub(repl, text)
     parts = []
     copied = 0  # text[:copied] is already in parts
     tried = 0  # every position below this has been tried or lies inside a match
@@ -552,7 +553,10 @@ _RULE_TABLE = (
     # 13. Email (user@example.com).
     _rule(
         "default",
-        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+        # Bounded by RFC 5321's limits (64-char local part, 255-char domain):
+        # unbounded, a long run of "a-a-a-" before an "@" backtracks
+        # quadratically — seconds for one 20 KB string.
+        r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}\b",
         _email,
         _has_at,
     ),
@@ -608,14 +612,26 @@ def rules_for(packs: frozenset[str]) -> tuple[Rule, ...]:
     return tuple(rule for rule in RULES if rule.pack in packs)
 
 
-# Strings known to need no masking under a given rule set: the filter masks a
-# record, then the formatter masks the same values again, and log lines repeat
-# the same values constantly. A masked result counts as clean too — masking is
-# idempotent (pinned by tests), so the second pass over it is a lookup.
-# Bounded, and emptied rather than evicted when full.
+# Fixed points of masking under a given rule set — strings a full pass leaves
+# unchanged — so the next time they are seen (the formatter's pass over what
+# the filter produced, the same values on the next line) they are not scanned
+# again. Only a verified fixed point goes in: one pass over a masked result
+# can still change it (see _MAX_PASSES). Bounded, and emptied, not evicted.
 _CLEAN_LIMIT = 2048
 _CLEAN_MAX_LENGTH = 8192
 _clean: dict[int, tuple[tuple, dict[str, None]]] = {}
+
+# The non-ASCII letters IGNORECASE matches to ASCII ones — the same four on
+# Python 3.10–3.14. Folding them before lowercasing lets the pre-checks and the
+# credential word search see what the case-insensitive rules see.
+_ASCII_FOLDS = str.maketrans({"\u0130": "i", "\u0131": "i", "\u017f": "s", "\u212a": "k"})
+
+
+def _folded_lower(text: str) -> str | None:
+    """text lowercased with the IGNORECASE folds applied, or None when that
+    would move positions (a few characters lowercase to two)."""
+    lowered = text.translate(_ASCII_FOLDS).lower()
+    return lowered if len(lowered) == len(text) else None
 
 
 def _clean_set(rules: tuple) -> dict[str, None]:
@@ -626,18 +642,35 @@ def _clean_set(rules: tuple) -> dict[str, None]:
     return entry[1]
 
 
+# Passes over one string until nothing changes. Masking a CVV-shaped group
+# after a PAN frees the PAN for the card rule on the next pass; two passes
+# settle every case seen, and the cap only guards against a cycle.
+_MAX_PASSES = 4
+
+
+def _mask_once(text: str, rules: tuple[Rule, ...]) -> str:
+    lowered = _folded_lower(text)
+    if lowered is None:
+        for rule in rules:
+            text = rule.pattern.sub(rule.repl, text)
+        return text
+    return _mask_gated(text, lowered, rules)
+
+
 def mask_by_patterns(text: str, rules: tuple[Rule, ...]) -> str:
+    """Mask ``text`` to a fixed point, so the result is complete on its own —
+    what reads the record the filter masked (Sentry, handleError) does not
+    depend on the formatter's later pass."""
     clean = _clean_set(rules)
     if text in clean:
         return text
-    if not text.isascii():
-        # IGNORECASE folds a few non-ASCII letters onto ASCII ones ("ſ" is an
-        # "s", "ı" an "i"), which neither str.lower() nor the credential word
-        # search sees: run every rule plainly rather than risk a skipped match.
-        for rule in rules:
-            text = rule.pattern.sub(rule.repl, text)
+    for _ in range(_MAX_PASSES):
+        masked = _mask_once(text, rules)
+        if masked == text:
+            break
+        text = masked
     else:
-        text = _mask_ascii(text, rules)
+        return text  # still changing: return it, but do not vouch for it
     if len(text) <= _CLEAN_MAX_LENGTH:
         if len(clean) >= _CLEAN_LIMIT:
             clean.clear()
@@ -654,9 +687,8 @@ def _passing_gates(text: str, lowered: str, gates: tuple) -> set:
     return {gate for gate in gates if gate(text, lowered)}
 
 
-def _mask_ascii(text: str, rules: tuple[Rule, ...]) -> str:
+def _mask_gated(text: str, lowered: str, rules: tuple[Rule, ...]) -> str:
     gates = _distinct_gates(rules)
-    lowered = text.lower()
     # Each distinct pre-check runs once per version of the text, and most
     # strings in a log line (a pg code, an operation name) pass none of them.
     passed = _passing_gates(text, lowered, gates)
@@ -677,7 +709,13 @@ def _mask_ascii(text: str, rules: tuple[Rule, ...]) -> str:
             masked = rule.pattern.sub(rule.repl, text)
         if masked != text:
             text = masked
-            lowered = text.lower()
+            lowered = _folded_lower(text)
+            if lowered is None:
+                # The substitution made the text unsafe to gate: finish plainly.
+                later = rules[rules.index(rule) + 1 :]
+                for rest in later:
+                    text = rest.pattern.sub(rest.repl, text)
+                return text
             verdicts.clear()
     return text
 

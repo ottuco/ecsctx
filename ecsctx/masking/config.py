@@ -34,10 +34,21 @@ _warned: set[str] = set()
 
 
 def _names(packs: Iterable[str] | str) -> frozenset[str]:
-    """A setting or env var may be a list or one comma-separated string."""
+    """A setting or env var may be a list or one comma-separated string.
+
+    Anything else — True, 1, a list holding a number — comes back as its repr,
+    which is never a pack name, so it is reported and fails closed rather than
+    raising on a log call.
+    """
     if isinstance(packs, str):
         packs = packs.split(",")
-    return frozenset(name.strip() for name in packs if name and name.strip())
+    elif not isinstance(packs, (list, tuple, set, frozenset)):
+        return frozenset({repr(packs)})
+    return frozenset(
+        (name.strip() if isinstance(name, str) else repr(name))
+        for name in packs
+        if not isinstance(name, str) or name.strip()
+    )
 
 
 def _normalise(packs: Iterable[str] | str) -> frozenset[str]:
