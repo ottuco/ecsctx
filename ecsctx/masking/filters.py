@@ -30,6 +30,7 @@ from ecsctx.masking.exemptions import (
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import (
     ALL_PACKS,
+    SAFE_KEYS,
     classify_key,
     mask_by_patterns,
     mask_card_value,
@@ -61,8 +62,12 @@ STRUCTURAL_ECS_KEYS = frozenset({"service", "project", "log"})
 # Never scanned: ecsctx's own metadata, and the correlation ids services
 # generate themselves — their whole purpose is to be joined on, and a masked
 # session_id or trace.id breaks every query that follows a payment across
-# services.
-DEFAULT_SKIP_KEYS = STRUCTURAL_ECS_KEYS | frozenset({"session_id", "trace", "span"})
+# services. exc_info/stack_info are the live exception and stack that
+# error_ecs_fields and Sentry's processor turn into error.* — masked as text,
+# they are strings neither can use; the rendered error.* is masked instead.
+DEFAULT_SKIP_KEYS = STRUCTURAL_ECS_KEYS | frozenset(
+    {"session_id", "trace", "span", "exc_info", "stack_info"}
+)
 
 # Keys whose name must not mask them, though their content is still scanned:
 # user.name is a login, which audit trails need, but where the login is an
@@ -127,7 +132,13 @@ class MaskPIIFilter(logging.Filter):
         ctx = ctx or self._context()
         return mask_by_patterns(text, ctx.rules)
 
-    def _mask_dict(self, data: dict, path: tuple = (), ctx: _Pass | None = None) -> dict:
+    def _mask_dict(
+        self, data: dict, path: tuple = (), ctx: _Pass | None = None, inherited: str | None = None
+    ) -> dict:
+        """Mask a dict. ``inherited`` is the field type of the PII container this
+        dict sits in (a ``customer``, a ``billing`` address): a key of its own
+        type wins, a safe key keeps its value, and any other key is masked as
+        the container's type."""
         ctx = ctx or self._context()
         result = {}
         for key, value in data.items():
@@ -138,8 +149,14 @@ class MaskPIIFilter(logging.Filter):
             child_path = path + (lookup_key,)
             field_type = classify_key(lookup_key, ctx.packs)
             if field_type is None:
-                result[key] = self._mask_value(value, child_path, ctx)
-                continue
+                if inherited is None or lookup_key.lower() in SAFE_KEYS:
+                    result[key] = self._mask_value(value, child_path, ctx)
+                    continue
+                if value is None:
+                    # An empty field of a container carries nothing to mask.
+                    result[key] = None
+                    continue
+                field_type = inherited
             field_rule = get_field_rule(field_type)
             if field_rule.exemptable and (
                 child_path in self._name_rule_exempt or _path_is_exempt(child_path, ctx.exempt)
@@ -147,18 +164,31 @@ class MaskPIIFilter(logging.Filter):
                 result[key] = self._mask_value(value, child_path, ctx)
             elif field_type == "card":
                 result[key] = mask_card_value(value)
+            elif field_rule.exemptable and isinstance(value, (dict, list, tuple, set)):
+                # A PII container keeps its shape: each field is masked on its
+                # own, so the same email or phone yields the same token across
+                # records — what fraud correlation joins on — and an id stays
+                # readable. Card, CVV, secret and other non-exemptable
+                # containers stay masked as one unit.
+                result[key] = self._mask_value(value, child_path, ctx, inherited=field_type)
             else:
                 result[key] = mask_by_field_type(str(value), field_type)
         return result
 
     def _mask_iterable(
-        self, data: list | tuple | set, path: tuple = (), ctx: _Pass | None = None
+        self,
+        data: list | tuple | set,
+        path: tuple = (),
+        ctx: _Pass | None = None,
+        inherited: str | None = None,
     ) -> list | tuple | set:
         ctx = ctx or self._context()
         arr_path = path + ("[*]",)
-        return type(data)(self._mask_value(v, arr_path, ctx) for v in data)
+        return type(data)(self._mask_value(v, arr_path, ctx, inherited=inherited) for v in data)
 
-    def _mask_value(self, value: Any, path: tuple = (), ctx: _Pass | None = None) -> Any:
+    def _mask_value(
+        self, value: Any, path: tuple = (), ctx: _Pass | None = None, inherited: str | None = None
+    ) -> Any:
         """Apply appropriate masking based on value type.
 
         Non-primitive objects are scanned through their text: their
@@ -166,15 +196,20 @@ class MaskPIIFilter(logging.Filter):
         the filter. Numbers/bools/None are left untouched at the CONTENT
         level so legitimate values (status codes, counts) are not mangled by
         the CVV/card patterns — a key-based match still overrides this, see
-        _mask_dict.
+        _mask_dict. Inside a PII container (``inherited``) a bare value in a
+        list is masked as the container's type.
         """
-        if value is None or isinstance(value, (bool, int, float)):
+        if value is None:
             return value
         ctx = ctx or self._context()
         if isinstance(value, (list, tuple, set)):
-            return self._mask_iterable(value, path, ctx)
+            return self._mask_iterable(value, path, ctx, inherited)
         if isinstance(value, dict):
-            return self._mask_dict(value, path, ctx)
+            return self._mask_dict(value, path, ctx, inherited)
+        if inherited is not None:
+            return mask_by_field_type(str(value), inherited)
+        if isinstance(value, (bool, int, float)):
+            return value
         if isinstance(value, str):
             return self._mask_string(value, ctx)
         # Any other object — a Decimal included — is replaced by its masked

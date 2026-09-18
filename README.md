@@ -962,6 +962,12 @@ Card and expiry keys are matched precisely.
 | **CVV / expiry** | containing `cvv`, `cvc`, `security code`; `expiry`, `expiration`, `exp_month`, … | keyed and bare CVV (`pci`) | `[CVV-MASKED]`, `[EXPIRY-MASKED]` |
 | **IBAN / SSN / payment ids** | `payment_id`, `transaction_id`, `auth_id` (`financial_ids`) | `financial_ids` | `[IBAN-MASKED…]`, … |
 
+A PII container — a dict or list under a key such as `customer`, `billing` or
+`contact` — keeps its shape: each field is masked on its own (an `email` field
+gets an email token, so the same address correlates across records), a safe key
+such as `id` stays readable, and any other field is tokenized as the container's
+type. Card, CVV, expiry and secret containers are masked as one unit.
+
 A digit run that touches a letter is never a phone number — it is part of an
 id. The card rule still matches a PAN followed by a letter, because Track 2
 data puts a `D` separator right after it.

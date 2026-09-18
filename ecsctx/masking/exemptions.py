@@ -58,10 +58,40 @@ def masking_is_configured() -> bool:
     return _exempt_patterns is not None
 
 
+def _from_django_settings() -> tuple[bool, list[str] | None]:
+    """(settings_ready, ECSCTX_MASK_EXEMPT_PATHS). Django is an optional extra."""
+    try:
+        from django.conf import settings
+    except ImportError:
+        return True, None
+    if not settings.configured:
+        return False, None
+    return True, getattr(settings, "ECSCTX_MASK_EXEMPT_PATHS", None)
+
+
 def _get_exempt_patterns() -> tuple:
-    if _exempt_patterns is None:
-        configure_masking_from_env()
-    return _exempt_patterns or ()
+    """Explicit configure_masking() → the Django setting → the env var.
+
+    Resolved here rather than only by the Django processor that used to bridge
+    the setting: whatever masks first — the handler filter on a stdlib record,
+    a body masker — would otherwise load the env var, mark masking configured,
+    and the setting would never apply. Not cached until settings are configured,
+    so an early log line cannot pin the env-only answer.
+    """
+    global _exempt_patterns, _mask_auto_configure_attempted
+    if _exempt_patterns is not None:
+        return _exempt_patterns
+    settings_ready, from_settings = _from_django_settings()
+    if from_settings is not None:
+        paths = list(from_settings)
+    else:
+        raw = os.environ.get("PII_MASK_EXEMPT_PATHS", "")
+        paths = [p.strip() for p in raw.split(",") if p.strip()]
+    patterns = tuple(_compile_path(p) for p in paths if p)
+    if settings_ready:
+        _exempt_patterns = patterns
+        _mask_auto_configure_attempted = True
+    return patterns
 
 
 def _reset_masking() -> None:
