@@ -13,6 +13,8 @@ Fixes found adopting 0.7.x in ottu_backend; each was present since 0.7.0.
   Django setting themselves (explicit call → setting → `PII_MASK_EXEMPT_PATHS`).
   Before, if anything masked before the first structlog line — the handler
   filter on a stdlib record — the env var was loaded and the setting ignored.
+  The Django processor's bridge for the setting (`_auto_configure_masking`) is
+  gone: one resolution path, not two that happened to agree.
 - **PII containers keep their shape.** A dict or list under a PII key
   (`customer`, `billing`, `contact`, …) was masked into one string. Each field
   is now masked on its own: by its own key's type (an `email` field gets an

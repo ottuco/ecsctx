@@ -72,11 +72,10 @@ def _from_django_settings() -> tuple[bool, list[str] | None]:
 def _get_exempt_patterns() -> tuple:
     """Explicit configure_masking() → the Django setting → the env var.
 
-    Resolved here rather than only by the Django processor that used to bridge
-    the setting: whatever masks first — the handler filter on a stdlib record,
-    a body masker — would otherwise load the env var, mark masking configured,
-    and the setting would never apply. Not cached until settings are configured,
-    so an early log line cannot pin the env-only answer.
+    Resolved here, by whatever masks first — a structlog line, the handler
+    filter on a stdlib record, a body masker — so no call order can leave the
+    setting unapplied. Not cached until settings are configured, so an early
+    log line cannot pin the env-only answer.
     """
     global _exempt_patterns, _mask_auto_configure_attempted
     if _exempt_patterns is not None:

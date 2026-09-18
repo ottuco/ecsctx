@@ -893,7 +893,7 @@ from ecsctx.contrib.net import (
 
 Configure per deploy without code changes. Precedence: explicit call >
 Django settings > env vars > defaults (same lazy pattern as the masking
-settings bridge — settings are read via a guarded import, so there is no
+exemptions — settings are read via a guarded import, so there is no
 hard Django dependency; pure-Python/FastAPI consumers use the call/env path):
 
 ```python

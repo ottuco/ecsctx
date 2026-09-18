@@ -16,7 +16,6 @@ import sentry_sdk
 import structlog
 
 from ecsctx.contrib.django.logging import configure_structlog
-from ecsctx.contrib.django.processors import _reset_masking_settings_flag
 from ecsctx.contrib.sentry import SentryIntegration
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.pii import configure_pii, tokenize
@@ -82,7 +81,6 @@ class TestSentryChainKeepsTheException:
 
 class TestExemptionSettingAppliesFirstTime:
     def test_a_record_masked_before_any_structlog_line_honours_the_setting(self, settings):
-        _reset_masking_settings_flag()
         settings.ECSCTX_MASK_EXEMPT_PATHS = ["payment_methods[*].name"]
         record = logging.LogRecord(
             "t", logging.INFO, __file__, 0, {"payment_methods": [{"name": "KNET"}]}, None, None
