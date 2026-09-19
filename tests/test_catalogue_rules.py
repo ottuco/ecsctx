@@ -183,3 +183,26 @@ class TestReferencePage:
         page = render_docs.render()
         assert "`OutboundFailure`" in page
         assert "`http_client_error`" in page
+
+
+# The boundary events repeat per domain on purpose: a PSP call, a plain HTTP
+# call, a webhook delivery and an API or auth refusal are counted separately.
+# Any other repeat is one thing under two names — `pg.payload_decrypted` next to
+# `crypto.payload_decrypted` was exactly that, and nothing flagged it.
+PER_DOMAIN_SUFFIXES = frozenset(
+    {"request_sent", "response_received", "request_failed", "request_rejected"}
+)
+
+
+def test_no_event_is_named_twice_across_domains():
+    seen: dict[str, list[str]] = {}
+    for specs in ALL_DOMAINS.values():
+        for spec in specs:
+            seen.setdefault(spec.action.split(".", 1)[1], []).append(spec.action)
+    repeated = {
+        suffix: actions
+        for suffix, actions in seen.items()
+        if len(actions) > 1 and suffix not in PER_DOMAIN_SUFFIXES
+    }
+    assert repeated == {}
+
