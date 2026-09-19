@@ -10,7 +10,7 @@ filter can reach before it gets interpolated into the message text).
 
 Ported from ottu_pg's MaskPIIFilter, merged with ecsctx's PII key-name rules
 and unified onto ecsctx's tokenization so every masked value carries a
-`[LABEL]` or `[LABEL:token]` marker — never a bare `***` — and so the same
+token (`ptok:v1:…`) or, where none can be made, a `[LABEL]` — never a bare `***` — and so the same
 underlying value (found by a key-name match or by a content regex) always
 produces the same token.
 """
@@ -187,6 +187,10 @@ class MaskPIIFilter(logging.Filter):
                     result[key] = None
                     continue
                 field_type = inherited
+            if value is None:
+                # A null holds nothing to mask; a marker would read as a value.
+                result[key] = None
+                continue
             field_rule = get_field_rule(field_type)
             if field_rule.exemptable and (
                 child_path in self._name_rule_exempt or _path_is_exempt(child_path, ctx.exempt)

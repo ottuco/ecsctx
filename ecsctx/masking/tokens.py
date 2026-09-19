@@ -47,6 +47,9 @@ def already_masked(text: str) -> bool:
 
 
 def mask_by_field_type(value: str, field_type: str) -> str:
+    """The token for ``value``, bare (``ptok:v1:…``), as a reader searches for
+    it; ``[LABEL]`` where no token can stand: a type that is never tokenized,
+    or PII tokenization not configured or failing."""
     field_rule = get_field_rule(field_type)
     label = make_label(field_rule.field_type)
     if not value or not field_rule.tokenizable:
@@ -56,4 +59,4 @@ def mask_by_field_type(value: str, field_type: str) -> str:
     token = safe_tokenize(value, field_rule.field_type)
     if token == _REDACTED:
         return f"[{label}]"
-    return f"[{label}:{token}]"
+    return token

@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Changed (breaking)
+
+- A tokenized value is the bare token again, `ptok:v1:…`, as it was in 0.6.x
+  (and as the README showed), not `[EMAIL-MASKED:ptok:v1:…]`. A `[LABEL]`
+  stands only where no token can: PII tokenization not configured or failing,
+  or a type that is never tokenized (`[CVV-MASKED]`, `[EXPIRY-MASKED]`,
+  `[CARD-MASKED:411111******1111]`). A search on a token that spans this
+  release matches the new documents exactly and the older ones by substring.
+- A null under a sensitive key stays null. It used to become a masked
+  marker (a token of the text "None"), which read as a value that was hidden.
+
+### Added
+
+- `ecsctx.contrib.ottu.masking.SAFE_KEYS` includes MPGS's
+  `authorizationResponse` (the acquirer's processing and response codes).
+
+### Fixed
+
+- The credential text rules no longer read an existing token as a credential
+  value (`token=ptok:v1:…`), so masking masked text again changes nothing.
+
 ## v0.9.0 (2026-09-19)
 
 ### Features

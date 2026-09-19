@@ -168,7 +168,7 @@ class TestMaskByFieldType:
     def test_tokenizable_field_gets_token_when_pii_configured(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         result = mask_by_field_type("user@example.com", "email")
-        assert re.fullmatch(r"\[EMAIL-MASKED:ptok:v1:[\w-]+\]", result)
+        assert re.fullmatch(r"ptok:v1:[\w-]+", result)
 
     def test_tokenizable_field_falls_back_when_unconfigured(self):
         assert mask_by_field_type("user@example.com", "email") == "[EMAIL-MASKED]"
@@ -192,6 +192,64 @@ class TestMaskByFieldType:
         monkeypatch.setattr("ecsctx.masking.tokens._pii_tokenize", boom)
         assert safe_tokenize("user@example.com", "email") == "[PII_REDACTED]"
         assert mask_by_field_type("user@example.com", "email") == "[EMAIL-MASKED]"
+
+
+_TOKEN = re.compile(r"ptok:v1:[\w-]+")
+
+
+class TestTokensAreBare:
+    """A tokenized value is the token itself, `ptok:v1:…`, as in 0.6.x. A
+    `[LABEL]` is what stands where no token can: PII tokenization not
+    configured or failing, or a type that is never tokenized (CVV, expiry, a
+    truncated card)."""
+
+    @pytest.fixture(autouse=True)
+    def _pii(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+
+    def test_a_masked_key_holds_the_bare_token(self):
+        out = _mask({"customer_email": "user@example.com", "payer_name": "Jane"})
+        assert _TOKEN.fullmatch(out["customer_email"])
+        assert _TOKEN.fullmatch(out["payer_name"])
+
+    def test_a_content_match_in_text_is_the_bare_token(self):
+        out = _mask("contact user@example.com today")
+        assert re.fullmatch(r"contact ptok:v1:[\w-]+ today", out)
+
+    def test_the_same_value_gives_the_same_token_by_key_and_by_content(self):
+        by_key = _mask({"customer_email": "user@example.com"})["customer_email"]
+        assert _mask("mail user@example.com") == f"mail {by_key}"
+
+    def test_what_is_never_tokenized_keeps_its_label(self):
+        out = _mask({"cvv": "123", "expiry": "12/28", "card_number": "4111111111111111"})
+        assert out == {
+            "cvv": "[CVV-MASKED]",
+            "expiry": "[EXPIRY-MASKED]",
+            "card_number": "[CARD-MASKED:411111******1111]",
+        }
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "token=abcd1234",
+            "token: abcd1234",
+            "token abcd1234",
+            '{"token": "abcd1234", "email": "user@example.com"}',
+            "Bearer abcd1234efgh",
+        ],
+    )
+    def test_masking_masked_text_again_changes_nothing(self, text):
+        """The formatter's second pass, and a JSON body re-scanned as text,
+        see tokens where the key rules put them: `ptok` must not be read as a
+        credential value and masked again."""
+        once = _mask(text)
+        assert "abcd1234" not in once
+        assert _mask(once) == once
+
+
+
+def test_without_pii_configured_a_masked_key_holds_its_label():
+    assert _mask({"customer_email": "user@example.com"}) == {"customer_email": "[EMAIL-MASKED]"}
 
 
 class TestContentRules:
@@ -798,7 +856,13 @@ DICT_KEY_VALUE_MASKING_CASES = [
     ("key-cvv-int-value", {"cvv": 123}, {"cvv": "[CVV-MASKED]"}),
     ("key-cvv-string-value", {"cvv": "123"}, {"cvv": "[CVV-MASKED]"}),
     ("key-session-key-int-value", {"session_key": 12345}, {"session_key": "[SECRET-MASKED]"}),
-    ("key-access-token-none-value", {"access_token": None}, {"access_token": "[SECRET-MASKED]"}),
+    # A null holds nothing to mask: a marker there would read as a value.
+    ("key-access-token-none-value", {"access_token": None}, {"access_token": None}),
+    (
+        "key-sensitive-nulls-stay-null",
+        {"public_key": None, "customer_name": None, "card": None, "expiry": None, "cvv": None},
+        {"public_key": None, "customer_name": None, "card": None, "expiry": None, "cvv": None},
+    ),
     ("key-mixed-case-cvv", {"Cvv": "123"}, {"Cvv": "[CVV-MASKED]"}),
     ("key-camelcase-security-code-int", {"securityCode": 999}, {"securityCode": "[CVV-MASKED]"}),
     (
@@ -1085,7 +1149,7 @@ class TestMaskPIIFilterEngine:
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         flt = MaskPIIFilter()
         out = flt._mask_value({"customer_name": "John Doe", "amount": 5})
-        assert re.fullmatch(r"\[NAME-MASKED:ptok:v1:[\w-]+\]", out["customer_name"])
+        assert re.fullmatch(r"ptok:v1:[\w-]+", out["customer_name"])
         assert out == {"customer_name": out["customer_name"], "amount": 5}
 
     def test_structural_ecs_keys_skipped_at_top_level_by_default(self):
@@ -1167,7 +1231,7 @@ class TestMaskPIIFilterAsLoggingFilter:
         record = self._record({"customer_name": "Jane Doe"})
         MaskPIIFilter().filter(record)
         assert re.fullmatch(
-            r"\[NAME-MASKED:ptok:v1:[\w-]+\]", record.msg["customer_name"]
+            r"ptok:v1:[\w-]+", record.msg["customer_name"]
         )
         assert list(record.msg) == ["customer_name"]
 

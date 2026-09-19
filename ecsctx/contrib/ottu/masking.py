@@ -19,6 +19,9 @@ SAFE_KEYS = frozenset({
     "pg_name",
     "cvv_required",
     "cvv_required_for_card_payment",
+    # MPGS: the acquirer's processing and response codes ("authorization" is a
+    # credential word to the key rules).
+    "authorizationresponse",
     # Payment-configuration names and statuses, in ecsctx's built-in list until
     # 0.9.0.
     "gateway_name",
