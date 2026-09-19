@@ -995,10 +995,9 @@ def test_masked_json_text_still_parses(sample):
 # string, inside a dict (Connect, 19 Sep 2026). Shapes from ottu_pg's MPGS and
 # CyberSource callbacks.
 _CALLBACK_BODY = json.dumps({
-    "pg_name": "mpgs",
+    "operation": "purchase",
     "status": "error",
     "reference_number": "jade-o45CEG",
-    "pg_info": {"cvv_required": True},
     "pg_response": {
         "result": "FAILURE",
         "sourceOfFunds": {
@@ -1030,8 +1029,8 @@ class TestJsonTextIsMaskedByKey:
         assert body["pg_response"]["sourceOfFunds"]["provided"]["card"] == "[CARD-MASKED]"
         assert body["token"] == "[SECRET-MASKED]"
         # What is not sensitive is still there to debug with.
-        assert body["pg_name"] == "mpgs"
-        assert body["pg_info"] == {"cvv_required": True}
+        assert body["operation"] == "purchase"
+        assert body["status"] == "error"
         assert body["pg_response"]["result"] == "FAILURE"
         assert body["reference_number"] == "jade-o45CEG"
 

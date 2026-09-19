@@ -2,25 +2,47 @@
 
 ## Unreleased
 
+### Added
+
+- `ECSCTX_MASK_SAFE_KEYS` (Django setting or env var) and
+  `ecsctx.masking.configure_masking_safe_keys()`: key names a service's own
+  payloads use for things that are not PII, which the key rules then leave
+  alone. It extends the built-in whitelist and cannot shrink it; a listed key's
+  value is still content-scanned. A name that is a card, CVV, expiry or
+  credential outright (`cvv`, `card_number`, `expiry`, `password`, …) is
+  refused: the call raises, and from the setting or env var it stays masked,
+  warns once and fails the Django boot check.
+- `ecsctx.contrib.ottu.masking.SAFE_KEYS`: Ottu's names for that setting
+  (`pg_name`, `cvv_required`, `cvv_required_for_card_payment`, and the six
+  names below). A service opts in with
+  `ECSCTX_MASK_SAFE_KEYS = [*SAFE_KEYS, ...]`; nothing installs it implicitly.
+
+### Changed
+
+- The built-in whitelist holds only names that mean the same in every service.
+  `gateway_name`, `vendor_name`, `bank_name`, `install_name`,
+  `installation_name` and `tokenization_status` moved to
+  `ecsctx.contrib.ottu.masking.SAFE_KEYS`: a service that logs them lists them,
+  or they are masked.
+
 ### Fixed
 
 - A JSON object or list logged as a string is masked by its keys, as the same
   data logged as a dict is. A PSP callback's raw body used to get the content
   rules only, so a cardholder name or an expiry date inside it (`nameOnCard`,
   `name_on_card`, `expiry`, `expiry_month`) reached the index in clear. Strings
-  up to `JSON_PARSE_LIMIT` (64 KiB) are parsed; a card or token object is
-  masked as one unit, as in a dict; the text is re-serialised only when a key
-  rule changed something, and the content rules still run once on the result.
+  up to `JSON_PARSE_LIMIT` (64 KiB) are parsed and walked with the key rules;
+  a card or token object is masked as one unit, as in a dict; the text is
+  re-serialised only when a key rule changed something, and the content rules
+  still run once on the result.
 - Masked text stays valid JSON. A quoted key with a bare `null`, `true` or
   `false` (or a repr's `None`, `True`, `False`) is left alone, where
   `"public_key": null` became `"public_key": [SECRET-MASKED]`; a masked
   number after a quoted key gets its marker in quotes (credential and CVV text
   rules). Unquoted `token=…` / `cvv: …` text is unchanged.
-- Fewer false positives in the key rules: `pg_name`, `X-Script-Name`,
-  `cvv_required`, `cvv_required_for_card_payment` and `Sec-Ch-Ua-Mobile` are
-  safe keys, and `tel` is matched as a word of the key, so `hotel` and
-  `hostel` are no longer phone numbers (`tel`, `tel_no`, `telNo`, `tel2` still
-  are).
+- `tel` is matched as a word of the key, so `hotel` and `hostel` are no longer
+  phone numbers (`tel`, `tel_no`, `telNo`, `tel2` still are).
+  `Sec-Ch-Ua-Mobile`, a standard client-hint header, is whitelisted.
 
 ## v0.8.3 (2026-09-19)
 

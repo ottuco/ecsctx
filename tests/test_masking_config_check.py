@@ -512,3 +512,19 @@ class TestEveryEntryPointSeesBothHalves:
         with pytest.raises(AssertionError) as raised:
             assert_no_masking_errors(MASKED_CFG)
         assert str(raised.value) == self.LIVE_ERROR
+
+
+class TestSafeKeySettingIsChecked:
+    """ECSCTX_MASK_SAFE_KEYS naming a card, CVV, expiry or credential outright
+    is dropped at runtime (it stays masked) and reported at boot, so the
+    misconfiguration is seen rather than silently half-applied."""
+
+    def test_a_refused_safe_key_is_reported(self, isolated_logging_tree, settings):
+        settings.ECSCTX_MASK_SAFE_KEYS = ["cvv", "pg_name"]
+        [error] = find_masking_errors(MASKED_CFG)
+        assert "['cvv']" in error
+        assert "cannot be safe keys" in error
+
+    def test_a_service_s_own_names_are_not_reported(self, isolated_logging_tree, settings):
+        settings.ECSCTX_MASK_SAFE_KEYS = ["pg_name", "cvv_required"]
+        assert find_masking_errors(MASKED_CFG) == []

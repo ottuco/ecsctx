@@ -135,7 +135,7 @@ class TestKeyNamesFailClosed:
         assert classify_key(key, frozenset({"default"})) == expected
 
     @pytest.mark.parametrize(
-        "key", ["namespace", "hostname", "filename", "token_type", "tokenization_status", "card_id"]
+        "key", ["namespace", "hostname", "filename", "token_type", "card_id"]
     )
     def test_listed_false_positives_are_safe(self, key):
         assert classify_key(key, frozenset({"default"})) is None

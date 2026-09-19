@@ -35,9 +35,11 @@ from ecsctx.masking.tokens import make_label, mask_by_field_type
 # Shared keyword/value fragments
 # ---------------------------------------------------------------------------
 
+# Names that mean the same in every service: logging and code metadata, web
+# and standard HTTP names. A service's own vocabulary (a gateway's name field,
+# a status flag) is the service's to list: ECSCTX_MASK_SAFE_KEYS
+# (ecsctx.masking.config), which extends this set and cannot shrink it.
 SAFE_KEYS = frozenset({
-    "gateway_name",
-    "vendor_name",
     "module_name",
     "func_name",
     "task_name",
@@ -50,28 +52,19 @@ SAFE_KEYS = frozenset({
     "username",  # username usually safe/auditable
     "site_name",
     "domain_name",
-    "bank_name",
     "display_name",
-    "install_name",
-    "installation_name",
     "event_name",
     "pathname",  # structlog CallsiteParameterAdder's source-file path, not PII
     "customer_id",
     "id",
     "pk",
-    # Substring matching's known false positives: a gateway namespace, a
-    # host or file name, OAuth token metadata.
+    # Substring matching's known false positives: a namespace, a host or file
+    # name, OAuth token metadata (RFC 6749), a client-hint header ("?0", W3C
+    # User-Agent Client Hints).
     "namespace",
     "hostname",
     "filename",
     "token_type",
-    "tokenization_status",
-    # A gateway's short name ("mpgs"), a proxy's path-prefix header, flags
-    # saying whether a CVV is needed, and a client-hint header ("?0").
-    "pg_name",
-    "x-script-name",
-    "cvv_required",
-    "cvv_required_for_card_payment",
     "sec-ch-ua-mobile",
 })
 
@@ -819,15 +812,36 @@ def _is_expiry_key(joined: str) -> bool:
     )
 
 
+# Names no service may list as safe: a card number, a CVV, an expiry date or a
+# credential under its own name. Compared lowercased with separators removed,
+# so "cvv_required" can be listed and "card_number" cannot.
+_NEVER_SAFE = frozenset({
+    "cvv", "cvc", "cvv2", "cvc2", "securitycode",
+    "card", "pan", "cardnumber", "cardno",
+    "expiry", "expirydate", "expiration", "expirationdate", "expmonth", "expyear", "expdate",
+    "password", "passwd", "secret", "token", "accesstoken", "refreshtoken",
+    "apikey", "secretkey", "privatekey", "authorization", "credentials",
+})
+
+
+def never_safe(key: str) -> bool:
+    """Whether ``key`` names a card, CVV, expiry or credential outright, which
+    no service can take out of masking."""
+    return _KEY_SEPARATORS.sub("", key.lower()) in _NEVER_SAFE
+
+
 @lru_cache(maxsize=4096)
-def classify_key(key: str, packs: frozenset[str]) -> str | None:
+def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozenset()) -> str | None:
     """The field type a key name marks its value as, or None.
+
+    ``safe`` holds the service's own safe keys (ECSCTX_MASK_SAFE_KEYS),
+    lowercased, on top of SAFE_KEYS.
 
     Cached: a service logs a small, fixed set of key names, so after warm-up
     this is a dict lookup instead of a regex scan per key per line.
     """
     lowered = key.lower()
-    if lowered in SAFE_KEYS:
+    if lowered in SAFE_KEYS or lowered in safe:
         return None
     joined = _KEY_SEPARATORS.sub("", lowered)
     words = [word.lower() for word in _KEY_SPLIT.split(key) if word]

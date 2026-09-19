@@ -982,14 +982,45 @@ email login is masked.
 
 ### Whitelist (NOT Masked)
 
-These keys are never masked by name, although a word in them matches a rule:
+These keys are never masked by name, although a word in them matches a rule.
+They mean the same in every service:
 
 ```
-gateway_name, vendor_name, module_name, func_name, task_name, service_name,
-app_name, project_name, class_name, method_name, view_name, username,
-site_name, domain_name, bank_name, display_name, install_name,
-installation_name, event_name, pathname, customer_id, id, pk,
-namespace, hostname, filename, token_type, tokenization_status
+module_name, func_name, task_name, service_name, app_name, project_name,
+class_name, method_name, view_name, username, site_name, domain_name,
+display_name, event_name, pathname, customer_id, id, pk, namespace,
+hostname, filename, token_type, sec-ch-ua-mobile
+```
+
+### Safe keys (a service's own names)
+
+A service's payloads have their own names that a key rule would mask for
+nothing: a gateway's short name in `pg_name`, a boolean in `cvv_required`. The
+service lists them; the list extends the whitelist above and cannot shrink it.
+A listed key's value is still content-scanned.
+
+```python
+# 1. Django settings.py
+ECSCTX_MASK_SAFE_KEYS = ["pg_name", "cvv_required"]
+
+# 2. Env var, comma-separated
+#    ECSCTX_MASK_SAFE_KEYS="pg_name,cvv_required"
+
+# 3. Programmatic, at startup (wins over both)
+from ecsctx.masking import configure_masking_safe_keys
+configure_masking_safe_keys(["pg_name", "cvv_required"])
+```
+
+Names are matched case-insensitively. A name that is a card, CVV, expiry or
+credential outright (`cvv`, `card_number`, `expiry`, `password`, `api_key`, …)
+cannot be listed: `configure_masking_safe_keys` raises, and from the setting or
+env var it is dropped with a warning, stays masked, and fails the Django boot
+check. Ottu services use `ecsctx.contrib.ottu.masking.SAFE_KEYS`:
+
+```python
+from ecsctx.contrib.ottu.masking import SAFE_KEYS as OTTU_SAFE_KEYS
+
+ECSCTX_MASK_SAFE_KEYS = [*OTTU_SAFE_KEYS]
 ```
 
 ### Path exemptions
@@ -1083,7 +1114,7 @@ PII_VAULT_TIMEOUT=10                                 # HTTP timeout for Vault ca
 
 1. Each masked container (`payload`, `args`, `kwargs`, request/response bodies) is normalized via a JSON round-trip (`default=str` handles UUIDs, Decimals, model instances)
 2. The structure is walked recursively, tracking each value's JSON path. A string that is a JSON object or list (up to 64 KiB, e.g. a callback's raw body) is parsed and walked the same way, then written back
-3. A sensitive-key string value is tokenized (HMAC-SHA-256) — unless its key is whitelisted or its path is exempted (see [Path exemptions](#path-exemptions))
+3. A sensitive-key string value is tokenized (HMAC-SHA-256) — unless its key is whitelisted, listed in the service's [safe keys](#safe-keys-a-services-own-names), or its path is exempted (see [Path exemptions](#path-exemptions))
 4. Every string value is also scanned for email/phone patterns and tokenized (defense in depth, even on exempted paths)
 5. Auth header values are masked (truncated, not encrypted)
 6. Values are normalized before tokenization (emails lowercased, phones to E.164)
@@ -1095,11 +1126,11 @@ PII_VAULT_TIMEOUT=10                                 # HTTP timeout for Vault ca
   "customer_name": "ptok:v1:KeNDkDCY0cXCg3VJU4xf...",
   "email": "ptok:v1:x8FpQm2kL9nR7vBwYzA3...",
   "amount": 100,
-  "gateway_name": "knet"
+  "service_name": "checkout"
 }
 ```
 
-`amount` is untouched (not a sensitive key). `gateway_name` is whitelisted. `customer_name` and `email` are tokenized.
+`amount` is untouched (not a sensitive key). `service_name` is whitelisted. `customer_name` and `email` are tokenized.
 
 ---
 

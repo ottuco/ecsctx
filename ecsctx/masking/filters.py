@@ -23,7 +23,7 @@ from collections.abc import Iterable
 from numbers import Number
 from typing import Any, NamedTuple
 
-from ecsctx.masking.config import _normalise, get_masking_packs
+from ecsctx.masking.config import _normalise, get_masking_packs, get_masking_safe_keys
 from ecsctx.masking.exemptions import (
     _get_exempt_patterns,
     _path_is_exempt,
@@ -80,11 +80,14 @@ JSON_PARSE_LIMIT = 64 * 1024
 _JSON_TEXT = "<json>"
 
 
-def _json_container(text: str) -> dict | list | None:
-    """``text`` parsed, when it is a JSON object or list within the limit."""
+def _json_container(text: str, rules: tuple) -> dict | list | None:
+    """``text`` parsed, when it is a JSON object or list within the limit that
+    no earlier pass with ``rules`` has already masked."""
     stripped = text.lstrip()
     if not stripped or stripped[0] not in "{[" or len(text) > JSON_PARSE_LIMIT:
         return None
+    if known_clean(text, rules):
+        return None  # the formatter's second pass: the filter masked it already
     try:
         parsed = json.loads(text)
     except (ValueError, RecursionError):  # RecursionError: nesting deeper than the parser allows
@@ -104,6 +107,7 @@ class _Pass(NamedTuple):
     packs: frozenset[str]
     rules: tuple
     exempt: tuple
+    safe: frozenset[str]  # the service's own safe keys (ECSCTX_MASK_SAFE_KEYS)
 
 
 class MaskPIIFilter(logging.Filter):
@@ -143,7 +147,7 @@ class MaskPIIFilter(logging.Filter):
 
     def _context(self) -> _Pass:
         packs = self._packs_in_force()
-        return _Pass(packs, rules_for(packs), _get_exempt_patterns())
+        return _Pass(packs, rules_for(packs), _get_exempt_patterns(), get_masking_safe_keys())
 
     def _mask_string(self, text: str, ctx: _Pass | None = None) -> str:
         # No already_masked() early-exit here: that helper is a whole-string
@@ -172,9 +176,10 @@ class MaskPIIFilter(logging.Filter):
                 continue
             lookup_key = str(key)
             child_path = path + (lookup_key,)
-            field_type = classify_key(lookup_key, ctx.packs)
+            field_type = classify_key(lookup_key, ctx.packs, ctx.safe)
             if field_type is None:
-                if inherited is None or lookup_key.lower() in SAFE_KEYS:
+                lowered = lookup_key.lower()
+                if inherited is None or lowered in SAFE_KEYS or lowered in ctx.safe:
                     result[key] = self._mask_value(value, child_path, ctx)
                     continue
                 if value is None:
@@ -236,7 +241,7 @@ class MaskPIIFilter(logging.Filter):
         if isinstance(value, (bool, int, float)):
             return value
         if isinstance(value, str):
-            if not known_clean(value, ctx.rules) and (parsed := _json_container(value)) is not None:
+            if (parsed := _json_container(value, ctx.rules)) is not None:
                 return self._mask_json_text(value, parsed, path, ctx)
             return self._mask_string(value, ctx)
         # Any other object — a Decimal included — is replaced by its masked

@@ -17,7 +17,10 @@ from ecsctx.contrib.django.checks import find_unmasked_live_handlers
 from ecsctx.masking.config import (
     _reset_masking_config,
     configure_masking_packs,
+    configure_masking_safe_keys,
     get_masking_packs,
+    get_masking_safe_keys,
+    masking_safe_key_errors,
 )
 from ecsctx.masking.exemptions import configure_masking
 from ecsctx.masking.filters import MaskPIIFilter
@@ -110,19 +113,13 @@ class TestKeyNames:
             "namespace",
             "hostname",
             "filename",
-            "tokenization_status",
             "token_type",
             "card_id",
             "expires_in",
             "cache_key",
             "operation",
-            # Seen in Connect's logs on 19 Sep 2026: a gateway's short name, a
-            # proxy header, boolean flags, a client-hint header, a word that
-            # merely contains "tel".
-            "pg_name",
-            "X-Script-Name",
-            "cvv_required",
-            "cvv_required_for_card_payment",
+            # A standard client-hint header ("?0"), and words that merely
+            # contain "tel".
             "Sec-Ch-Ua-Mobile",
             "hotel",
             "hostel",
@@ -130,6 +127,25 @@ class TestKeyNames:
     )
     def test_unrelated_words_are_not_sensitive(self, key):
         assert classify_key(key, self.DEFAULT) is None
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            # A service's own vocabulary is its to list (ECSCTX_MASK_SAFE_KEYS),
+            # not the library's: ecsctx masks these unless told otherwise.
+            "pg_name",
+            "gateway_name",
+            "vendor_name",
+            "bank_name",
+            "install_name",
+            "installation_name",
+            "tokenization_status",
+            "cvv_required",
+            "X-Script-Name",
+        ],
+    )
+    def test_a_services_own_names_are_masked_until_it_lists_them(self, key):
+        assert classify_key(key, self.DEFAULT) is not None
 
     @pytest.mark.parametrize(
         "key,expected",
@@ -190,6 +206,82 @@ class TestKeyNames:
 
     def test_a_card_key_holding_no_pan_is_labelled_not_truncated(self):
         assert _mask({"pan": "n/a"}) == {"pan": "[CARD-MASKED]"}
+
+
+class TestConfiguredSafeKeys:
+    """Key names a service lists because its payloads use them for things that
+    are not PII (ECSCTX_MASK_SAFE_KEYS). ecsctx itself ships only names that
+    mean the same in every service; the rest is each service's to list."""
+
+    def test_none_by_default(self, monkeypatch):
+        monkeypatch.delenv("ECSCTX_MASK_SAFE_KEYS", raising=False)
+        assert get_masking_safe_keys() == frozenset()
+
+    def test_env_lists_them(self, monkeypatch):
+        monkeypatch.setenv("ECSCTX_MASK_SAFE_KEYS", "pg_name, X-Script-Name")
+        assert get_masking_safe_keys() == {"pg_name", "x-script-name"}
+
+    def test_django_setting_wins_over_env(self, monkeypatch, settings):
+        monkeypatch.setenv("ECSCTX_MASK_SAFE_KEYS", "bank_name")
+        settings.ECSCTX_MASK_SAFE_KEYS = ["pg_name"]
+        assert get_masking_safe_keys() == {"pg_name"}
+
+    def test_explicit_configuration_wins_over_settings(self, settings):
+        settings.ECSCTX_MASK_SAFE_KEYS = ["pg_name"]
+        configure_masking_safe_keys(["bank_name"])
+        assert get_masking_safe_keys() == {"bank_name"}
+
+    def test_a_listed_key_is_not_masked(self):
+        configure_masking_safe_keys(["pg_name"])
+        assert _mask({"pg_name": "mpgs", "payer_name": "Jane"}) == {
+            "pg_name": "mpgs",
+            "payer_name": "[NAME-MASKED]",
+        }
+
+    def test_a_listed_key_keeps_its_value_inside_a_pii_container(self):
+        configure_masking_safe_keys(["pg_name"])
+        out = _mask({"customer": {"pg_name": "mpgs", "note": "vip"}})
+        assert out["customer"] == {"pg_name": "mpgs", "note": "[GENERIC-MASKED]"}
+
+    def test_a_listed_keys_value_is_still_scanned(self):
+        configure_masking_safe_keys(["pg_name"])
+        assert _mask({"pg_name": "a@b.com"}) == {"pg_name": "[EMAIL-MASKED]"}
+
+    def test_the_decision_follows_a_reconfiguration(self, monkeypatch):
+        monkeypatch.delenv("ECSCTX_MASK_SAFE_KEYS", raising=False)
+        configure_masking_safe_keys(["pg_name"])
+        assert _mask({"pg_name": "mpgs"}) == {"pg_name": "mpgs"}
+        configure_masking_safe_keys(None)
+        assert _mask({"pg_name": "mpgs"}) == {"pg_name": "[NAME-MASKED]"}
+
+    def test_a_named_flag_about_a_cvv_can_be_listed(self):
+        configure_masking_safe_keys(["cvv_required"])
+        assert _mask({"cvv_required": True, "cvv": "123"}) == {
+            "cvv_required": True,
+            "cvv": "[CVV-MASKED]",
+        }
+
+    @pytest.mark.parametrize(
+        "key", ["cvv", "CVC", "security_code", "card", "card_number", "pan", "expiry", "exp_month", "password", "api_key", "Authorization"]
+    )
+    def test_a_bare_card_cvv_expiry_or_credential_name_is_refused(self, key):
+        """Listing one would switch off the mask PCI requires for it."""
+        with pytest.raises(ValueError, match="cannot be a safe key"):
+            configure_masking_safe_keys([key])
+
+    @pytest.mark.parametrize("value", [True, {"pg_name": 1}, [["pg_name"]]])
+    def test_a_malformed_setting_never_breaks_a_log_line(self, settings, value):
+        settings.ECSCTX_MASK_SAFE_KEYS = value
+        get_masking_safe_keys()
+        assert _mask({"payer_name": "Jane"}) == {"payer_name": "[NAME-MASKED]"}
+
+    def test_a_refused_name_in_the_setting_is_ignored_and_reported(self, settings):
+        settings.ECSCTX_MASK_SAFE_KEYS = ["cvv", "pg_name"]
+        with pytest.warns(RuntimeWarning, match="cvv"):
+            assert get_masking_safe_keys() == {"pg_name"}
+        assert _mask({"cvv": "123"}) == {"cvv": "[CVV-MASKED]"}
+        [error] = masking_safe_key_errors()
+        assert "cvv" in error
 
 
 class TestBoundariesAndTruncation:
