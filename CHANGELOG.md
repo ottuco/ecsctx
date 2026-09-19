@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.10.0 (2026-09-19)
+
+### Features
+- Merge pull request #59 from ottuco/feat/bare-tokens (9754685)
+- feat(masking)!: log tokens bare (ptok:v1:…); a null under a sensitive key stays null (24f876e)
+
+
 ## Unreleased
 
 ### Changed (breaking)
