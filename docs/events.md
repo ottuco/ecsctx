@@ -32,7 +32,7 @@ needs, or a new reason for a shared event, is added here by PR. See
 | [`crypto`](#crypto) | 4 | Decryption, credentials, key events. |
 | [`net`](#net) | 3 | Outbound HTTP to non-PSP upstreams. |
 | [`payment`](#payment) | 12 | Session/attempt lifecycle, charges, operations. |
-| [`pg`](#pg) | 11 | The PSP boundary only. |
+| [`pg`](#pg) | 10 | The PSP boundary only. |
 | [`task`](#task) | 4 | Async job lifecycle (RQ/Celery/scheduler). |
 | [`threeds`](#threeds) | 3 | 3-D Secure stages, PSP-independent. |
 | [`webhook`](#webhook) | 5 | Merchant-facing outbound notification. |
@@ -558,16 +558,6 @@ A MID's gateway credentials could not be loaded, so the PSP could not be called.
 - **ECS:** kind `event`, category `network`, type `error`
 - **Reasons:** none declared yet, so it takes none. The first service that needs one adds its `Reason` class here by PR.
 - **Carries:** `event.outcome`, `event.reason`, `payment.pg_code`, `error.type`
-
-### `pg.payload_decrypted`
-
-`from ecsctx.contrib.ottu.pg import PG_PAYLOAD_DECRYPTED`
-
-A PSP's encrypted payload (the KNET family's `trandata`, on a callback or an inquiry) was decrypted. Logged on failure, with error.type: the attempt then proceeds as a gateway error.
-
-- **Level:** info; on failure error. Terminal: `.ecs()` needs an outcome.
-- **ECS:** kind `event`, category `network`, type `info`
-- **Carries:** `event.outcome`, `payment.pg_code`
 
 ### `pg.request_failed`
 

@@ -169,20 +169,6 @@ PG_CREDENTIALS_UNAVAILABLE = EventSpec(
     required=("event.outcome", "event.reason", "payment.pg_code", "error.type"),
 )
 
-PG_PAYLOAD_DECRYPTED = EventSpec(
-    action="pg.payload_decrypted",
-    description=(
-        "A PSP's encrypted payload (the KNET family's `trandata`, on a callback or an "
-        "inquiry) was decrypted. Logged on failure, with error.type: the attempt then "
-        "proceeds as a gateway error."
-    ),
-    terminal=True,
-    category=("network",),
-    type=("info",),
-    failure_level="error",
-    required=("event.outcome", "payment.pg_code"),
-)
-
 SPECS: tuple[EventSpec, ...] = (
     PG_REQUEST_SENT,
     PG_RESPONSE_RECEIVED,
@@ -194,5 +180,4 @@ SPECS: tuple[EventSpec, ...] = (
     PG_CALLBACK_SKIPPED,
     PG_SIGNATURE_VERIFICATION_SKIPPED,
     PG_CREDENTIALS_UNAVAILABLE,
-    PG_PAYLOAD_DECRYPTED,
 )

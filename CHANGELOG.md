@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- `pg.payload_decrypted` (added in 0.8.2). The catalogue already had
+  `crypto.payload_decrypted` for the same thing — an encrypted payload
+  decrypted, `labels.cipher` naming the scheme, error when it failed — so the
+  second name would have split every query that counts it. Log the KNET-family
+  `trandata` failure as `crypto.payload_decrypted`.
+
+### Added
+
+- A catalogue test that fails when two domains name the same thing: an action's
+  `<subject>_<verb>` may repeat across domains only for the boundary events
+  (`request_sent`, `response_received`, `request_failed`, `request_rejected`).
+
 ## v0.8.2 (2026-09-18)
 
 ### Features

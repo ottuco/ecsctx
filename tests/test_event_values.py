@@ -20,7 +20,7 @@ from ecsctx.contrib.ottu.auth import (
     TokenRevocation,
 )
 from ecsctx.contrib.ottu.net import OUTBOUND_FAILURE_REASONS, OutboundFailure
-from ecsctx.contrib.ottu.pg import PG_PAYLOAD_DECRYPTED, PG_REQUEST_FAILED
+from ecsctx.contrib.ottu.pg import PG_REQUEST_FAILED
 from ecsctx.contrib.ottu.webhook import WebhookFailure
 from ecsctx.events import ECS_OUTCOMES, EventSpec, Outcome, Reason
 from ecsctx.events.http import HTTP_EVENTS
@@ -173,13 +173,3 @@ class TestAuthReasons:
         )
         assert payload["reason"] == reason.lower()
 
-
-class TestPayloadDecryption:
-    """KNET-family PSPs (KPay, Benefit, OmanNet, Rajhi) encrypt what they send
-    back. Connect and ottu_pg both decrypt it, so the event is shared."""
-
-    def test_a_payload_that_would_not_decrypt_is_a_failure_at_error(self):
-        payload = PG_PAYLOAD_DECRYPTED.ecs(outcome=Outcome.FAILURE)
-        assert payload["action"] == "pg.payload_decrypted"
-        assert payload["outcome"] == "failure"
-        assert PG_PAYLOAD_DECRYPTED.level_on_failure == "error"
