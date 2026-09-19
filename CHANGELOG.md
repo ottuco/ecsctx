@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.3 (2026-09-19)
+
+### Fixes
+- fix(ottu)!: drop pg.payload_decrypted, a second name for crypto.payload_decrypted (b666cf0)
+
+### Other
+- Merge pull request #57 from ottuco/fix/drop-pg-payload-decrypted (0500198)
+
+
 ## Unreleased
 
 ### Removed

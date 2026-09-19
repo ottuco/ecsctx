@@ -51,7 +51,7 @@ from ecsctx.processors import (
     safe_tokenize,
 )
 
-__version__ = "0.8.2"
+__version__ = "0.8.3"
 
 __all__ = [
     # Context
