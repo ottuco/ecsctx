@@ -66,6 +66,13 @@ SAFE_KEYS = frozenset({
     "filename",
     "token_type",
     "tokenization_status",
+    # A gateway's short name ("mpgs"), a proxy's path-prefix header, flags
+    # saying whether a CVV is needed, and a client-hint header ("?0").
+    "pg_name",
+    "x-script-name",
+    "cvv_required",
+    "cvv_required_for_card_payment",
+    "sec-ch-ua-mobile",
 })
 
 # Sensitive credential keywords / auth schemes. Matched case-insensitively.
@@ -98,7 +105,9 @@ _CRED_KEY_NAME = _CRED_KEYWORD.replace("[\\w-]{0,128}", "[\\w-]*")
 # glued and plural names payloads use (phonenumber, cardcvv, nameoncard,
 # tokens). Its known false positives are listed in SAFE_KEYS instead.
 _EMAIL_KEY_WORDS = r"email"
-_PHONE_KEY_WORDS = r"phone|mobile|tel"
+# "tel" is matched as a word of the key (_is_tel_key), not as a substring:
+# hotel, hostel and intel are not phone numbers.
+_PHONE_KEY_WORDS = r"phone|mobile"
 _ADDRESS_KEY_WORDS = r"address"
 _NAME_KEY_WORDS = r"name|cardholder|beneficiary|recipient|payer"
 _GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
@@ -215,8 +224,32 @@ def _cred_quoted(m: re.Match) -> str:
     return f"{q}{kw}{q}{sep}{q}{mask_by_field_type(val, 'secret')}{q}"
 
 
+# Values a quoted key can hold that are literals, not text: JSON's and a
+# Python repr's. None of them is a secret.
+_LITERALS = frozenset({"null", "true", "false", "None", "True", "False"})
+_SEPARATOR = re.compile(r"[:=]")
+
+
+def _unquoted_value_quote(prefix: str) -> str:
+    """The quote closing the key in ``prefix`` (key, separator, spacing) when
+    the value after it is unquoted — JSON or a repr, whose text must stay
+    parseable once masked. Empty for ``key=value`` text, or when the value's
+    own opening quote is in the prefix."""
+    separator = _SEPARATOR.search(prefix)
+    if separator is None:
+        return ""
+    before, after = prefix[: separator.start()], prefix[separator.end() :]
+    if any(q in after for q in "\"'"):
+        return ""
+    return next((q for q in before if q in "\"'"), "")
+
+
 def _cred_kv(m: re.Match) -> str:
     prefix, val = m.group(1), m.group(2)
+    if quote := _unquoted_value_quote(prefix):
+        if val in _LITERALS:
+            return m.group(0)
+        return f"{prefix}{quote}{mask_by_field_type(val, 'secret')}{quote}"
     return f"{prefix}{mask_by_field_type(val, 'secret')}"
 
 
@@ -231,7 +264,8 @@ def _cvv_quoted(m: re.Match) -> str:
 
 
 def _cvv_kv(m: re.Match) -> str:
-    return f"{m.group(1)}{mask_by_field_type('', 'cvv')}"
+    quote = _unquoted_value_quote(m.group(1))
+    return f"{m.group(1)}{quote}{mask_by_field_type('', 'cvv')}{quote}"
 
 
 def _cvv_space(m: re.Match) -> str:
@@ -657,6 +691,16 @@ def _mask_once(text: str, rules: tuple[Rule, ...]) -> str:
     return _mask_gated(text, lowered, rules)
 
 
+def known_clean(text: str, rules: tuple[Rule, ...]) -> bool:
+    """Whether ``text`` is the output of an earlier full pass with ``rules``.
+
+    The filter checks this before parsing a string as JSON: the formatter's
+    second pass then costs a lookup, not a parse, for a body the handler's
+    filter has already masked by key.
+    """
+    return text in _clean_set(rules)
+
+
 def mask_by_patterns(text: str, rules: tuple[Rule, ...]) -> str:
     """Mask ``text`` to a fixed point, so the result is complete on its own —
     what reads the record the filter masked (Sentry, handleError) does not
@@ -762,6 +806,11 @@ def _is_card_key(lowered: str, joined: str, words: list[str]) -> bool:
     )
 
 
+def _is_tel_key(words: list[str]) -> bool:
+    # tel, tel_no, telNo, customer_tel, and the numbered form fields tel1, tel2.
+    return any(word == "tel" or (word.startswith("tel") and word[3:].isdigit()) for word in words)
+
+
 def _is_expiry_key(joined: str) -> bool:
     return (
         "expiry" in joined
@@ -792,6 +841,8 @@ def classify_key(key: str, packs: frozenset[str]) -> str | None:
                 return "expiry"
         if field_type == "payment_id" and "financial_ids" not in packs:
             continue
+        if field_type == "phone" and _is_tel_key(words):
+            return "phone"
         if pattern.search(lowered):
             return field_type
     return None

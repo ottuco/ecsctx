@@ -116,6 +116,16 @@ class TestKeyNames:
             "expires_in",
             "cache_key",
             "operation",
+            # Seen in Connect's logs on 19 Sep 2026: a gateway's short name, a
+            # proxy header, boolean flags, a client-hint header, a word that
+            # merely contains "tel".
+            "pg_name",
+            "X-Script-Name",
+            "cvv_required",
+            "cvv_required_for_card_payment",
+            "Sec-Ch-Ua-Mobile",
+            "hotel",
+            "hostel",
         ],
     )
     def test_unrelated_words_are_not_sensitive(self, key):
@@ -147,6 +157,13 @@ class TestKeyNames:
             ("cardExpiry", "expiry"),
             ("telephone", "phone"),
             ("mobile", "phone"),
+            ("tel", "phone"),
+            ("tel_no", "phone"),
+            ("telNo", "phone"),
+            ("customer_tel", "phone"),
+            ("tel2", "phone"),
+            ("nameOnCard", "name"),
+            ("name_on_card", "name"),
             ("customer_email", "email"),
             ("billing_address", "address"),
             ("customer_ref", "generic"),

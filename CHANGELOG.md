@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A JSON object or list logged as a string is masked by its keys, as the same
+  data logged as a dict is. A PSP callback's raw body used to get the content
+  rules only, so a cardholder name or an expiry date inside it (`nameOnCard`,
+  `name_on_card`, `expiry`, `expiry_month`) reached the index in clear. Strings
+  up to `JSON_PARSE_LIMIT` (64 KiB) are parsed; a card or token object is
+  masked as one unit, as in a dict; the text is re-serialised only when a key
+  rule changed something, and the content rules still run once on the result.
+- Masked text stays valid JSON. A quoted key with a bare `null`, `true` or
+  `false` (or a repr's `None`, `True`, `False`) is left alone, where
+  `"public_key": null` became `"public_key": [SECRET-MASKED]`; a masked
+  number after a quoted key gets its marker in quotes (credential and CVV text
+  rules). Unquoted `token=…` / `cvv: …` text is unchanged.
+- Fewer false positives in the key rules: `pg_name`, `X-Script-Name`,
+  `cvv_required`, `cvv_required_for_card_payment` and `Sec-Ch-Ua-Mobile` are
+  safe keys, and `tel` is matched as a word of the key, so `hotel` and
+  `hostel` are no longer phone numbers (`tel`, `tel_no`, `telNo`, `tel2` still
+  are).
+
 ## v0.8.3 (2026-09-19)
 
 ### Fixes

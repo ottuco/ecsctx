@@ -1082,7 +1082,7 @@ PII_VAULT_TIMEOUT=10                                 # HTTP timeout for Vault ca
 ### How It Works
 
 1. Each masked container (`payload`, `args`, `kwargs`, request/response bodies) is normalized via a JSON round-trip (`default=str` handles UUIDs, Decimals, model instances)
-2. The structure is walked recursively, tracking each value's JSON path
+2. The structure is walked recursively, tracking each value's JSON path. A string that is a JSON object or list (up to 64 KiB, e.g. a callback's raw body) is parsed and walked the same way, then written back
 3. A sensitive-key string value is tokenized (HMAC-SHA-256) — unless its key is whitelisted or its path is exempted (see [Path exemptions](#path-exemptions))
 4. Every string value is also scanned for email/phone patterns and tokenized (defense in depth, even on exempted paths)
 5. Auth header values are masked (truncated, not encrypted)
