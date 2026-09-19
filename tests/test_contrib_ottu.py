@@ -197,3 +197,28 @@ def test_a_retired_name_warns_once_not_on_every_line() -> None:
         for _ in range(3):
             resolve("session_revoke")
     assert len([w for w in caught if issubclass(w.category, DeprecationWarning)]) == 1
+
+
+def test_the_ottu_safe_keys_keep_ottu_field_names_readable() -> None:
+    """Ottu's own field names are not the generic library's to know: a service
+    opts in with ECSCTX_MASK_SAFE_KEYS = [*SAFE_KEYS, ...]."""
+    import logging
+
+    from ecsctx.contrib.ottu.masking import SAFE_KEYS
+    from ecsctx.masking.config import _reset_masking_config, configure_masking_safe_keys
+    from ecsctx.masking.filters import MaskPIIFilter
+
+    fields = {
+        "pg_name": "mpgs",
+        "gateway_name": "knet",
+        "bank_name": "kfh",
+        "tokenization_status": "done",
+        "cvv_required": True,
+    }
+    configure_masking_safe_keys(SAFE_KEYS)
+    try:
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, dict(fields), None, None)
+        MaskPIIFilter().filter(record)
+        assert record.msg == fields
+    finally:
+        _reset_masking_config()

@@ -17,6 +17,7 @@ These run with PII tokenization unconfigured, so every label is the bare
 ``[LABEL:ptok:v1:…]`` — covered separately in TestMaskByFieldType.
 """
 
+import json
 import logging
 import re
 
@@ -25,6 +26,7 @@ import pytest
 from ecsctx.masking.fields_rules import FIELD_RULES, get_field_rule
 from ecsctx.masking.filters import (
     DEFAULT_SKIP_KEYS,
+    JSON_PARSE_LIMIT,
     STRUCTURAL_ECS_KEYS,
     MaskPIIFilter,
     is_masked_object,
@@ -364,6 +366,21 @@ CREDENTIAL_MASKED_CASES = [
     ("auth-basic-equals", f"basic= {_HEX}", "basic= [SECRET-MASKED]"),
     ("auth-api-key-value", f"API-Key {_HEX}", "API-Key [SECRET-MASKED]"),
     ("auth-basic-value", "Basic dXNlcjpwYXNzd29yZA==", "Basic [SECRET-MASKED]"),
+    # A quoted key whose value is a bare literal: text that is JSON (or a
+    # Python repr) must stay parseable, and a null/boolean holds no secret.
+    ("cred-quoted-key-json-null", 'body {"public_key": null, "a": 1}', 'body {"public_key": null, "a": 1}'),
+    ("cred-quoted-key-json-bool", 'body {"session_key": true}', 'body {"session_key": true}'),
+    ("cred-quoted-key-python-none", "body {'public_key': None}", "body {'public_key': None}"),
+    (
+        "cred-quoted-key-number-stays-quoted",
+        'body {"session_key": 12345}',
+        'body {"session_key": "[SECRET-MASKED]"}',
+    ),
+    (
+        "cred-single-quoted-key-number-stays-quoted",
+        "body {'api_key': 12345}",
+        "body {'api_key': '[SECRET-MASKED]'}",
+    ),
 ]
 
 
@@ -407,6 +424,9 @@ CVV_KEYWORD_CASES = [
         '{"processed_data": {"cvv": "100"}}',
         '{"processed_data": {"cvv": "[CVV-MASKED]"}}',
     ),
+    # A quoted key with a numeric value: the marker is quoted so JSON text
+    # stays parseable.
+    ("cvv-quoted-key-number-stays-quoted", 'data {"cvv": 123}', 'data {"cvv": "[CVV-MASKED]"}'),
 ]
 
 
@@ -957,6 +977,107 @@ class TestObjectAndPrimitiveHandling:
 
     def test_masks_plain_string_message(self):
         assert _mask("card 5123 4500 0000 0008") == "card [CARD-MASKED:512345******0008]"
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        'body {"public_key": null, "a": 1}',
+        'body {"session_key": 12345}',
+        'data {"cvv": 123}',
+    ],
+)
+def test_masked_json_text_still_parses(sample):
+    assert json.loads(_mask(sample).split(" ", 1)[1])
+
+
+# A PSP callback as a gateway view logs it: the raw request body, a JSON
+# string, inside a dict (Connect, 19 Sep 2026). Shapes from ottu_pg's MPGS and
+# CyberSource callbacks.
+_CALLBACK_BODY = json.dumps({
+    "operation": "purchase",
+    "status": "error",
+    "reference_number": "jade-o45CEG",
+    "pg_response": {
+        "result": "FAILURE",
+        "sourceOfFunds": {
+            "provided": {
+                "card": {
+                    "brand": "VISA",
+                    "expiry": {"month": "1", "year": "28"},
+                    "nameOnCard": "Jane Payer",
+                    "number": "450875xxxxxx1019",
+                }
+            }
+        },
+    },
+    "token": {"name_on_card": "Jane Payer", "expiry_month": "01", "brand": "Visa"},
+})
+
+
+class TestJsonTextIsMaskedByKey:
+    """A JSON object or list logged as a string gets the key-name rules a dict
+    gets. Before, only the content rules saw it, so a cardholder name or an
+    expiry date inside a callback body reached the index in clear."""
+
+    def test_a_callback_body_string_is_masked_as_the_same_dict_would_be(self):
+        as_text = _mask({"http": {"request": {"body": {"body": _CALLBACK_BODY}}}})
+        as_dict = _mask({"http": {"request": {"body": {"body": json.loads(_CALLBACK_BODY)}}}})
+        body = json.loads(as_text["http"]["request"]["body"]["body"])
+        assert body == as_dict["http"]["request"]["body"]["body"]
+        # A card or token object is masked as one unit, as it is in a dict.
+        assert body["pg_response"]["sourceOfFunds"]["provided"]["card"] == "[CARD-MASKED]"
+        assert body["token"] == "[SECRET-MASKED]"
+        # What is not sensitive is still there to debug with.
+        assert body["operation"] == "purchase"
+        assert body["status"] == "error"
+        assert body["pg_response"]["result"] == "FAILURE"
+        assert body["reference_number"] == "jade-o45CEG"
+
+    @pytest.mark.parametrize(
+        "key,value,expected",
+        [
+            ("nameOnCard", "Jane Payer", "[NAME-MASKED]"),
+            ("name_on_card", "Jane Payer", "[NAME-MASKED]"),
+            ("expiry", {"month": "1", "year": "28"}, "[EXPIRY-MASKED]"),
+            ("expiry_month", "01", "[EXPIRY-MASKED]"),
+            ("expiry_year", "39", "[EXPIRY-MASKED]"),
+        ],
+    )
+    def test_keys_inside_a_json_string_are_masked(self, key, value, expected):
+        out = _mask({"payload": json.dumps({"payer_details": {key: value}, "status": "ok"})})
+        assert json.loads(out["payload"]) == {"payer_details": {key: expected}, "status": "ok"}
+
+    def test_a_json_message_is_masked_by_key(self):
+        out = _mask('{"customer": {"nameOnCard": "Jane Payer"}}')
+        assert json.loads(out) == {"customer": {"nameOnCard": "[NAME-MASKED]"}}
+
+    def test_record_skip_keys_do_not_apply_inside_a_json_message(self):
+        """``log`` and ``service`` are skipped as ecsctx's own metadata at the
+        top of a record, not in a payload that happens to use those names."""
+        out = _mask('{"log": {"nameOnCard": "Jane Payer"}}')
+        assert json.loads(out) == {"log": {"nameOnCard": "[NAME-MASKED]"}}
+
+    def test_text_with_nothing_to_mask_by_key_is_left_as_written(self):
+        sample = '{"status":"ok","count":3}'
+        assert _mask(sample) == sample
+
+    def test_content_rules_still_run_on_the_masked_text(self):
+        """A card number logged as a JSON number is caught by the content
+        rules, as it was when the string was only scanned as text."""
+        out = _mask('{"nameOnCard": "Jane Payer", "ref": 4111111111111111}')
+        assert out == '{"nameOnCard": "[NAME-MASKED]", "ref": [CARD-MASKED:411111******1111]}'
+
+    def test_text_that_is_not_json_gets_the_content_rules_only(self):
+        assert _mask("{not json} a@b.com") == "{not json} [EMAIL-MASKED]"
+
+    def test_a_json_scalar_is_text(self):
+        assert _mask('"a@b.com"') == '"[EMAIL-MASKED]"'
+
+    def test_text_over_the_parse_limit_gets_the_content_rules_only(self):
+        """Parsing is bounded: every string in every record reaches this path."""
+        big = json.dumps({"nameOnCard": "Jane Payer", "pad": "x" * JSON_PARSE_LIMIT})
+        assert _mask(big) == big
 
 
 class TestMaskPIIFilterEngine:

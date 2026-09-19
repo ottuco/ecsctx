@@ -35,9 +35,11 @@ from ecsctx.masking.tokens import make_label, mask_by_field_type
 # Shared keyword/value fragments
 # ---------------------------------------------------------------------------
 
+# Names that mean the same in every service: logging and code metadata, web
+# and standard HTTP names. A service's own vocabulary (a gateway's name field,
+# a status flag) is the service's to list: ECSCTX_MASK_SAFE_KEYS
+# (ecsctx.masking.config), which extends this set and cannot shrink it.
 SAFE_KEYS = frozenset({
-    "gateway_name",
-    "vendor_name",
     "module_name",
     "func_name",
     "task_name",
@@ -50,22 +52,20 @@ SAFE_KEYS = frozenset({
     "username",  # username usually safe/auditable
     "site_name",
     "domain_name",
-    "bank_name",
     "display_name",
-    "install_name",
-    "installation_name",
     "event_name",
     "pathname",  # structlog CallsiteParameterAdder's source-file path, not PII
     "customer_id",
     "id",
     "pk",
-    # Substring matching's known false positives: a gateway namespace, a
-    # host or file name, OAuth token metadata.
+    # Substring matching's known false positives: a namespace, a host or file
+    # name, OAuth token metadata (RFC 6749), a client-hint header ("?0", W3C
+    # User-Agent Client Hints).
     "namespace",
     "hostname",
     "filename",
     "token_type",
-    "tokenization_status",
+    "sec-ch-ua-mobile",
 })
 
 # Sensitive credential keywords / auth schemes. Matched case-insensitively.
@@ -98,7 +98,9 @@ _CRED_KEY_NAME = _CRED_KEYWORD.replace("[\\w-]{0,128}", "[\\w-]*")
 # glued and plural names payloads use (phonenumber, cardcvv, nameoncard,
 # tokens). Its known false positives are listed in SAFE_KEYS instead.
 _EMAIL_KEY_WORDS = r"email"
-_PHONE_KEY_WORDS = r"phone|mobile|tel"
+# "tel" is matched as a word of the key (_is_tel_key), not as a substring:
+# hotel, hostel and intel are not phone numbers.
+_PHONE_KEY_WORDS = r"phone|mobile"
 _ADDRESS_KEY_WORDS = r"address"
 _NAME_KEY_WORDS = r"name|cardholder|beneficiary|recipient|payer"
 _GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
@@ -215,8 +217,32 @@ def _cred_quoted(m: re.Match) -> str:
     return f"{q}{kw}{q}{sep}{q}{mask_by_field_type(val, 'secret')}{q}"
 
 
+# Values a quoted key can hold that are literals, not text: JSON's and a
+# Python repr's. None of them is a secret.
+_LITERALS = frozenset({"null", "true", "false", "None", "True", "False"})
+_SEPARATOR = re.compile(r"[:=]")
+
+
+def _unquoted_value_quote(prefix: str) -> str:
+    """The quote closing the key in ``prefix`` (key, separator, spacing) when
+    the value after it is unquoted — JSON or a repr, whose text must stay
+    parseable once masked. Empty for ``key=value`` text, or when the value's
+    own opening quote is in the prefix."""
+    separator = _SEPARATOR.search(prefix)
+    if separator is None:
+        return ""
+    before, after = prefix[: separator.start()], prefix[separator.end() :]
+    if any(q in after for q in "\"'"):
+        return ""
+    return next((q for q in before if q in "\"'"), "")
+
+
 def _cred_kv(m: re.Match) -> str:
     prefix, val = m.group(1), m.group(2)
+    if quote := _unquoted_value_quote(prefix):
+        if val in _LITERALS:
+            return m.group(0)
+        return f"{prefix}{quote}{mask_by_field_type(val, 'secret')}{quote}"
     return f"{prefix}{mask_by_field_type(val, 'secret')}"
 
 
@@ -231,7 +257,8 @@ def _cvv_quoted(m: re.Match) -> str:
 
 
 def _cvv_kv(m: re.Match) -> str:
-    return f"{m.group(1)}{mask_by_field_type('', 'cvv')}"
+    quote = _unquoted_value_quote(m.group(1))
+    return f"{m.group(1)}{quote}{mask_by_field_type('', 'cvv')}{quote}"
 
 
 def _cvv_space(m: re.Match) -> str:
@@ -657,6 +684,16 @@ def _mask_once(text: str, rules: tuple[Rule, ...]) -> str:
     return _mask_gated(text, lowered, rules)
 
 
+def known_clean(text: str, rules: tuple[Rule, ...]) -> bool:
+    """Whether ``text`` is the output of an earlier full pass with ``rules``.
+
+    The filter checks this before parsing a string as JSON: the formatter's
+    second pass then costs a lookup, not a parse, for a body the handler's
+    filter has already masked by key.
+    """
+    return text in _clean_set(rules)
+
+
 def mask_by_patterns(text: str, rules: tuple[Rule, ...]) -> str:
     """Mask ``text`` to a fixed point, so the result is complete on its own —
     what reads the record the filter masked (Sentry, handleError) does not
@@ -762,6 +799,11 @@ def _is_card_key(lowered: str, joined: str, words: list[str]) -> bool:
     )
 
 
+def _is_tel_key(words: list[str]) -> bool:
+    # tel, tel_no, telNo, customer_tel, and the numbered form fields tel1, tel2.
+    return any(word == "tel" or (word.startswith("tel") and word[3:].isdigit()) for word in words)
+
+
 def _is_expiry_key(joined: str) -> bool:
     return (
         "expiry" in joined
@@ -770,15 +812,41 @@ def _is_expiry_key(joined: str) -> bool:
     )
 
 
+# A name ending in one of these names the CVV or credential itself, which no
+# service may list as safe; "cvv_required" or "tokenization_status" only
+# describe one. Matched on the lowercased key with separators removed.
+_NEVER_SAFE_ENDING = re.compile(
+    r"(?:cvv2?|cvc2?|securitycode"
+    r"|token|secret|password|passwd|credentials?|authori[sz]ation|bearer|basic|digest"
+    r"|(?:secret|private|public|encryption|decryption|signing|access|master|root|session|api)key)$"
+)
+
+
+def never_safe(key: str) -> bool:
+    """Whether no service may list ``key`` as safe: a card or expiry key as the
+    classifier finds them, or a name ending in a CVV or credential word."""
+    lowered = key.lower()
+    joined = _KEY_SEPARATORS.sub("", lowered)
+    words = [word.lower() for word in _KEY_SPLIT.split(key) if word]
+    return (
+        _is_card_key(lowered, joined, words)
+        or _is_expiry_key(joined)
+        or _NEVER_SAFE_ENDING.search(joined) is not None
+    )
+
+
 @lru_cache(maxsize=4096)
-def classify_key(key: str, packs: frozenset[str]) -> str | None:
+def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozenset()) -> str | None:
     """The field type a key name marks its value as, or None.
+
+    ``safe`` holds the service's own safe keys (ECSCTX_MASK_SAFE_KEYS),
+    lowercased, on top of SAFE_KEYS.
 
     Cached: a service logs a small, fixed set of key names, so after warm-up
     this is a dict lookup instead of a regex scan per key per line.
     """
     lowered = key.lower()
-    if lowered in SAFE_KEYS:
+    if lowered in SAFE_KEYS or lowered in safe:
         return None
     joined = _KEY_SEPARATORS.sub("", lowered)
     words = [word.lower() for word in _KEY_SPLIT.split(key) if word]
@@ -792,6 +860,8 @@ def classify_key(key: str, packs: frozenset[str]) -> str | None:
                 return "expiry"
         if field_type == "payment_id" and "financial_ids" not in packs:
             continue
+        if field_type == "phone" and _is_tel_key(words):
+            return "phone"
         if pattern.search(lowered):
             return field_type
     return None

@@ -9,12 +9,18 @@ MaskPIIFilter is the single engine every masking path calls into:
 - install_maskers() sweeps any live handler ecsctx did not build.
 
 See ecsctx.masking.patterns for the rules and packs, ecsctx.masking.config
-for choosing packs (configure_masking_packs, ECSCTX_MASKING_PACKS) and skip
-paths, and ecsctx.masking.exemptions for the configure_masking()
+for choosing packs (configure_masking_packs, ECSCTX_MASKING_PACKS), a
+service's own safe key names (configure_masking_safe_keys,
+ECSCTX_MASK_SAFE_KEYS) and skip paths, and ecsctx.masking.exemptions for the configure_masking()
 path-exemption API.
 """
 
-from ecsctx.masking.config import configure_masking_packs, get_masking_packs
+from ecsctx.masking.config import (
+    configure_masking_packs,
+    configure_masking_safe_keys,
+    get_masking_packs,
+    get_masking_safe_keys,
+)
 from ecsctx.masking.exemptions import (
     configure_masking,
     configure_masking_from_env,
@@ -30,6 +36,8 @@ __all__ = [
     "PACK_NAMES",
     "configure_masking_packs",
     "get_masking_packs",
+    "configure_masking_safe_keys",
+    "get_masking_safe_keys",
     "MaskPIIFilter",
     "install_maskers",
     "uninstall_maskers",

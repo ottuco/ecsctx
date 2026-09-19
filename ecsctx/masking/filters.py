@@ -17,12 +17,13 @@ produces the same token.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable
 from numbers import Number
 from typing import Any, NamedTuple
 
-from ecsctx.masking.config import _normalise, get_masking_packs
+from ecsctx.masking.config import _normalise, get_masking_packs, get_masking_safe_keys
 from ecsctx.masking.exemptions import (
     _get_exempt_patterns,
     _path_is_exempt,
@@ -32,6 +33,7 @@ from ecsctx.masking.patterns import (
     ALL_PACKS,
     SAFE_KEYS,
     classify_key,
+    known_clean,
     mask_by_patterns,
     mask_card_value,
     rules_for,
@@ -69,6 +71,30 @@ DEFAULT_SKIP_KEYS = STRUCTURAL_ECS_KEYS | frozenset(
     {"session_id", "trace", "span", "exc_info", "stack_info"}
 )
 
+# The longest string parsed as JSON for key masking. Every string of every
+# record reaches that check, so a larger one gets the content rules only, as
+# every string did before.
+JSON_PARSE_LIMIT = 64 * 1024
+
+# The path segment a whole-message JSON string is masked under.
+_JSON_TEXT = "<json>"
+
+
+def _json_container(text: str, rules: tuple) -> dict | list | None:
+    """``text`` parsed, when it is a JSON object or list within the limit that
+    no earlier pass with ``rules`` has already masked."""
+    stripped = text.lstrip()
+    if not stripped or stripped[0] not in "{[" or len(text) > JSON_PARSE_LIMIT:
+        return None
+    if known_clean(text, rules):
+        return None  # the formatter's second pass: the filter masked it already
+    try:
+        parsed = json.loads(text)
+    except (ValueError, RecursionError):  # RecursionError: nesting deeper than the parser allows
+        return None
+    return parsed if isinstance(parsed, (dict, list)) else None
+
+
 # Keys whose name must not mask them, though their content is still scanned:
 # user.name is a login, which audit trails need, but where the login is an
 # email address the email rule still masks it.
@@ -81,6 +107,7 @@ class _Pass(NamedTuple):
     packs: frozenset[str]
     rules: tuple
     exempt: tuple
+    safe: frozenset[str]  # the service's own safe keys (ECSCTX_MASK_SAFE_KEYS)
 
 
 class MaskPIIFilter(logging.Filter):
@@ -120,7 +147,7 @@ class MaskPIIFilter(logging.Filter):
 
     def _context(self) -> _Pass:
         packs = self._packs_in_force()
-        return _Pass(packs, rules_for(packs), _get_exempt_patterns())
+        return _Pass(packs, rules_for(packs), _get_exempt_patterns(), get_masking_safe_keys())
 
     def _mask_string(self, text: str, ctx: _Pass | None = None) -> str:
         # No already_masked() early-exit here: that helper is a whole-string
@@ -130,6 +157,8 @@ class MaskPIIFilter(logging.Filter):
         # over already-masked markers is a noop (pinned by test), and
         # leaf-level idempotency still lives in mask_by_field_type.
         ctx = ctx or self._context()
+        if not ctx.rules:
+            return text  # a key-only walk: see _mask_json_text
         return mask_by_patterns(text, ctx.rules)
 
     def _mask_dict(
@@ -147,9 +176,10 @@ class MaskPIIFilter(logging.Filter):
                 continue
             lookup_key = str(key)
             child_path = path + (lookup_key,)
-            field_type = classify_key(lookup_key, ctx.packs)
+            field_type = classify_key(lookup_key, ctx.packs, ctx.safe)
             if field_type is None:
-                if inherited is None or lookup_key.lower() in SAFE_KEYS:
+                lowered = lookup_key.lower()
+                if inherited is None or lowered in SAFE_KEYS or lowered in ctx.safe:
                     result[key] = self._mask_value(value, child_path, ctx)
                     continue
                 if value is None:
@@ -211,12 +241,32 @@ class MaskPIIFilter(logging.Filter):
         if isinstance(value, (bool, int, float)):
             return value
         if isinstance(value, str):
+            if (parsed := _json_container(value, ctx.rules)) is not None:
+                return self._mask_json_text(value, parsed, path, ctx)
             return self._mask_string(value, ctx)
         # Any other object — a Decimal included — is replaced by its masked
         # text: a JSON renderer falls back to repr() ("Decimal('100.000')"),
         # and that can hold what str() hides. Positional args are the
         # exception, see _mask_arg.
         return self._mask_string(str(value), ctx)
+
+    def _mask_json_text(self, text: str, parsed: dict | list, path: tuple, ctx: _Pass) -> str:
+        """A JSON object or list logged as text — a PSP callback's raw body —
+        masked by its keys, as the same data logged as a dict would be.
+
+        Re-serialised only when a key rule changed something, so text with
+        nothing to mask by key keeps its layout. The content rules then run on
+        the result as they ran on the text before: a card number written as a
+        JSON number is a number to the key pass, and only they catch it.
+        """
+        # Never at path (): the record's skip keys (log, service, session_id)
+        # describe the record, not a payload that happens to use the names.
+        # Key rules only: the content rules run once, on the whole text below,
+        # not once per value and again on the text.
+        masked = self._mask_value(parsed, path or (_JSON_TEXT,), ctx._replace(rules=()))
+        if masked == parsed:
+            return self._mask_string(text, ctx)
+        return self._mask_string(json.dumps(masked, ensure_ascii=False, default=str), ctx)
 
     def _mask_args(self, args: Any, ctx: _Pass) -> Any:
         if isinstance(args, tuple):

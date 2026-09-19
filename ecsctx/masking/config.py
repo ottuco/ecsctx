@@ -1,4 +1,4 @@
-"""Which masking packs are on.
+"""Which masking packs are on, and which key names a service marks safe.
 
 Resolution order, first match wins:
 
@@ -11,6 +11,11 @@ Resolution order, first match wins:
 ``default`` is always part of the result: turning off credential and email
 masking is not something a service can ask for by listing other packs.
 
+A service's own safe key names (``ECSCTX_MASK_SAFE_KEYS``) resolve the same
+way: ``configure_masking_safe_keys()``, else the Django setting, else the
+environment variable, else none. They extend ``patterns.SAFE_KEYS``, which holds
+only names that mean the same in every service.
+
 The Django setting is read lazily, at log time, because logging is configured
 while settings are still being imported. Until settings are configured the
 answer is not cached, so an early log line cannot pin the fallback for the
@@ -22,14 +27,18 @@ from __future__ import annotations
 import os
 import warnings
 from collections.abc import Iterable
+from functools import lru_cache
 
-from ecsctx.masking.patterns import ALL_PACKS
+from ecsctx.masking.patterns import ALL_PACKS, never_safe
 
 _ENV_VAR = "ECSCTX_MASKING_PACKS"
+_SAFE_KEYS_VAR = "ECSCTX_MASK_SAFE_KEYS"
 _ALWAYS = frozenset({"default"})
 
 _explicit: frozenset[str] | None = None
 _resolved: frozenset[str] | None = None
+_explicit_safe: frozenset[str] | None = None
+_resolved_safe: frozenset[str] | None = None
 _warned: set[str] = set()
 
 
@@ -72,7 +81,7 @@ def configure_masking_packs(packs: Iterable[str] | str | None) -> None:
     _resolved = None
 
 
-def _from_django_settings() -> tuple[bool, Iterable[str] | str | None]:
+def _from_django_settings(name: str = _ENV_VAR) -> tuple[bool, Iterable[str] | str | None]:
     """(settings_ready, value). Django is an optional extra."""
     try:
         from django.conf import settings
@@ -80,14 +89,16 @@ def _from_django_settings() -> tuple[bool, Iterable[str] | str | None]:
         return True, None
     if not settings.configured:
         return False, None
-    return True, getattr(settings, "ECSCTX_MASKING_PACKS", None)
+    return True, getattr(settings, name, None)
 
 
-def _configured_value() -> tuple[bool, str, Iterable[str] | str]:
-    settings_ready, from_settings = _from_django_settings()
+def _configured_value(name: str = _ENV_VAR) -> tuple[bool, str, Iterable[str] | str]:
+    """(settings_ready, where the value came from, value): the Django setting,
+    else the environment variable of the same name."""
+    settings_ready, from_settings = _from_django_settings(name)
     if from_settings is not None:
-        return settings_ready, "the ECSCTX_MASKING_PACKS setting", from_settings
-    return settings_ready, "the ECSCTX_MASKING_PACKS environment variable", os.environ.get(_ENV_VAR, "")
+        return settings_ready, f"the {name} setting", from_settings
+    return settings_ready, f"the {name} environment variable", os.environ.get(name, "")
 
 
 def masking_pack_errors() -> list[str]:
@@ -130,9 +141,91 @@ def get_masking_packs() -> frozenset[str]:
     return packs
 
 
+def _safe_names(keys: Iterable[str] | str) -> frozenset[str]:
+    return frozenset(name.lower() for name in _names(keys))
+
+
+def _accepted_safe_names(value: Iterable[str] | str) -> tuple[frozenset[str], tuple[str, ...]]:
+    """(accepted names, refused names) of a setting or env value."""
+    names = _safe_names(value)
+    refused = tuple(sorted(name for name in names if never_safe(name)))
+    return names - frozenset(refused), refused
+
+
+# Until Django settings are configured nothing is cached, and every log line
+# resolves the env var again: remember what each env value parses to.
+_accepted_env_names = lru_cache(maxsize=8)(_accepted_safe_names)
+
+
+def configure_masking_safe_keys(keys: Iterable[str] | str | None) -> None:
+    """List key names this service's payloads use for things that are not PII,
+    so the key rules leave their values alone. ``None`` goes back to
+    settings/env.
+
+    ecsctx's own SAFE_KEYS hold only names that mean the same in every
+    service; the rest is the service's to list (``ecsctx.contrib.ottu.masking``
+    has Ottu's). A listed key's value is still content-scanned. Raises on a
+    name that is a card, CVV, expiry or credential outright: listing one would
+    switch off a mask PCI requires.
+    """
+    global _explicit_safe, _resolved_safe
+    if keys is None:
+        _explicit_safe = None
+    else:
+        names = _safe_names(keys)
+        refused = sorted(name for name in names if never_safe(name))
+        if refused:
+            raise ValueError(f"{refused} cannot be a safe key: it names a card, CVV, expiry or credential")
+        _explicit_safe = names
+    _resolved_safe = None
+
+
+def masking_safe_key_errors() -> list[str]:
+    """Names in the setting or env var that cannot be safe keys, for the Django boot check."""
+    if _explicit_safe is not None:
+        return []
+    _ready, source, value = _configured_value(_SAFE_KEYS_VAR)
+    refused = sorted(name for name in _safe_names(value) if never_safe(name))
+    if not refused:
+        return []
+    message = (
+        f"{source} lists {refused}, which name a card, CVV, expiry or credential and "
+        "cannot be safe keys. They stay masked."
+    )
+    return [message]
+
+
+def get_masking_safe_keys() -> frozenset[str]:
+    """The service's own safe keys, lowercased. Never raises: this runs on every log line.
+
+    A refused name in the setting or env var is dropped with a warning once,
+    and stays masked; the boot check reports it.
+    """
+    global _resolved_safe
+    if _explicit_safe is not None:
+        return _explicit_safe
+    if _resolved_safe is not None:
+        return _resolved_safe
+    settings_ready, source, value = _configured_value(_SAFE_KEYS_VAR)
+    accept = _accepted_env_names if isinstance(value, str) else _accepted_safe_names
+    names, refused = accept(value)
+    if refused and source not in _warned:
+        _warned.add(source)
+        warnings.warn(
+            f"{source}: {list(refused)} cannot be safe keys (a card, CVV, expiry or credential); they stay masked.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    if settings_ready:
+        _resolved_safe = names
+    return names
+
+
 def _reset_masking_config() -> None:
     """Forget every choice. For tests."""
-    global _explicit, _resolved
+    global _explicit, _resolved, _explicit_safe, _resolved_safe
     _explicit = None
     _resolved = None
+    _explicit_safe = None
+    _resolved_safe = None
     _warned.clear()
