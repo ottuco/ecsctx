@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.0 (2026-09-19)
+
+### Features
+- feat(masking)!: a service lists its own safe keys; Ottu's names leave the core list (4515b68)
+
+### Fixes
+- Merge pull request #58 from ottuco/fix/json-body-masking (1251b2e)
+- fix(masking): refuse every card/expiry safe key and names ending in a CVV or credential word (e538bbe)
+- fix(masking): mask JSON text by key, keep masked JSON valid, drop key false positives (3c5834b)
+
+
 ## Unreleased
 
 ### Added
