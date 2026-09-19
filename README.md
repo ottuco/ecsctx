@@ -806,7 +806,7 @@ handlers that never call `format()` see masked data too — and the formatter's
 strings already known clean are not scanned twice.
 
 **Log processor path** (automatic via `mask_sensitive_data`):
-- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens, labelled by type (`[EMAIL-MASKED:ptok:v1:...]`), for fraud correlation. Same input always produces the same token.
+- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`), for fraud correlation. Same input always produces the same token. Where no token can be made (PII not configured, or tokenization failing) the value becomes its type's label, `[EMAIL-MASKED]`; CVV, expiry and card numbers are never tokenized (`[CVV-MASKED]`, `[EXPIRY-MASKED]`, `[CARD-MASKED:411111******1111]`). A null stays null.
 - When PII is not configured: detected values become the bare label (`[EMAIL-MASKED]`) — raw PII never appears in logs.
 - Cardholder data is never tokenized: PANs are truncated (`[CARD-MASKED:411111******1111]`), and CVV and expiry are always the bare `[CVV-MASKED]` / `[EXPIRY-MASKED]`.
 

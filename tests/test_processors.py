@@ -271,7 +271,7 @@ class TestMaskWalker:
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=["payment_methods[*].name"])
         out = _mask({"profile": {"name": "John Doe"}})
-        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out["profile"]["name"].startswith("ptok:v1:")
 
     def test_subtree_exemption_with_email_still_scrubbed(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
@@ -282,7 +282,7 @@ class TestMaskWalker:
         assert out["audit"]["customer_name"] == "X"
         # Key-based masking is exempted under "audit", but the email regex
         # still catches the value content-wise (defense in depth).
-        assert out["audit"]["billing_email"].startswith("[EMAIL-MASKED:ptok:v1:")
+        assert out["audit"]["billing_email"].startswith("ptok:v1:")
 
     def test_nested_dict_path(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
@@ -291,13 +291,13 @@ class TestMaskWalker:
             {"a": {"b": {"customer_name": "Keep", "payer_name": "Mask"}}}
         )
         assert out["a"]["b"]["customer_name"] == "Keep"
-        assert out["a"]["b"]["payer_name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out["a"]["b"]["payer_name"].startswith("ptok:v1:")
 
     def test_arrays_of_arrays(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=[])
         out = _mask({"matrix": [[{"customer_email": "x@y.com"}]]})
-        assert out["matrix"][0][0]["customer_email"].startswith("[EMAIL-MASKED:ptok:v1:")
+        assert out["matrix"][0][0]["customer_email"].startswith("ptok:v1:")
 
     def test_list_of_strings_email_scrubbed(self, token_keyset_path):
         # "notes" (not itself a sensitive key, unlike "emails") so each list
@@ -305,7 +305,7 @@ class TestMaskWalker:
         # being blanket-masked as one key-based match.
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask({"notes": ["x@y.com", "plain"]})
-        assert out["notes"][0].startswith("[EMAIL-MASKED:ptok:v1:")
+        assert out["notes"][0].startswith("ptok:v1:")
         assert out["notes"][1] == "plain"
 
     def test_non_sensitive_key_scalars_untouched(self, token_keyset_path):
@@ -321,7 +321,7 @@ class TestMaskWalker:
         numeric/bool/None content-level passthrough."""
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask({"customer_name": 123})
-        assert out["customer_name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out["customer_name"].startswith("ptok:v1:")
 
     def test_idempotent_rerun(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
@@ -347,12 +347,12 @@ class TestMaskTopLevel:
     def test_top_level_list(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask([{"customer_name": "John"}])
-        assert out[0]["customer_name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out[0]["customer_name"].startswith("ptok:v1:")
 
     def test_top_level_string_email(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask("contact a@b.com please")
-        assert "[EMAIL-MASKED:ptok:v1:" in out
+        assert "ptok:v1:" in out
 
     def test_top_level_scalars(self):
         assert _mask(42) == 42
@@ -371,19 +371,19 @@ class TestMaskConfigEnv:
             {"payment_methods": [{"name": "KNET"}], "profile": {"name": "John"}}
         )
         assert out["payment_methods"][0]["name"] == "KNET"
-        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out["profile"]["name"].startswith("ptok:v1:")
 
     def test_explicit_beats_env(self, token_keyset_path, monkeypatch):
         monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "profile.name")
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=[])
         out = _mask({"profile": {"name": "John"}})
-        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out["profile"]["name"].startswith("ptok:v1:")
 
     def test_empty_default_still_configured(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask({"profile": {"name": "John"}})
-        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out["profile"]["name"].startswith("ptok:v1:")
         assert masking_is_configured()
 
 

@@ -214,6 +214,8 @@ def test_the_ottu_safe_keys_keep_ottu_field_names_readable() -> None:
         "bank_name": "kfh",
         "tokenization_status": "done",
         "cvv_required": True,
+        # MPGS: the acquirer's processing and response codes, not a credential.
+        "authorizationResponse": {"responseCode": "N7", "stan": "104344"},
     }
     configure_masking_safe_keys(SAFE_KEYS)
     try:

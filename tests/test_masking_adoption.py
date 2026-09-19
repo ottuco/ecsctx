@@ -99,9 +99,10 @@ class TestPIIContainersKeepTheirShape:
         )
         customer = masked["customer"]
         assert customer["id"] == 7
-        assert customer["email"] == f"[EMAIL-MASKED:{email_token}]"
-        assert customer["phone"] == f"[PHONE-MASKED:{phone_token}]"
-        assert re.fullmatch(r"\[GENERIC-MASKED:ptok:v1:[\w:.-]+\]", customer["image"])
+        # Already tokens: left exactly as they are, bare.
+        assert customer["email"] == email_token
+        assert customer["phone"] == phone_token
+        assert re.fullmatch(r"ptok:v1:[\w:.-]+", customer["image"])
 
     def test_the_same_email_gets_the_same_token_in_two_payments(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")

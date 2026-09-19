@@ -15,7 +15,7 @@ ecsctx's own PII key-name list. Two independent detection strategies:
    where the key and value never appear together in one string for a regex
    to match.
 
-Every masked value becomes `[LABEL]` or `[LABEL:token]` via mask_by_field_type —
+Every masked value becomes a bare token or a `[LABEL]` via mask_by_field_type —
 never a bare `***`. Cardholder data never carries a token: CVV and expiry
 are bare labels, because PCI forbids storing CVV in any form; card numbers
 are truncated — first 6 + last 4 from 15 digits up, last 4 only below
@@ -111,6 +111,10 @@ _GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
 # Credential value characters: token / base64url / JWT / hex (no whitespace).
 _CRED_VALUE = r"[A-Za-z0-9._~+/\-]"
 
+# A value that is already a PII token (ptok:v1:…), which a key rule or an
+# earlier pass put there: masking it again would tokenize "ptok" and break it.
+_TOKEN_START = r"ptok:"
+
 # ISO country codes in the SWIFT IBAN registry, as a regex alternation.
 _IBAN_PREFIX = (
     "AD|AE|AL|AT|AZ|BA|BE|BG|BH|BR|BY|CH|CR|CY|CZ|DE|DK|DO|EE|EG|ES|FI|FO|FR|"
@@ -181,7 +185,7 @@ _PAN_VALUE = re.compile(r"\d(?:[-\s]?\d){11,18}")
 # label with a token, or a truncated card. A marker somewhere inside a longer
 # value, or brackets around anything else, do not make it safe.
 _SINGLE_MARKER = re.compile(
-    r"\[[A-Z0-9-]+-MASKED(?::ptok:[\w:.-]+)?\]|\[CARD-MASKED:(?:\d{6})?\*+\d{4}\]"
+    r"\[[A-Z0-9-]+-MASKED(?::ptok:[\w:.-]+)?\]|\[CARD-MASKED:(?:\d{6})?\*+\d{4}\]|ptok:[\w:.-]+"
 )
 
 
@@ -499,7 +503,7 @@ _RULE_TABLE = (
     # 3. Credential — ":" / "=" (secret_key=abc123).
     _rule(
         "default",
-        rf"\b({_CRED_KEYWORD}[\"'\s]*[:=][\"'\s]*)({_CRED_VALUE}+={{0,2}})",
+        rf"\b({_CRED_KEYWORD}[\"'\s]*[:=][\"'\s]*)(?!{_TOKEN_START})({_CRED_VALUE}+={{0,2}})",
         _cred_kv,
         _has_credential,
         _sub_near_credential_words,
@@ -536,7 +540,7 @@ _RULE_TABLE = (
     _rule(
         "default",
         
-        rf"\b({_CRED_KEYWORD})\s+(?=(?:{_CRED_VALUE})*\d)({_CRED_VALUE}{{8,}}={{0,2}})",
+        rf"\b({_CRED_KEYWORD})\s+(?!{_TOKEN_START})(?=(?:{_CRED_VALUE})*\d)({_CRED_VALUE}{{8,}}={{0,2}})",
         _cred_space,
         _has_credential,
         _sub_near_credential_words,

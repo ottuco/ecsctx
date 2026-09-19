@@ -146,7 +146,7 @@ class TestMaskingExemptionSetting:
             {"payment_methods": [{"name": "KNET"}], "profile": {"name": "John"}}
         )
         assert out["payment_methods"][0]["name"] == "KNET"
-        assert re.fullmatch(r"\[NAME-MASKED:ptok:v1:[\w-]+\]", out["profile"]["name"])
+        assert re.fullmatch(r"ptok:v1:[\w-]+", out["profile"]["name"])
 
     @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["payment_methods[*].name"])
     def test_a_log_line_through_the_injector_honours_it(self, token_keyset_path):
@@ -168,7 +168,7 @@ class TestMaskingExemptionSetting:
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=[])  # explicit empty wins over the setting
         out = _mask({"profile": {"name": "John"}})
-        assert re.fullmatch(r"\[NAME-MASKED:ptok:v1:[\w-]+\]", out["profile"]["name"])
+        assert re.fullmatch(r"ptok:v1:[\w-]+", out["profile"]["name"])
 
     def test_settings_not_ready_are_not_cached(self, token_keyset_path):
         """A record masked while settings.py is still importing must not pin
