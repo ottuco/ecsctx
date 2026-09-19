@@ -812,22 +812,27 @@ def _is_expiry_key(joined: str) -> bool:
     )
 
 
-# Names no service may list as safe: a card number, a CVV, an expiry date or a
-# credential under its own name. Compared lowercased with separators removed,
-# so "cvv_required" can be listed and "card_number" cannot.
-_NEVER_SAFE = frozenset({
-    "cvv", "cvc", "cvv2", "cvc2", "securitycode",
-    "card", "pan", "cardnumber", "cardno",
-    "expiry", "expirydate", "expiration", "expirationdate", "expmonth", "expyear", "expdate",
-    "password", "passwd", "secret", "token", "accesstoken", "refreshtoken",
-    "apikey", "secretkey", "privatekey", "authorization", "credentials",
-})
+# A name ending in one of these names the CVV or credential itself, which no
+# service may list as safe; "cvv_required" or "tokenization_status" only
+# describe one. Matched on the lowercased key with separators removed.
+_NEVER_SAFE_ENDING = re.compile(
+    r"(?:cvv2?|cvc2?|securitycode"
+    r"|token|secret|password|passwd|credentials?|authori[sz]ation|bearer|basic|digest"
+    r"|(?:secret|private|public|encryption|decryption|signing|access|master|root|session|api)key)$"
+)
 
 
 def never_safe(key: str) -> bool:
-    """Whether ``key`` names a card, CVV, expiry or credential outright, which
-    no service can take out of masking."""
-    return _KEY_SEPARATORS.sub("", key.lower()) in _NEVER_SAFE
+    """Whether no service may list ``key`` as safe: a card or expiry key as the
+    classifier finds them, or a name ending in a CVV or credential word."""
+    lowered = key.lower()
+    joined = _KEY_SEPARATORS.sub("", lowered)
+    words = [word.lower() for word in _KEY_SPLIT.split(key) if word]
+    return (
+        _is_card_key(lowered, joined, words)
+        or _is_expiry_key(joined)
+        or _NEVER_SAFE_ENDING.search(joined) is not None
+    )
 
 
 @lru_cache(maxsize=4096)

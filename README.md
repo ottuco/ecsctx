@@ -1011,9 +1011,10 @@ from ecsctx.masking import configure_masking_safe_keys
 configure_masking_safe_keys(["pg_name", "cvv_required"])
 ```
 
-Names are matched case-insensitively. A name that is a card, CVV, expiry or
-credential outright (`cvv`, `card_number`, `expiry`, `password`, `api_key`, …)
-cannot be listed: `configure_masking_safe_keys` raises, and from the setting or
+Names are matched case-insensitively. A card or expiry key, or a name ending in
+a CVV or credential word (`card_number`, `pan_no`, `expiry_month`, `card_cvv`,
+`db_password`, `oauth_token`, `api_key`, …) names the value itself and cannot be
+listed; a flag or status about one (`cvv_required`, `tokenization_status`) can: `configure_masking_safe_keys` raises, and from the setting or
 env var it is dropped with a warning, stays masked, and fails the Django boot
 check. Ottu services use `ecsctx.contrib.ottu.masking.SAFE_KEYS`:
 

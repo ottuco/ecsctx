@@ -8,10 +8,12 @@
   `ecsctx.masking.configure_masking_safe_keys()`: key names a service's own
   payloads use for things that are not PII, which the key rules then leave
   alone. It extends the built-in whitelist and cannot shrink it; a listed key's
-  value is still content-scanned. A name that is a card, CVV, expiry or
-  credential outright (`cvv`, `card_number`, `expiry`, `password`, …) is
-  refused: the call raises, and from the setting or env var it stays masked,
-  warns once and fails the Django boot check.
+  value is still content-scanned. A card or expiry key, or a name ending in a
+  CVV or credential word (`card_number`, `pan_no`, `expiry_month`, `card_cvv`,
+  `db_password`, `oauth_token`, …), names the value itself and is refused: the
+  call raises, and from the setting or env var it stays masked, warns once and
+  fails the Django boot check. A flag or status about one (`cvv_required`,
+  `tokenization_status`) can be listed.
 - `ecsctx.contrib.ottu.masking.SAFE_KEYS`: Ottu's names for that setting
   (`pg_name`, `cvv_required`, `cvv_required_for_card_payment`, and the six
   names below). A service opts in with

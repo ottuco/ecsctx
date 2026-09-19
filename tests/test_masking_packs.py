@@ -262,12 +262,43 @@ class TestConfiguredSafeKeys:
         }
 
     @pytest.mark.parametrize(
-        "key", ["cvv", "CVC", "security_code", "card", "card_number", "pan", "expiry", "exp_month", "password", "api_key", "Authorization"]
+        "key",
+        [
+            "cvv",
+            "CVC",
+            "security_code",
+            "card_cvv",
+            "card",
+            "card_number",
+            "pan",
+            "pan_no",
+            "expiry",
+            "exp_month",
+            "expiry_month",
+            "expiry_year",
+            "cardExpiry",
+            "password",
+            "db_password",
+            "api_key",
+            "x-api-key",
+            "oauth_token",
+            "webhook_secret",
+            "Authorization",
+        ],
     )
-    def test_a_bare_card_cvv_expiry_or_credential_name_is_refused(self, key):
-        """Listing one would switch off the mask PCI requires for it."""
+    def test_a_card_cvv_expiry_or_credential_name_is_refused(self, key):
+        """Listing one would switch off the mask PCI requires for it: any card
+        or expiry key the classifier knows, and any name ending in a CVV or
+        credential word — the name of the value itself."""
         with pytest.raises(ValueError, match="cannot be a safe key"):
             configure_masking_safe_keys([key])
+
+    @pytest.mark.parametrize(
+        "key", ["cvv_required", "cvv_required_for_card_payment", "tokenization_status", "pg_name", "card_id"]
+    )
+    def test_a_flag_or_status_about_one_can_be_listed(self, key):
+        configure_masking_safe_keys([key])
+        assert get_masking_safe_keys() == {key.lower()}
 
     @pytest.mark.parametrize("value", [True, {"pg_name": 1}, [["pg_name"]]])
     def test_a_malformed_setting_never_breaks_a_log_line(self, settings, value):
