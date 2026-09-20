@@ -315,6 +315,70 @@ class TestFindUnmaskedLiveHandlers:
         ]
 
 
+class TestIgnorePytestHandlers:
+    """pytest attaches its own capture handlers mid-run. They belong to the
+    runner, no install sweep can reach them, and they would otherwise fail a
+    correctly masked project whenever it runs its own suite.
+
+    Runs on an emptied tree so each report can be compared whole.
+    """
+
+    def _pytest_handler(self, logger_name):
+        from _pytest.logging import LogCaptureHandler
+
+        handler = LogCaptureHandler()
+        logging.getLogger(logger_name).addHandler(handler)
+        return handler
+
+    def _project_handler(self, logger_name):
+        handler = logging.FileHandler(os.devnull)
+        logging.getLogger(logger_name).addHandler(handler)
+        return handler
+
+    def test_reported_by_default(self, isolated_logging_tree):
+        """The flag is opt-in: nothing is hidden unless a caller asks."""
+        self._pytest_handler("ecsctx-runner")
+        assert find_unmasked_live_handlers(MASKED_CFG) == [
+            live_handlers_error("ecsctx-runner -> _pytest.logging.LogCaptureHandler")
+        ]
+
+    def test_skipped_when_asked(self, isolated_logging_tree):
+        self._pytest_handler("ecsctx-runner")
+        assert find_unmasked_live_handlers(MASKED_CFG, ignore_pytest_handlers=True) == []
+
+    def test_project_handlers_are_still_reported(self, isolated_logging_tree):
+        """Not a blanket mute — only the runner's own handlers are dropped."""
+        self._pytest_handler("ecsctx-runner")
+        self._project_handler("ecsctx-app")
+        assert find_unmasked_live_handlers(MASKED_CFG, ignore_pytest_handlers=True) == [
+            live_handlers_error("ecsctx-app -> logging.FileHandler")
+        ]
+
+    def test_flag_reaches_find_masking_errors(self, isolated_logging_tree):
+        self._pytest_handler("ecsctx-runner")
+        assert find_masking_errors(MASKED_CFG) == [
+            live_handlers_error("ecsctx-runner -> _pytest.logging.LogCaptureHandler")
+        ]
+        assert find_masking_errors(MASKED_CFG, ignore_pytest_handlers=True) == []
+
+    def test_flag_reaches_assert_no_masking_errors(self, isolated_logging_tree):
+        self._pytest_handler("ecsctx-runner")
+        with pytest.raises(AssertionError) as raised:
+            assert_no_masking_errors(MASKED_CFG)
+        assert str(raised.value) == live_handlers_error(
+            "ecsctx-runner -> _pytest.logging.LogCaptureHandler"
+        )
+        assert_no_masking_errors(MASKED_CFG, ignore_pytest_handlers=True)
+
+    def test_dict_half_is_unaffected(self, isolated_logging_tree):
+        """The flag touches the live scan only — a broken LOGGING dict is
+        still reported in full."""
+        self._pytest_handler("ecsctx-runner")
+        assert find_masking_errors(UNMASKED_CFG, ignore_pytest_handlers=True) == [
+            MISSING_FILTER_ERROR
+        ]
+
+
 @pytest.fixture
 def only_the_dict_half(monkeypatch):
     """Silence the live-tree half.
@@ -324,7 +388,7 @@ def only_the_dict_half(monkeypatch):
     to take the live half out of the picture to say anything precise."""
     monkeypatch.setattr(
         "ecsctx.contrib.django.checks.find_unmasked_live_handlers",
-        lambda logging_config: [],
+        lambda logging_config, **kwargs: [],
     )
 
 

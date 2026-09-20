@@ -7,6 +7,7 @@ Django middleware and processors; the `contextvars_injector` lazily imports the 
 - `processors.py` - Django-aware `contextvars_injector`
 - `logging.py` - `get_logging_config()`, `setup_logging()`, presets (`RQ_LOGGERS`, `CELERY_LOGGERS`)
 - `checks.py` - masking boot check, auto-registered as a Django system check on import
+- `testing.py` - `MaskingTestsMixin`: 17 pluggable tests (320 cases) for a project's own suite — the masking check passes, and every case in `ecsctx.masking.samples` is logged through the project and compared exactly against its label (token ignored; pytest's capture handler skipped). Helpers `capture_log()` / `masked_outputs()` are usable standalone
 
 ## Critical Context
 - `LogContextBinder` NOT in `__all__` - must import explicitly to avoid circular imports during Django setup
@@ -15,7 +16,7 @@ Django middleware and processors; the `contextvars_injector` lazily imports the 
 - Sentry trace_id set synchronously in `process_request` - `before_send` runs in background thread without contextvar access
 - `setup_logging()` calls `configure_structlog()` internally - don't call both
 - `get_logging_config()` calls `install_maskers_in_config(config)` before returning: adds `mask_pii_filter` to `LOGGING["filters"]` and appends it to every handler it builds, so a project never wires masking by hand. Dict-only and idempotent.
-- `checks.py` fails boot when a shipping handler could emit unmasked logs. `find_masking_errors()` is the core — `find_masking_config_errors()` (the `LOGGING` dict) plus `find_unmasked_live_handlers()` (the live logging tree). Wrappers: `check_masking_configured()` (the system check), `validate_masking_config()` → `ValueError`, `assert_no_masking_errors()` → `AssertionError` for a project's own test suite.
+- `checks.py` fails boot when a shipping handler could emit unmasked logs. `find_masking_errors()` is the core — `find_masking_config_errors()` (the `LOGGING` dict) plus `find_unmasked_live_handlers()` (the live logging tree). Wrappers: `check_masking_configured()` (the system check), `validate_masking_config()` → `ValueError`, `assert_no_masking_errors()` → `AssertionError` for a project's own test suite (takes `ignore_pytest_handlers=True`, which drops the capture handlers pytest attaches mid-run — they carry no masker, belong to the runner, and no `install_maskers()` sweep can reach them).
 
 ## Dependencies
 - `django-ipware` for `get_client_ip()`
@@ -27,4 +28,4 @@ Django middleware and processors; the `contextvars_injector` lazily imports the 
 - `LogContextBinder.resolve_source_instance()` has PaymentAttempt special-case: uses `attempt.transaction` instead
 - `context_binder` pre-tokenizes PII to avoid triple-processing (already masked data hitting `mask_sensitive_data`)
 - Django applies `DEFAULT_LOGGING` and `settings.LOGGING` as two `dictConfig` passes (not a merge), before `apps.populate()`. So the `django` logger keeps its `AdminEmailHandler` — unmasked tracebacks by email — and handlers attached on package import never appear in `LOGGING` at all; hence `find_unmasked_live_handlers()`. `disable_existing_loggers` does not help: it disables loggers, their handlers stay attached
-- The system check reads the `ENVIRONMENT` env var and silences itself in `local`/`test`/`dev`, so it never blocks development. Django settings override each part: `ECSCTX_MASKING_CHECK_ENV_VAR`, `ECSCTX_MASKING_CHECK_SKIP_ENVS`, `ECSCTX_SKIP_MASKING_CHECK` (off entirely). `assert_no_masking_errors()` is never skipped — that is why it exists for test suites
+- The system check runs in every environment by default: `ECSCTX_MASKING_CHECK_SKIP_ENVS` is empty, so nothing is silenced unless a project opts in. It compares that list against the `ENVIRONMENT` env var (rename it with `ECSCTX_MASKING_CHECK_ENV_VAR`), or `ECSCTX_SKIP_MASKING_CHECK` turns it off entirely. `assert_no_masking_errors()` is never skipped by environment — that is why it exists for test suites

@@ -141,12 +141,25 @@ def find_masking_config_errors(logging_config: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _is_pytest_handler(handler: logging.Handler) -> bool:
+    """A capture handler pytest attached, not one the project configured."""
+    return type(handler).__module__.split(".")[0] in {"_pytest", "pytest"}
+
+
 def _live_handler_class_path(handler: logging.Handler) -> str:
     cls = type(handler)
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
-def find_unmasked_live_handlers(logging_config: dict[str, Any]) -> list[str]:
+def find_unmasked_live_handlers(
+    logging_config: dict[str, Any], *, ignore_pytest_handlers: bool = False
+) -> list[str]:
+    """Handlers live in this process that no LOGGING dict accounts for.
+
+    ignore_pytest_handlers skips the capture handlers pytest attaches during a
+    run. They belong to the test runner, exist only mid-test so no install
+    sweep can reach them, and would otherwise fail a correctly masked project.
+    """
     logging_config = logging_config or {}
     configured = set(logging_config.get("loggers", {}))
     candidates: list[tuple[str, logging.Logger]] = []
@@ -163,6 +176,8 @@ def find_unmasked_live_handlers(logging_config: dict[str, Any]) -> list[str]:
         for handler in logger.handlers:
             if _filter_used_in_live_object(handler):
                 continue
+            if ignore_pytest_handlers and _is_pytest_handler(handler):
+                continue
             unmasked.append(f"{name} -> {_live_handler_class_path(handler)}")
 
     if not unmasked:
@@ -177,7 +192,9 @@ def find_unmasked_live_handlers(logging_config: dict[str, Any]) -> list[str]:
     ]
 
 
-def find_masking_errors(logging_config: dict[str, Any]) -> list[str]:
+def find_masking_errors(
+    logging_config: dict[str, Any], *, ignore_pytest_handlers: bool = False
+) -> list[str]:
     """Every masking problem, from both halves: what the LOGGING dict declares
     and what the live logging tree actually ended up with.
 
@@ -185,7 +202,7 @@ def find_masking_errors(logging_config: dict[str, Any]) -> list[str]:
     the other half is broken.
     """
     return find_masking_config_errors(logging_config) + find_unmasked_live_handlers(
-        logging_config
+        logging_config, ignore_pytest_handlers=ignore_pytest_handlers
     )
 
 
@@ -200,7 +217,9 @@ def validate_masking_config(logging_config: dict[str, Any]) -> None:
         raise ValueError(" ".join(errors))
 
 
-def assert_no_masking_errors(logging_config: dict[str, Any]) -> None:
+def assert_no_masking_errors(
+    logging_config: dict[str, Any], *, ignore_pytest_handlers: bool = False
+) -> None:
     """Assert that a Django-style LOGGING dict has PII masking fully wired in.
 
     Raises AssertionError with the specific problem(s) found, listing every
@@ -215,7 +234,9 @@ def assert_no_masking_errors(logging_config: dict[str, Any]) -> None:
     even where a project has told the system check to skip itself
     (ECSCTX_MASKING_CHECK_SKIP_ENVS).
     """
-    errors = find_masking_errors(logging_config)
+    errors = find_masking_errors(
+        logging_config, ignore_pytest_handlers=ignore_pytest_handlers
+    )
     assert not errors, " ".join(errors)
 
 

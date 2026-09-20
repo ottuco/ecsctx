@@ -1006,7 +1006,7 @@ ECSCTX_MASKING_CHECK_SKIP_ENVS = ["local", "dev"]
 from ecsctx.contrib.django.checks import assert_no_masking_errors
 
 def test_logging_is_masked(settings):
-    assert_no_masking_errors(settings.LOGGING)
+    assert_no_masking_errors(settings.LOGGING, ignore_pytest_handlers=True)
 
 # In AppConfig.ready() or similar — raises ValueError
 from ecsctx.contrib.django.checks import validate_masking_config
@@ -1014,7 +1014,53 @@ from ecsctx.contrib.django.checks import validate_masking_config
 validate_masking_config(settings.LOGGING)
 ```
 
+Pass `ignore_pytest_handlers=True` whenever you call the check from inside a
+pytest run. pytest attaches its own capture handlers (`LogCaptureHandler` and
+friends) to live loggers for the duration of each test. They carry no masker,
+they belong to the runner rather than to your project, and they appear only
+mid-test, so no `install_maskers()` sweep can reach them — without the flag a
+correctly masked project fails its own suite. The flag drops nothing else:
+every handler outside `_pytest`/`pytest` is still reported, and the `LOGGING`
+dict half is untouched. `MaskingTestsMixin` below passes it for you.
+
 Both read the live tree as well as the dict, so call them once Django has finished booting. In a test suite that means the sweep your `AppConfig.ready()` does must have run too — without it they report Django's own `django` / `django.server` handlers and the test fails. Loggers named in `LOGGING` (including `root`) are left to the dict half, so handlers pytest attaches to `root` are not reported.
+
+**Ready-made tests for your project.** `ecsctx.contrib.django.testing` ships both checks as tests you plug into your own suite. They run against the project's real, booted logging setup — nothing is reconfigured:
+
+```python
+from django.test import SimpleTestCase
+from ecsctx.contrib.django.testing import MaskingTestsMixin
+
+class TestLogMasking(MaskingTestsMixin, SimpleTestCase):
+    pass
+```
+
+You inherit 17 tests covering 320 cases:
+
+| Test | What it proves |
+|---|---|
+| `test_logging_config_passes_masking_check` | `settings.LOGGING` and the live logging tree pass the same check the system check runs |
+| `test_no_handler_carries_a_duplicate_masker` | No handler picked up the filter twice |
+| `test_log_output_is_masked` | A real structlog call with test values comes out of every project stream handler with each field exactly equal to its masked label, e.g. `email == "[EMAIL-MASKED]"`. The `:ptok:v1:…` token is ignored, because it depends on the project's keyset |
+| `test_masks_*` (12 tests) | Every case in `ecsctx.masking.samples` — PEM keys, credentials, CVV, payment ids, IBANs, phones, emails, JWTs, card numbers, SSNs, sensitive dict keys, objects and primitives — logged through the project and compared exactly |
+| `test_does_not_over_mask` | Values that must stay readable (`cache_key=…`, prose like "token expired", non-IBAN refs) come through untouched |
+| `test_accepted_leaks_are_unchanged` | The cases ecsctx knowingly lets through, so a project sees them instead of assuming they're covered |
+
+These are ecsctx's own filter-test tables, run through your pipeline instead of against the engine directly, so your exemptions, `skip_keys` and formatter are all in the path. The whole suite takes about a tenth of a second.
+
+The tests read back what the project's stream handlers (console, file) actually wrote, so they cover your real filters and formatter. That output must be ecsctx's JSON (what `get_logging_config()` produces), because each field is compared exactly. pytest's own capture handler is skipped, because it isn't part of your config. It is a mixin rather than a `TestCase` subclass, because test runners collect any `TestCase` they find in a module, so an imported base class would run as a test of its own.
+
+To adapt it, override `masking_logger_name`, `masking_log_level` (default `WARNING`), or `masking_test_values` / `masking_expected_values` — add your own field to both, with the value to log and the exact label you expect.
+
+The helpers work standalone too, for a project that would rather write its own assertions:
+
+```python
+from ecsctx.contrib.django.testing import capture_log, masked_outputs
+
+masked_outputs("card 4111111111111111")   # ['card [CARD-MASKED]']
+masked_outputs({"cvv": "123"})            # [{'cvv': '[CVV-MASKED]'}]
+capture_log(order_id="A-1")               # the full parsed record each handler wrote
+```
 
 ### Configuration
 
@@ -1699,6 +1745,7 @@ from ecsctx.contrib.django import (
 # Masking boot check (the system check registers itself on import)
 from ecsctx.contrib.django.checks import (
     assert_no_masking_errors,   # Raises AssertionError — for a project's test suite
+                                # (pass ignore_pytest_handlers=True under pytest)
     validate_masking_config,    # Raises ValueError — for AppConfig.ready() and similar
     find_masking_errors,        # Returns the list of problems, raises nothing
 )
@@ -1823,6 +1870,7 @@ ecsctx/
 │   ├── __init__.py            # MaskPIIFilter, install/uninstall_maskers*, configure_masking
 │   ├── filters.py             # MaskPIIFilter — the engine (stdlib logging.Filter)
 │   ├── patterns.py            # 17 content rules, key-name map, SAFE_KEYS
+│   ├── samples.py             # Masking sample tables, shared with a project's own tests
 │   ├── tokens.py              # safe_tokenize, mask_by_field_type, [LABEL] formatting
 │   ├── fields_rules.py        # FieldRule: tokenizable/exemptable per field type
 │   ├── exemptions.py          # configure_masking(), path-exemption matching
@@ -1834,6 +1882,7 @@ ecsctx/
     │   ├── processors.py     # Django-aware contextvars_injector
     │   ├── logging.py        # get_logging_config, setup_logging, presets
     │   ├── checks.py         # Masking boot check (Django system check, auto-registered)
+    │   ├── testing.py        # MaskingTestsMixin — pluggable masking tests for your suite
     │   ├── decorators.py     # @api_logging
     │   └── context_binder.py # LogContextBinder (auditlog, import explicitly)
     ├── celery/
