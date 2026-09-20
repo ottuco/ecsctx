@@ -177,6 +177,34 @@ class MaskingTestsMixin:
 
         assert_no_masking_errors(settings.LOGGING, ignore_pytest_handlers=True)
 
+    def test_masking_check_is_registered(self):
+        from django.core.checks import Tags, registry
+
+        checks = [c for c in registry.registry.get_checks() if getattr(c, "__name__", "") == "check_masking_configured"]
+        self.assertEqual(
+            len(checks),
+            1,
+            "ecsctx's masking system check is not registered — the project never imported "
+            "ecsctx.contrib.django (normally its MIDDLEWARE entry does that).",
+        )
+        self.assertIn(Tags.security, checks[0].tags)
+
+    def test_masking_check_is_not_silenced(self):
+        from ecsctx.contrib.django.checks import masking_check_skip_reason
+
+        reason = masking_check_skip_reason()
+        self.assertIsNone(
+            reason,
+            f"The masking system check silences itself here, because {reason}. A masking gap "
+            "would not fail the boot.",
+        )
+
+    def test_structural_metadata_is_not_masked(self):
+        for record in capture_log(logger_name=self.masking_logger_name, level=self.masking_log_level):
+            for key in ("service", "project", "log"):
+                with self.subTest(field=key):
+                    self.assertNotIn("-MASKED", json.dumps(record.get(key, {})))
+
     def test_no_handler_carries_a_duplicate_masker(self):
         for handler in _handlers_reached_by(logging.getLogger(self.masking_logger_name)):
             if _is_project_handler(handler):
