@@ -339,6 +339,9 @@ CARD_CASES = [
     ("card-16d-other-space-4x4", "1123 4567 8912 3456", "[CARD-MASKED]"),
     ("card-17d-other-space-4x4", "1123 4567 8912 34567", "[CARD-MASKED]"),
     ("card-19d-other-space-4x4", "1123 4567 8912 3456789", "[CARD-MASKED]"),
+    # trailing chunk is phone-shaped (10 bare digits): the phone rule runs
+    # first, so the card rule needs its guard to still claim the full PAN.
+    ("card-17d-space-trailing-chunk-is-phone-shaped", "11234 56 7891234567", "[CARD-MASKED]"),
     ("card-plain-pan-never-reveals-bin-or-last4", "4111111111111111", "[CARD-MASKED]"),
 ]
 
