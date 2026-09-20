@@ -240,20 +240,36 @@ def assert_no_masking_errors(
     assert not errors, " ".join(errors)
 
 
-def _should_skip(settings) -> bool:
+def masking_check_skip_reason(settings=None) -> str | None:
+    """Why the system check silences itself here, or None when it runs.
+
+    Public so a project's own tests can assert the guard is live — see
+    ecsctx.contrib.django.testing.MaskingTestsMixin.
+    """
+    if settings is None:
+        from django.conf import settings
+
     if getattr(settings, "ECSCTX_SKIP_MASKING_CHECK", False):
-        return True
+        return "ECSCTX_SKIP_MASKING_CHECK is set"
     env_var = getattr(settings, "ECSCTX_MASKING_CHECK_ENV_VAR", DEFAULT_ENV_VAR)
-    skip_envs = getattr(settings, "ECSCTX_MASKING_CHECK_SKIP_ENVS", [])
+    skip_envs = [str(e) for e in getattr(settings, "ECSCTX_MASKING_CHECK_SKIP_ENVS", [])]
     current_env = os.environ.get(env_var, "").lower()
-    skip_envs = {str(e).lower() for e in skip_envs}
-    return current_env in skip_envs
+    if current_env in {e.lower() for e in skip_envs}:
+        return (
+            f"the {env_var} env var is {current_env!r}, which ECSCTX_MASKING_CHECK_SKIP_ENVS "
+            f"lists ({skip_envs})"
+        )
+    return None
+
+
+def _should_skip(settings) -> bool:
+    return masking_check_skip_reason(settings) is not None
 
 
 def check_masking_configured(app_configs, **kwargs) -> list:
     """Django system check: runs on manage.py check / check --deploy /
     runserver / migrate, in every environment unless
-    ECSCTX_MASKING_CHECK_SKIP_ENVS lists the current one (see _should_skip).
+    ECSCTX_MASKING_CHECK_SKIP_ENVS lists the current one (see masking_check_skip_reason).
     """
     from django.conf import settings
     from django.core.checks import Error
