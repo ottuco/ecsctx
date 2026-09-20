@@ -7,7 +7,7 @@ Django middleware and processors; the `contextvars_injector` lazily imports the 
 - `processors.py` - Django-aware `contextvars_injector`
 - `logging.py` - `get_logging_config()`, `setup_logging()`, presets (`RQ_LOGGERS`, `CELERY_LOGGERS`)
 - `checks.py` - masking boot check, auto-registered as a Django system check on import
-- `testing.py` - `MaskingTestsMixin`: 17 pluggable tests (320 cases) for a project's own suite — the masking check passes, and every case in `ecsctx.masking.samples` is logged through the project and compared exactly against its label (token ignored; pytest's capture handler skipped). Helpers `capture_log()` / `masked_outputs()` are usable standalone
+- `testing.py` - `MaskingTestsMixin`: 20 pluggable tests (321 sample cases) for a project's own suite — the masking check passes, and every case in `ecsctx.masking.samples` is logged through the project and compared exactly against its label (token ignored; pytest's capture handler skipped). Helpers `capture_log()` / `masked_outputs()` are usable standalone
 
 ## Critical Context
 - `LogContextBinder` NOT in `__all__` - must import explicitly to avoid circular imports during Django setup

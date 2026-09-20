@@ -1035,11 +1035,14 @@ class TestLogMasking(MaskingTestsMixin, SimpleTestCase):
     pass
 ```
 
-You inherit 17 tests covering 320 cases:
+You inherit 20 tests covering 321 sample cases:
 
 | Test | What it proves |
 |---|---|
 | `test_logging_config_passes_masking_check` | `settings.LOGGING` and the live logging tree pass the same check the system check runs |
+| `test_masking_check_is_registered` | The system check is registered and tagged `security` — catches a project that never imports `ecsctx.contrib.django` |
+| `test_masking_check_is_not_silenced` | `ECSCTX_SKIP_MASKING_CHECK` / `ECSCTX_MASKING_CHECK_SKIP_ENVS` haven't switched the guard off in this environment |
+| `test_structural_metadata_is_not_masked` | The project's own `service` / `project` / `log` fields stay readable — `skip_keys` still works |
 | `test_no_handler_carries_a_duplicate_masker` | No handler picked up the filter twice |
 | `test_log_output_is_masked` | A real structlog call with test values comes out of every project stream handler with each field exactly equal to its masked label, e.g. `email == "[EMAIL-MASKED]"`. The `:ptok:v1:…` token is ignored, because it depends on the project's keyset |
 | `test_masks_*` (12 tests) | Every case in `ecsctx.masking.samples` — PEM keys, credentials, CVV, payment ids, IBANs, phones, emails, JWTs, card numbers, SSNs, sensitive dict keys, objects and primitives — logged through the project and compared exactly |
