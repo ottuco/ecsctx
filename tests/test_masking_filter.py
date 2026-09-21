@@ -9,7 +9,7 @@ the original expectations:
 
 * every masked value is a ``[LABEL]`` marker, not ``***`` / bare ``CARD-MASKED``;
 * card numbers are truncated to first 6 + last 4 (#159795, PCI DSS 3.4.1),
-  so a PAN renders as ``[CARD-MASKED:112345******3456]`` — no token
+  so a PAN renders as ``112345******3456`` — no token
   alongside, and a second pass leaves it untouched.
 
 These run with PII tokenization unconfigured, so every label is the bare
@@ -150,15 +150,28 @@ class TestMakeLabelAndAlreadyMasked:
         assert make_label("payment_id") == "PAYMENT-ID-MASKED"
         assert make_label("email") == "EMAIL-MASKED"
 
-    def test_already_masked_detects_bracket_and_token_forms(self):
+    def test_already_masked_detects_every_form_masking_produces(self):
         assert already_masked("[CVV-MASKED]")
+        assert already_masked("ptok:v1:abc")
+        assert already_masked("450875******1019")  # the bare truncated PAN
+        # Pre-0.11 documents re-masked by a newer release.
         assert already_masked("[EMAIL-MASKED:ptok:v1:abc]")
+        assert already_masked("[CARD-MASKED:450875******1019]")
         assert not already_masked("plain text")
+
+    def test_already_masked_is_anchored_not_a_substring_test(self):
+        """A marker-shaped fragment must not vouch for the value around it --
+        otherwise attacker-supplied text turns masking off for its neighbours."""
+        assert not already_masked("hello 450875******1019 there")
+        assert not already_masked("[CVV-MASKED] and 4111111111111111")
 
 
 class TestMaskByFieldType:
-    def test_empty_value_still_labeled(self):
-        assert mask_by_field_type("", "email") == "[EMAIL-MASKED]"
+    def test_an_empty_value_stays_empty(self):
+        """Nothing was there. A label would read as a value that had been
+        hidden -- the same reason a null stays null."""
+        assert mask_by_field_type("", "email") == ""
+        assert mask_by_field_type("", "address") == ""
 
     def test_cvv_never_tokenized(self, token_keyset_path):
         """PCI forbids storing CVV in any form — not even an HMAC digest."""
@@ -225,7 +238,7 @@ class TestTokensAreBare:
         assert out == {
             "cvv": "[CVV-MASKED]",
             "expiry": "[EXPIRY-MASKED]",
-            "card_number": "[CARD-MASKED:411111******1111]",
+            "card_number": "411111******1111",
         }
 
     @pytest.mark.parametrize(
@@ -263,7 +276,7 @@ class TestContentRules:
     def test_card_number_separators_dont_matter(self):
         spaced = mask_by_all_patterns("4111 1111 1111 1111")
         dashed = mask_by_all_patterns("4111-1111-1111-1111")
-        assert spaced == dashed == "[CARD-MASKED:411111******1111]"
+        assert spaced == dashed == "411111******1111"
 
     def test_pem_key_reflow_produces_same_token(self, token_keyset_path):
         """Token computed over the base64 body only, so the same key
@@ -689,104 +702,104 @@ def test_masks_jwt(label, sample, expected):
 # ---------------------------------------------------------------------------
 # Card numbers (PAN), 12-19 digits, dash/space separators. ecsctx truncates
 # to first 6 + last 4 (#159795, PCI DSS 3.4.1) — the leading digit no longer
-# changes the outcome, and every row below carries its own truncated core
-# inside [CARD-MASKED:...]. Separators are stripped, so grouped input comes
-# back contiguous.
+# changes the outcome, and every row below IS its own truncated core, bare:
+# brackets mean nothing survived, and a truncation carries the BIN and the last
+# four. Separators are stripped, so grouped input comes back contiguous.
 # ---------------------------------------------------------------------------
 CARD_NUMBER_CASES = [
     # continuous, leading 9
-    ("card-12d-9-continuous", "912345678912", "[CARD-MASKED:********8912]"),
-    ("card-13d-9-continuous", "9123456789123", "[CARD-MASKED:*********9123]"),
-    ("card-14d-9-continuous", "91234567891234", "[CARD-MASKED:**********1234]"),
-    ("card-15d-9-continuous", "912345678912345", "[CARD-MASKED:912345*****2345]"),
-    ("card-16d-9-continuous", "9123456789123456", "[CARD-MASKED:912345******3456]"),
-    ("card-17d-9-continuous", "91234567891234567", "[CARD-MASKED:912345*******4567]"),
-    ("card-18d-9-continuous", "912345678912345678", "[CARD-MASKED:912345********5678]"),
-    ("card-19d-9-continuous", "9123456789123456789", "[CARD-MASKED:912345*********6789]"),
+    ("card-12d-9-continuous", "912345678912", "********8912"),
+    ("card-13d-9-continuous", "9123456789123", "*********9123"),
+    ("card-14d-9-continuous", "91234567891234", "**********1234"),
+    ("card-15d-9-continuous", "912345678912345", "912345*****2345"),
+    ("card-16d-9-continuous", "9123456789123456", "912345******3456"),
+    ("card-17d-9-continuous", "91234567891234567", "912345*******4567"),
+    ("card-18d-9-continuous", "912345678912345678", "912345********5678"),
+    ("card-19d-9-continuous", "9123456789123456789", "912345*********6789"),
     # space-separated, leading 9
-    ("card-12d-9-space", "9123 4567 8912", "[CARD-MASKED:********8912]"),
-    ("card-13d-9-space", "9123 4567 8912 3", "[CARD-MASKED:*********9123]"),
-    ("card-14d-9-space", "9123 4567 8912 34", "[CARD-MASKED:**********1234]"),
-    ("card-15d-9-space", "9123 4567 8912 345", "[CARD-MASKED:912345*****2345]"),
-    ("card-16d-9-space", "9123 4567 8912 3456", "[CARD-MASKED:912345******3456]"),
-    ("card-17d-9-space", "9123 4567 8912 34567", "[CARD-MASKED:912345*******4567]"),
-    ("card-18d-9-space", "9123 4567 8912 345678", "[CARD-MASKED:912345********5678]"),
-    ("card-19d-9-space", "9123 4567 8912 3456789", "[CARD-MASKED:912345*********6789]"),
+    ("card-12d-9-space", "9123 4567 8912", "********8912"),
+    ("card-13d-9-space", "9123 4567 8912 3", "*********9123"),
+    ("card-14d-9-space", "9123 4567 8912 34", "**********1234"),
+    ("card-15d-9-space", "9123 4567 8912 345", "912345*****2345"),
+    ("card-16d-9-space", "9123 4567 8912 3456", "912345******3456"),
+    ("card-17d-9-space", "9123 4567 8912 34567", "912345*******4567"),
+    ("card-18d-9-space", "9123 4567 8912 345678", "912345********5678"),
+    ("card-19d-9-space", "9123 4567 8912 3456789", "912345*********6789"),
     # dash-separated, leading 9
-    ("card-12d-9-dash", "9123-4567-8912", "[CARD-MASKED:********8912]"),
-    ("card-13d-9-dash", "9123-4567-8912-3", "[CARD-MASKED:*********9123]"),
-    ("card-14d-9-dash", "9123-4567-8912-34", "[CARD-MASKED:**********1234]"),
-    ("card-15d-9-dash", "9123-4567-8912-345", "[CARD-MASKED:912345*****2345]"),
-    ("card-16d-9-dash", "9123-4567-8912-3456", "[CARD-MASKED:912345******3456]"),
-    ("card-17d-9-dash", "9123-4567-8912-34567", "[CARD-MASKED:912345*******4567]"),
-    ("card-18d-9-dash", "9123-4567-8912-345678", "[CARD-MASKED:912345********5678]"),
-    ("card-19d-9-dash", "9123-4567-8912-3456789", "[CARD-MASKED:912345*********6789]"),
+    ("card-12d-9-dash", "9123-4567-8912", "********8912"),
+    ("card-13d-9-dash", "9123-4567-8912-3", "*********9123"),
+    ("card-14d-9-dash", "9123-4567-8912-34", "**********1234"),
+    ("card-15d-9-dash", "9123-4567-8912-345", "912345*****2345"),
+    ("card-16d-9-dash", "9123-4567-8912-3456", "912345******3456"),
+    ("card-17d-9-dash", "9123-4567-8912-34567", "912345*******4567"),
+    ("card-18d-9-dash", "9123-4567-8912-345678", "912345********5678"),
+    ("card-19d-9-dash", "9123-4567-8912-3456789", "912345*********6789"),
     # continuous, other leading digit — truncated too (BIN + last 4 visible)
-    ("card-12d-other-continuous", "112345678912", "[CARD-MASKED:********8912]"),
-    ("card-13d-other-continuous", "1123456789123", "[CARD-MASKED:*********9123]"),
-    ("card-14d-other-continuous", "11234567891234", "[CARD-MASKED:**********1234]"),
-    ("card-15d-other-continuous", "112345678912345", "[CARD-MASKED:112345*****2345]"),
-    ("card-16d-other-continuous", "1123456789123456", "[CARD-MASKED:112345******3456]"),
-    ("card-17d-other-continuous", "11234567891234567", "[CARD-MASKED:112345*******4567]"),
-    ("card-18d-other-continuous", "112345678912345678", "[CARD-MASKED:112345********5678]"),
-    ("card-19d-other-continuous", "1123456789123456789", "[CARD-MASKED:112345*********6789]"),
+    ("card-12d-other-continuous", "112345678912", "********8912"),
+    ("card-13d-other-continuous", "1123456789123", "*********9123"),
+    ("card-14d-other-continuous", "11234567891234", "**********1234"),
+    ("card-15d-other-continuous", "112345678912345", "112345*****2345"),
+    ("card-16d-other-continuous", "1123456789123456", "112345******3456"),
+    ("card-17d-other-continuous", "11234567891234567", "112345*******4567"),
+    ("card-18d-other-continuous", "112345678912345678", "112345********5678"),
+    ("card-19d-other-continuous", "1123456789123456789", "112345*********6789"),
     # space-separated, other leading digit
-    ("card-12d-other-space", "11234 56 78912", "[CARD-MASKED:********8912]"),
-    ("card-13d-other-space", "11234 56 789123", "[CARD-MASKED:*********9123]"),
-    ("card-14d-other-space", "11234 56 7891234", "[CARD-MASKED:**********1234]"),
-    ("card-15d-other-space", "11234 56 78912345", "[CARD-MASKED:112345*****2345]"),
-    ("card-16d-other-space", "11234 56 789123456", "[CARD-MASKED:112345******3456]"),
-    ("card-17d-other-space", "11234 56 7891234567", "[CARD-MASKED:112345*******4567]"),
-    ("card-18d-other-space", "11234 56 78912345678", "[CARD-MASKED:112345********5678]"),
-    ("card-19d-other-space", "11234 56 789123456789", "[CARD-MASKED:112345*********6789]"),
+    ("card-12d-other-space", "11234 56 78912", "********8912"),
+    ("card-13d-other-space", "11234 56 789123", "*********9123"),
+    ("card-14d-other-space", "11234 56 7891234", "**********1234"),
+    ("card-15d-other-space", "11234 56 78912345", "112345*****2345"),
+    ("card-16d-other-space", "11234 56 789123456", "112345******3456"),
+    ("card-17d-other-space", "11234 56 7891234567", "112345*******4567"),
+    ("card-18d-other-space", "11234 56 78912345678", "112345********5678"),
+    ("card-19d-other-space", "11234 56 789123456789", "112345*********6789"),
     # dash-separated, other leading digit
-    ("card-12d-other-dash", "1123-4567-8912", "[CARD-MASKED:********8912]"),
-    ("card-13d-other-dash", "1123-4567-8912-3", "[CARD-MASKED:*********9123]"),
-    ("card-14d-other-dash", "1123-4567-8912-34", "[CARD-MASKED:**********1234]"),
-    ("card-15d-other-dash", "1123-4567-8912-345", "[CARD-MASKED:112345*****2345]"),
-    ("card-16d-other-dash", "1123-4567-8912-3456", "[CARD-MASKED:112345******3456]"),
-    ("card-17d-other-dash", "1123-4567-8912-34567", "[CARD-MASKED:112345*******4567]"),
-    ("card-18d-other-dash", "1123-4567-8912-345678", "[CARD-MASKED:112345********5678]"),
-    ("card-19d-other-dash", "1123-4567-8912-3456789", "[CARD-MASKED:112345*********6789]"),
+    ("card-12d-other-dash", "1123-4567-8912", "********8912"),
+    ("card-13d-other-dash", "1123-4567-8912-3", "*********9123"),
+    ("card-14d-other-dash", "1123-4567-8912-34", "**********1234"),
+    ("card-15d-other-dash", "1123-4567-8912-345", "112345*****2345"),
+    ("card-16d-other-dash", "1123-4567-8912-3456", "112345******3456"),
+    ("card-17d-other-dash", "1123-4567-8912-34567", "112345*******4567"),
+    ("card-18d-other-dash", "1123-4567-8912-345678", "112345********5678"),
+    ("card-19d-other-dash", "1123-4567-8912-3456789", "112345*********6789"),
     # irregular grouping
-    ("card-2groups-9-space", "90345 67812901256", "[CARD-MASKED:903456******1256]"),
-    ("card-2groups-9-dash", "90345-67812901256", "[CARD-MASKED:903456******1256]"),
-    ("card-2groups-other-space", "10345 67812901256", "[CARD-MASKED:103456******1256]"),
-    ("card-2groups-other-dash", "10345-67812901256", "[CARD-MASKED:103456******1256]"),
-    ("card-3groups-9-space", "90345 678129012 90345", "[CARD-MASKED:903456*********0345]"),
-    ("card-3groups-9-dash", "90345-678129012-90345", "[CARD-MASKED:903456*********0345]"),
-    ("card-3groups-other-space", "10345 678129012 10345", "[CARD-MASKED:103456*********0345]"),
-    ("card-3groups-other-dash", "10345-678129012-10345", "[CARD-MASKED:103456*********0345]"),
-    ("card-5groups-9-space", "90345 678 1290 12 56789", "[CARD-MASKED:903456*********6789]"),
-    ("card-5groups-9-dash", "90345-678-1290-12-56789", "[CARD-MASKED:903456*********6789]"),
-    ("card-5groups-other-space", "40345 678 1290 12 56789", "[CARD-MASKED:403456*********6789]"),
-    ("card-5groups-other-dash", "40345-678-1290-12-56789", "[CARD-MASKED:403456*********6789]"),
+    ("card-2groups-9-space", "90345 67812901256", "903456******1256"),
+    ("card-2groups-9-dash", "90345-67812901256", "903456******1256"),
+    ("card-2groups-other-space", "10345 67812901256", "103456******1256"),
+    ("card-2groups-other-dash", "10345-67812901256", "103456******1256"),
+    ("card-3groups-9-space", "90345 678129012 90345", "903456*********0345"),
+    ("card-3groups-9-dash", "90345-678129012-90345", "903456*********0345"),
+    ("card-3groups-other-space", "10345 678129012 10345", "103456*********0345"),
+    ("card-3groups-other-dash", "10345-678129012-10345", "103456*********0345"),
+    ("card-5groups-9-space", "90345 678 1290 12 56789", "903456*********6789"),
+    ("card-5groups-9-dash", "90345-678-1290-12-56789", "903456*********6789"),
+    ("card-5groups-other-space", "40345 678 1290 12 56789", "403456*********6789"),
+    ("card-5groups-other-dash", "40345-678-1290-12-56789", "403456*********6789"),
     # mixed separators within one number
-    ("card-2-mixed-separator-9", "9034-5678 1290", "[CARD-MASKED:********1290]"),
-    ("card-3-mixed-separator-9", "9034-5678 1290-125", "[CARD-MASKED:903456*****0125]"),
-    ("card-4-mixed-separator-9", "9034-5678 1290-1256 125", "[CARD-MASKED:903456*********6125]"),
-    ("card-2-mixed-separator-other", "4034-5678 1290", "[CARD-MASKED:********1290]"),
-    ("card-3-mixed-separator-other", "4034-5678 1290-125", "[CARD-MASKED:403456*****0125]"),
-    ("card-4-mixed-separator-other", "4034-5678 1290-1256 125", "[CARD-MASKED:403456*********6125]"),
+    ("card-2-mixed-separator-9", "9034-5678 1290", "********1290"),
+    ("card-3-mixed-separator-9", "9034-5678 1290-125", "903456*****0125"),
+    ("card-4-mixed-separator-9", "9034-5678 1290-1256 125", "903456*********6125"),
+    ("card-2-mixed-separator-other", "4034-5678 1290", "********1290"),
+    ("card-3-mixed-separator-other", "4034-5678 1290-125", "403456*****0125"),
+    ("card-4-mixed-separator-other", "4034-5678 1290-1256 125", "403456*********6125"),
     # trailing chunk is phone-shaped (10 bare digits) — the phone rule runs
     # first, so the card rule needs its guard to still claim the full PAN.
-    ("card-17d-space-trailing-chunk-is-phone-shaped", "11234 56 7891234567", "[CARD-MASKED:112345*******4567]"),
+    ("card-17d-space-trailing-chunk-is-phone-shaped", "11234 56 7891234567", "112345*******4567"),
     # every allowed lead-guard prefix, embedded in a sentence
-    ("card-19d-9-space-prefixed-in-sentence", "Here is 9123456789123456789 card Number", "Here is [CARD-MASKED:912345*********6789] card Number"),
-    ("card-19d-9-paren-prefixed-in-sentence", "Here is (9123456789123456789) card Number", "Here is ([CARD-MASKED:912345*********6789]) card Number"),
-    ("card-19d-9-bracket-prefixed-in-sentence", "Here is [9123456789123456789] card Number", "Here is [[CARD-MASKED:912345*********6789]] card Number"),
-    ("card-19d-9-brace-prefixed-in-sentence", "Here is {9123456789123456789} card Number", "Here is {[CARD-MASKED:912345*********6789]} card Number"),
-    ("card-19d-9-colon-prefixed-in-sentence", "Here num:9123456789123456789 card Number", "Here num:[CARD-MASKED:912345*********6789] card Number"),
-    ("card-19d-9-equals-prefixed-in-sentence", "Here num=9123456789123456789 card Number", "Here num=[CARD-MASKED:912345*********6789] card Number"),
-    ("card-19d-9-comma-prefixed-in-sentence", "Here num,9123456789123456789 card Number", "Here num,[CARD-MASKED:912345*********6789] card Number"),
-    ("card-19d-9-dot-prefixed-in-sentence", "Here num.9123456789123456789 card Number", "Here num.[CARD-MASKED:912345*********6789] card Number"),
+    ("card-19d-9-space-prefixed-in-sentence", "Here is 9123456789123456789 card Number", "Here is 912345*********6789 card Number"),
+    ("card-19d-9-paren-prefixed-in-sentence", "Here is (9123456789123456789) card Number", "Here is (912345*********6789) card Number"),
+    ("card-19d-9-bracket-prefixed-in-sentence", "Here is [9123456789123456789] card Number", "Here is [912345*********6789] card Number"),
+    ("card-19d-9-brace-prefixed-in-sentence", "Here is {9123456789123456789} card Number", "Here is {912345*********6789} card Number"),
+    ("card-19d-9-colon-prefixed-in-sentence", "Here num:9123456789123456789 card Number", "Here num:912345*********6789 card Number"),
+    ("card-19d-9-equals-prefixed-in-sentence", "Here num=9123456789123456789 card Number", "Here num=912345*********6789 card Number"),
+    ("card-19d-9-comma-prefixed-in-sentence", "Here num,9123456789123456789 card Number", "Here num,912345*********6789 card Number"),
+    ("card-19d-9-dot-prefixed-in-sentence", "Here num.9123456789123456789 card Number", "Here num.912345*********6789 card Number"),
     # 4-4-4-4 grouping: cascaded into per-group CVV masking in the ported
     # source, but full-PAN masking claims the whole run here.
-    ("card-12d-other-space-4x4", "1123 4567 8912", "[CARD-MASKED:********8912]"),
-    ("card-15d-other-space-4x4", "1123 4567 8912 345", "[CARD-MASKED:112345*****2345]"),
-    ("card-16d-other-space-4x4", "1123 4567 8912 3456", "[CARD-MASKED:112345******3456]"),
-    ("card-17d-other-space-4x4", "1123 4567 8912 34567", "[CARD-MASKED:112345*******4567]"),
-    ("card-19d-other-space-4x4", "1123 4567 8912 3456789", "[CARD-MASKED:112345*********6789]"),
+    ("card-12d-other-space-4x4", "1123 4567 8912", "********8912"),
+    ("card-15d-other-space-4x4", "1123 4567 8912 345", "112345*****2345"),
+    ("card-16d-other-space-4x4", "1123 4567 8912 3456", "112345******3456"),
+    ("card-17d-other-space-4x4", "1123 4567 8912 34567", "112345*******4567"),
+    ("card-19d-other-space-4x4", "1123 4567 8912 3456789", "112345*********6789"),
 ]
 
 
@@ -801,8 +814,8 @@ def test_card_number_reveals_only_bin_and_last4():
     """The truncation contract (#159795), stated directly rather than only
     implied by the table above: first 6 + last 4 visible, full PAN gone,
     and the labeled output is stable under a second pass."""
-    assert _mask("4111111111111111") == "[CARD-MASKED:411111******1111]"
-    assert _mask("[CARD-MASKED:411111******1111]") == "[CARD-MASKED:411111******1111]"
+    assert _mask("4111111111111111") == "411111******1111"
+    assert _mask("411111******1111") == "411111******1111"
 
 
 # ---------------------------------------------------------------------------
@@ -1026,14 +1039,14 @@ class TestObjectAndPrimitiveHandling:
         # left as-is
         assert _mask({"event": "decrypted payment data", "source": _FakeCard()}) == {
             "event": "decrypted payment data",
-            "source": "<Card(VISA, 512345******0008, [CARD-MASKED:958418******4802])>",
+            "source": "<Card(VISA, 512345******0008, 958418******4802)>",
         }
 
     def test_masks_object_nested_in_list_and_dict(self):
         assert _mask({"data": {"cards": [{"instrument": _FakeCard()}]}}) == {
             "data": {
                 "cards": [
-                    {"instrument": "<Card(VISA, 512345******0008, [CARD-MASKED:958418******4802])>"}
+                    {"instrument": "<Card(VISA, 512345******0008, 958418******4802)>"}
                 ]
             }
         }
@@ -1050,7 +1063,7 @@ class TestObjectAndPrimitiveHandling:
         assert _mask(sample) == {"status_code": 200, "count": 100, "ok": True, "nothing": None}
 
     def test_masks_plain_string_message(self):
-        assert _mask("card 5123 4500 0000 0008") == "card [CARD-MASKED:512345******0008]"
+        assert _mask("card 5123 4500 0000 0008") == "card 512345******0008"
 
 
 @pytest.mark.parametrize(
@@ -1140,7 +1153,7 @@ class TestJsonTextIsMaskedByKey:
         """A card number logged as a JSON number is caught by the content
         rules, as it was when the string was only scanned as text."""
         out = _mask('{"nameOnCard": "Jane Payer", "ref": 4111111111111111}')
-        assert out == '{"nameOnCard": "[NAME-MASKED]", "ref": [CARD-MASKED:411111******1111]}'
+        assert out == '{"nameOnCard": "[NAME-MASKED]", "ref": 411111******1111}'
 
     def test_text_that_is_not_json_gets_the_content_rules_only(self):
         assert _mask("{not json} a@b.com") == "{not json} [EMAIL-MASKED]"

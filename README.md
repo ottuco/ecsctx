@@ -806,9 +806,9 @@ handlers that never call `format()` see masked data too — and the formatter's
 strings already known clean are not scanned twice.
 
 **Log processor path** (automatic via `mask_sensitive_data`):
-- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`), for fraud correlation. Same input always produces the same token. Where no token can be made (PII not configured, or tokenization failing) the value becomes its type's label, `[EMAIL-MASKED]`; CVV, expiry and card numbers are never tokenized (`[CVV-MASKED]`, `[EXPIRY-MASKED]`, `[CARD-MASKED:411111******1111]`). A null stays null.
+- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`), for fraud correlation. Same input always produces the same token. Where no token can be made (PII not configured, or tokenization failing) the value becomes its type's label, `[EMAIL-MASKED]`; CVV and expiry are never tokenized and carry nothing, so they keep a bracketed label (`[CVV-MASKED]`, `[EXPIRY-MASKED]`); a card number is never tokenized either but its truncation IS carried, so it is bare (`411111******1111`). A null stays null, and an empty value stays empty.
 - When PII is not configured: detected values become the bare label (`[EMAIL-MASKED]`) — raw PII never appears in logs.
-- Cardholder data is never tokenized: PANs are truncated (`[CARD-MASKED:411111******1111]`), and CVV and expiry are always the bare `[CVV-MASKED]` / `[EXPIRY-MASKED]`.
+- Cardholder data is never tokenized: PANs are truncated to `411111******1111`, and CVV and expiry are always `[CVV-MASKED]` / `[EXPIRY-MASKED]`. The rule to remember: **brackets mean nothing survived**.
 
 **Explicit encryption API** (standalone, NOT part of the log processor pipeline):
 - `protect()` / `reveal()` use **AES-256-GCM** for randomized ciphertext (`penc:v1:<kid>:...`) when reversible encryption is needed. Requires `PII_ACCESS=full`.
@@ -958,7 +958,7 @@ Card and expiry keys are matched precisely.
 | **Secrets** | containing `token`, `secret`, `password`, `passwd`, `authorization`, `bearer`, `basic`, `digest`, `credential`, or an `api`/`access`/`secret`/`private`/… `_key` | credential forms (`default`) | `[SECRET-MASKED…]` |
 | **Emails / phones** | containing `email`; `phone`, `mobile`, `tel` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]` |
 | **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
-| **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no` | 12–19 digit runs (`pci`) | `[CARD-MASKED:411111******1111]` |
+| **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no` | 12–19 digit runs (`pci`) | `411111******1111` |
 | **CVV / expiry** | containing `cvv`, `cvc`, `security code`; `expiry`, `expiration`, `exp_month`, … | keyed and bare CVV (`pci`) | `[CVV-MASKED]`, `[EXPIRY-MASKED]` |
 | **IBAN / SSN / payment ids** | `payment_id`, `transaction_id`, `auth_id` (`financial_ids`) | `financial_ids` | `[IBAN-MASKED…]`, … |
 

@@ -19,7 +19,8 @@ Every masked value becomes a bare token or a `[LABEL]` via mask_by_field_type �
 never a bare `***`. Cardholder data never carries a token: CVV and expiry
 are bare labels, because PCI forbids storing CVV in any form; card numbers
 are truncated — first 6 + last 4 from 15 digits up, last 4 only below
-(`[CARD-MASKED:411111******1111]`, PCI DSS 3.5.1, FAQ 1091).
+(`411111******1111`, bare, PCI DSS 3.5.1, FAQ 1091 — brackets mean
+nothing survived, and a truncation carries the BIN and the last four).
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from collections.abc import Callable
 from functools import lru_cache
 from typing import NamedTuple
 
-from ecsctx.masking.tokens import make_label, mask_by_field_type
+from ecsctx.masking.tokens import _TRUNCATED_PAN, make_label, mask_by_field_type
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -152,6 +153,13 @@ def _digits_only(text: str) -> str:
     return "".join(c for c in text if c.isdigit())
 
 
+# Every CVV rule replaces the match with this, whatever it matched: PCI forbids
+# keeping a CVV in any form, so there is no value to carry and nothing to
+# tokenize. Stated directly rather than via mask_by_field_type('', 'cvv'),
+# which made these rules depend on how an empty value is rendered.
+_CVV_LABEL = f"[{make_label('cvv')}]"
+
+
 
 # ---------------------------------------------------------------------------
 # Callables that turn a match into a labeled, tokenized replacement
@@ -178,7 +186,9 @@ def _mask_truncated_card(match: re.Match) -> str:
     # carries a BIN and a last-4 to preserve — no short-input path needed.
     # Deliberately not mask_by_field_type: that would tokenize (or, with
     # PII unconfigured, collapse to a bare label), losing the truncation.
-    return f"[{make_label('card')}:{_truncate_pan(_digits_only(match.group(0)))}]"
+    # Emitted bare: the truncation IS the value, and the stars alone make it a
+    # fixed point — they break the digit run so no later pass re-matches it.
+    return _truncate_pan(_digits_only(match.group(0)))
 
 
 _PAN_VALUE = re.compile(r"\d(?:[-\s]?\d){11,18}")
@@ -186,7 +196,8 @@ _PAN_VALUE = re.compile(r"\d(?:[-\s]?\d){11,18}")
 # label with a token, or a truncated card. A marker somewhere inside a longer
 # value, or brackets around anything else, do not make it safe.
 _SINGLE_MARKER = re.compile(
-    r"\[[A-Z0-9-]+-MASKED(?::ptok:[\w:.-]+)?\]|\[CARD-MASKED:(?:\d{6})?\*+\d{4}\]|ptok:[\w:.-]+"
+    rf"\[[A-Z0-9-]+-MASKED(?::ptok:[\w:.-]+)?\]|{_TRUNCATED_PAN}"
+    rf"|\[CARD-MASKED:{_TRUNCATED_PAN}\]|ptok:[\w:.-]+"
 )
 
 
@@ -197,12 +208,14 @@ def mask_card_value(value) -> str:
     correlation FAQ 1117 warns about. A whole card object (number, expiry,
     holder) is one label.
     """
+    if isinstance(value, str) and not value:
+        return value  # nothing was there; see mask_by_field_type
     if isinstance(value, str) and _SINGLE_MARKER.fullmatch(value):
         return value
     if isinstance(value, (str, int)) and not isinstance(value, bool):
         text = str(value).strip()
         if _PAN_VALUE.fullmatch(text):
-            return f"[{make_label('card')}:{_truncate_pan(_digits_only(text))}]"
+            return _truncate_pan(_digits_only(text))
     return f"[{make_label('card')}]"
 
 
@@ -258,20 +271,20 @@ def _cred_space(m: re.Match) -> str:
 
 def _cvv_quoted(m: re.Match) -> str:
     q, kw, sep = m.group(1), m.group(2), m.group(3)
-    return f"{q}{kw}{q}{sep}{q}{mask_by_field_type('', 'cvv')}{q}"
+    return f"{q}{kw}{q}{sep}{q}{_CVV_LABEL}{q}"
 
 
 def _cvv_kv(m: re.Match) -> str:
     quote = _unquoted_value_quote(m.group(1))
-    return f"{m.group(1)}{quote}{mask_by_field_type('', 'cvv')}{quote}"
+    return f"{m.group(1)}{quote}{_CVV_LABEL}{quote}"
 
 
 def _cvv_space(m: re.Match) -> str:
-    return f"{m.group(1)} {mask_by_field_type('', 'cvv')}"
+    return f"{m.group(1)} {_CVV_LABEL}"
 
 
 def _standalone_cvv(_m: re.Match) -> str:
-    return mask_by_field_type('', 'cvv')
+    return _CVV_LABEL
 
 
 def _payid_quoted(m: re.Match) -> str:
@@ -406,12 +419,14 @@ def _has_three_digits(text: str, _lowered: str) -> bool:
 
 
 # Rules 15 and 16 have already run by the time rule 17 does, so a PAN in the
-# text is now a "[CARD-MASKED:…]" marker rather than a digit run — the word
-# covers both, as it covers a "card"/"pan" key name serialised into the text.
+# text is now a bare truncation rather than a digit run. _TRUNCATED_PAN_RE
+# below is what recognises it; these words cover a "card"/"pan" key name
+# serialised into the text, and the prose cases.
 # _CVV_LITERALS too: text that says "cvv" anywhere is card context even when
 # the keyword rules cannot reach the digits ("the cvv is 123" -- rule 9 needs
 # them adjacent).
 _CARD_CONTEXT = ("card", "pan", "cardholder", "credit", *_CVV_LITERALS)
+_TRUNCATED_PAN_RE = re.compile(_TRUNCATED_PAN)
 
 
 def _text_has_card_context(text: str, lowered: str) -> bool:
@@ -419,10 +434,16 @@ def _text_has_card_context(text: str, lowered: str) -> bool:
 
     A 3-4 digit group with no card anywhere near it is a status code, a count
     or an amount, and a CVV is worth nothing without its PAN. Rules 15 and 16
-    have already run, so a PAN is a "[CARD-MASKED:…]" marker by now -- the word
-    "card" covers that as it covers a card-named key serialised into the text.
+    have already run, so a PAN is a bare truncation by now -- the star run is
+    what recognises it, as the words cover a card-named key in the text.
     """
-    return any(word in lowered for word in _CARD_CONTEXT) or _CARD_SHAPE.search(text) is not None
+    if any(word in lowered for word in _CARD_CONTEXT):
+        return True
+    # A PAN the card rule has already truncated: rule 15 runs first, so by now
+    # the digit run _CARD_SHAPE looks for is gone and the truncation is the
+    # only card context left in the text. Without this, a CVV sitting beside a
+    # masked PAN stops being masked -- which is a leak, not a formatting bug.
+    return _CARD_SHAPE.search(text) is not None or _TRUNCATED_PAN_RE.search(text) is not None
 
 
 # Every credential match contains one of these words, and starts inside the
@@ -630,7 +651,7 @@ _RULE_TABLE = (
         _jwt,
         _has_jwt_prefix,
     ),
-    # 15. Card number — truncated ([CARD-MASKED:411111******1111]; last 4
+    # 15. Card number — truncated, bare (411111******1111; last 4
     # only below 15 digits, see _truncate_pan); the middle never survives,
     # starred or not.
     # The output stays inside the [LABEL…] convention so already_masked()
@@ -798,7 +819,7 @@ def _mask_gated(text: str, lowered: str, rules: tuple[Rule, ...]) -> str:
         if not verdict:
             continue
         # Re-asked on every version of the text, like a gate: masking a PAN
-        # replaces it with a "[CARD-MASKED:…]" marker, which ADDS card context
+        # replaces it with a bare truncation, which still reads as card context
         # rather than removing it, so a later pass can only become more
         # permissive — never less.
         if rule.precondition is not None and not rule.precondition(text, lowered):

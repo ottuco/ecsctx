@@ -92,7 +92,7 @@ class TestTheShippedPipeline:
 class TestCardData:
     def test_a_pan_in_track_2_data_is_truncated(self):
         record = _filter("5413330089020011D2512601079360805F", packs=("pci",))
-        assert record.msg == "[CARD-MASKED:541333******0011]D2512601079360805F"
+        assert record.msg == "541333******0011D2512601079360805F"
 
     def test_a_phone_rule_still_ignores_a_digit_run_touching_letters(self):
         session_id = "8231045567ab34cd9f0e1a2b3c4d5e6f7a8b9c0d"
@@ -100,7 +100,7 @@ class TestCardData:
 
     def test_a_card_value_with_a_marker_inside_is_still_truncated(self):
         assert mask_card_value("4111111111111111 cvv [CVV-MASKED]") == "[CARD-MASKED]"
-        assert mask_card_value("[CARD-MASKED:411111******1111]") == "[CARD-MASKED:411111******1111]"
+        assert mask_card_value("411111******1111") == "411111******1111"
 
 
 class TestKeyNamesFailClosed:
@@ -162,7 +162,7 @@ class TestMaskedMarker:
         record = logging.LogRecord("t", logging.INFO, __file__, 0, "card 4111111111111111 cvv 123", None, None)
         MaskPIIFilter(packs=("default",)).filter(record)
         MaskPIIFilter(packs=ALL_PACKS).filter(record)
-        assert record.msg == "card [CARD-MASKED:411111******1111] cvv [CVV-MASKED]"
+        assert record.msg == "card 411111******1111 cvv [CVV-MASKED]"
 
 
 class TestConfigurationFailsClosed:
@@ -244,7 +244,7 @@ class TestSecondPassIsReal:
     def test_the_formatter_pass_masks_what_the_filter_pass_uncovered(self):
         masking_filter = MaskPIIFilter(packs=("pci",))
         once = masking_filter._mask_string("pan 4111111111111111 1225")
-        assert masking_filter._mask_string(once) == "pan [CARD-MASKED:411111******1111] [CVV-MASKED]"
+        assert masking_filter._mask_string(once) == "pan 411111******1111 [CVV-MASKED]"
 
     def test_a_partly_masked_string_seen_before_is_not_trusted(self):
         masking_filter = MaskPIIFilter(packs=("pci",))
@@ -258,7 +258,7 @@ class TestNumbersInStructuredFields:
 
     def test_a_decimal_arg_holding_a_pan_is_masked(self):
         record = _filter("ref %s", (Decimal("4111111111111111"),), packs=("pci",))
-        assert record.getMessage() == "ref [CARD-MASKED:411111******1111]"
+        assert record.getMessage() == "ref 411111******1111"
 
 
 class TestMoreLinearTime:
@@ -276,6 +276,8 @@ class TestMoreLinearTime:
 
 class TestMarkersAndSettings:
     def test_a_card_key_holding_a_fake_marker_with_a_pan_is_masked(self):
+        # A full PAN dressed as a marker is not a truncation: the shape is
+        # checked, not believed.
         assert mask_card_value("[CARD-MASKED:4111111111111111]") == "[CARD-MASKED]"
         assert mask_card_value("[X-MASKED:4111111111111111 exp 1225]") == "[CARD-MASKED]"
 
@@ -293,7 +295,7 @@ class TestFixedPoint:
         # What Sentry's logging integration reads is the record the filter
         # masked; it must not need the formatter's pass to be complete.
         record = _filter("charge pan 4111111111111111 0827 ok", packs=("pci",))
-        assert record.msg == "charge pan [CARD-MASKED:411111******1111] [CVV-MASKED] ok"
+        assert record.msg == "charge pan 411111******1111 [CVV-MASKED] ok"
 
 
 class TestGatewayBodiesAreNotLogRecords:

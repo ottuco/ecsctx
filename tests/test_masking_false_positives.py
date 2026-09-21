@@ -73,7 +73,7 @@ class TestScalarFieldValuesKeepTheirDigits:
 class TestRealCardDataStillMasks:
     def test_a_pan_under_a_card_key_is_masked_by_its_key(self, mask):
         assert mask({"number": "4508750000001019"}) == {
-            "number": "[CARD-MASKED:450875******1019]"
+            "number": "450875******1019"
         }
 
     def test_a_cvv_under_a_cvv_key_is_masked_by_its_key(self, mask):
@@ -84,14 +84,14 @@ class TestRealCardDataStillMasks:
         """The card rule keeps working without a key to go on -- it is the only
         thing standing between an unrecognised field and a PAN in the clear."""
         assert mask({"note": "4508750000001019"}) == {
-            "note": "[CARD-MASKED:450875******1019]"
+            "note": "450875******1019"
         }
 
     def test_a_pan_that_fails_luhn_is_still_masked(self, mask):
         """4508750000001019 is a card in live test use on jade and is NOT
         Luhn-valid. Pinned so nobody "improves" the card rule with a Luhn
         check, which would unmask it."""
-        assert "CARD-MASKED" in str(mask({"note": "4508750000001019"}))
+        assert mask({"note": "4508750000001019"}) == {"note": "450875******1019"}
 
 
 class TestProseStillMasks:
@@ -99,7 +99,7 @@ class TestProseStillMasks:
         assert mask("the cvv is 123") == "the cvv is [CVV-MASKED]"
 
     def test_a_pan_in_a_message_is_masked(self, mask):
-        assert "[CARD-MASKED:450875******1019]" in mask(
+        assert "450875******1019" in mask(
             "charged card 4508750000001019 today"
         )
 

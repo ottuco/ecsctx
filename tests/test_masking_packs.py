@@ -47,7 +47,7 @@ class TestPacks:
 
     def test_pci_pack_truncates_the_pan_and_masks_the_cvv(self):
         assert _mask("card 4111111111111111 cvv 123", packs=("pci",)) == (
-            "card [CARD-MASKED:411111******1111] cvv [CVV-MASKED]"
+            "card 411111******1111 cvv [CVV-MASKED]"
         )
 
     def test_pci_pack_masks_a_cvv_sent_with_a_saved_card_token(self):
@@ -195,7 +195,7 @@ class TestKeyNames:
     def test_card_fields_are_masked_by_key_in_every_service(self):
         masked = _mask({"card_number": "4111 1111 1111 1111", "expiry": "12/27", "cvv": "123"})
         assert masked == {
-            "card_number": "[CARD-MASKED:411111******1111]",
+            "card_number": "411111******1111",
             "expiry": "[EXPIRY-MASKED]",
             "cvv": "[CVV-MASKED]",
         }
@@ -331,12 +331,12 @@ class TestBoundariesAndTruncation:
 
     def test_a_pan_between_separators_is_still_truncated(self):
         assert _mask('"pan":"4111111111111111",', packs=("pci",)) == (
-            '"pan":"[CARD-MASKED:411111******1111]",'
+            '"pan":"411111******1111",'
         )
 
     def test_a_short_pan_keeps_only_its_last_four(self):
         assert _mask("pay 5018123456789 ok", packs=("pci",)) == (
-            "pay [CARD-MASKED:*********6789] ok"
+            "pay *********6789 ok"
         )
 
     def test_mask_pan_agrees_with_the_rule(self):

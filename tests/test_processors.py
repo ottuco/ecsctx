@@ -742,7 +742,7 @@ class TestPanDisplayMasking:
             masked = _mask_pci(f"pay {body} ok")
             assert body not in masked
             assert pan not in masked
-            assert masked == f"pay [CARD-MASKED:{_display(pan)}] ok"
+            assert masked == f"pay {_display(pan)} ok"
 
     def test_small_ints_bools_and_none_survive(self):
         masked = _mask(

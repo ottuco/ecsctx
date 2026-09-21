@@ -25,6 +25,36 @@
 - `ecsctx.contrib.ottu.masking.SAFE_KEYS` includes MPGS's
   `authorizationResponse` (the acquirer's processing and response codes).
 
+### Changed (breaking)
+
+- **Brackets now mean nothing survived.** A masked value that still carries
+  something real is rendered bare: a token was already bare since 0.10.0, and a
+  card's truncation now joins it — `450875******1019`, not
+  `[CARD-MASKED:450875******1019]`. A bracketed label stands only where the
+  value is gone: `[CVV-MASKED]`, `[EXPIRY-MASKED]`, and `[EMAIL-MASKED]` and
+  friends where no token could be made. One rule for a reader: brackets mean
+  there is nothing here, bare text means this IS the value.
+
+  The wrapper was doing three jobs that now need the truncation's own shape —
+  the BIN, a run of stars, the last four — to be recognised directly:
+  `already_masked()`, `mask_card_value()`'s `_SINGLE_MARKER`, and
+  `_text_has_card_context()`. The last one matters most: rule 15 runs before
+  rule 17, so by the time the CVV rule looks at a string the PAN is already
+  truncated, and the truncation is the only card context left. Without it a
+  CVV sitting beside a masked PAN would silently stop being masked.
+
+  `already_masked()` is now an anchored `fullmatch` rather than a substring
+  test, so a marker-shaped fragment can no longer vouch for the value around
+  it. Values masked by an earlier release — `[CARD-MASKED:…]`,
+  `[EMAIL-MASKED:ptok:…]` — are still recognised, so re-masking an old
+  document is still a noop.
+
+- An **empty value stays empty** instead of becoming its type's label.
+  `{"address": ""}` used to render `[ADDRESS-MASKED]`, which reads as though
+  something had been hidden; nothing was there. Same reasoning as a null
+  staying null. The CVV rules no longer route through `mask_by_field_type("")`
+  to spell their label, since that made them depend on this.
+
 ### Fixed
 
 - The credential text rules no longer read an existing token as a credential
