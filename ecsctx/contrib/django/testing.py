@@ -98,22 +98,102 @@ def _is_project_handler(handler: logging.Handler) -> bool:
     return not type(handler).__module__.startswith("_pytest")
 
 
+_UNSET = object()
+
+
+def _recording_emit(handler: logging.Handler, buffer: io.StringIO):
+    def emit(record):
+        buffer.write(handler.format(record) + "\n" + record.getMessage() + "\n")
+
+    return emit
+
+
 @contextmanager
-def capture_project_handlers(logger_name: str = DEFAULT_LOGGER_NAME) -> Iterator[list[io.StringIO]]:
-    """Point the project's stream handlers at buffers for the duration of the block."""
-    swapped: list[tuple[logging.StreamHandler, object]] = []
-    buffers: list[io.StringIO] = []
+def capture_all_handlers(logger_name: str = DEFAULT_LOGGER_NAME) -> Iterator[list[tuple[str, io.StringIO, bool]]]:
+    """Read back every project handler a record on this logger reaches.
+
+    Stream handlers write to a buffer instead of their stream. Every other
+    handler — email, HTTP, syslog, queue — has its emit() swapped for one that
+    records handler.format(record) and sends nothing: its filters still run
+    first, and the fake test values never leave the process.
+    """
+    buffers: list[tuple[str, io.StringIO, bool]] = []
+    swapped_streams: list[tuple[logging.StreamHandler, object]] = []
+    swapped_emits: list[tuple[logging.Handler, object]] = []
     for handler in _handlers_reached_by(logging.getLogger(logger_name)):
-        if not isinstance(handler, logging.StreamHandler) or not _is_project_handler(handler):
+        if not _is_project_handler(handler):
             continue
         buffer = io.StringIO()
-        swapped.append((handler, handler.setStream(buffer)))
-        buffers.append(buffer)
+        is_stream = isinstance(handler, logging.StreamHandler)
+        buffers.append((type(handler).__name__, buffer, is_stream))
+        if is_stream:
+            swapped_streams.append((handler, handler.setStream(buffer)))
+        else:
+            swapped_emits.append((handler, handler.__dict__.get("emit", _UNSET)))
+            handler.emit = _recording_emit(handler, buffer)
     try:
         yield buffers
     finally:
-        for handler, original in swapped:
+        for handler, original in swapped_streams:
             handler.setStream(original)
+        for handler, original in swapped_emits:
+            if original is _UNSET:
+                del handler.emit
+            else:
+                handler.emit = original
+
+
+@contextmanager
+def capture_project_handlers(logger_name: str = DEFAULT_LOGGER_NAME) -> Iterator[list[io.StringIO]]:
+    """The project's stream handlers' buffers for the duration of the block.
+
+    Every other handler on the route is silenced meanwhile, so a test record
+    logged at a raised level never reaches a real email or HTTP endpoint.
+    """
+    with capture_all_handlers(logger_name) as captured:
+        yield [buffer for _name, buffer, is_stream in captured if is_stream]
+
+
+def capture_handler_texts(
+    message: str = EVENT,
+    *,
+    logger_name: str = DEFAULT_LOGGER_NAME,
+    level: int = logging.WARNING,
+    **kwargs,
+) -> list[tuple[str, str]]:
+    """Log one record through structlog; return (handler class, text) for every project handler it reached."""
+    with capture_all_handlers(logger_name) as buffers:
+        structlog.get_logger(logger_name).log(level, message, **kwargs)
+    return [(name, buffer.getvalue()) for name, buffer, _is_stream in buffers]
+
+
+def project_routes(logging_config: dict | None = None) -> list[str]:
+    """One logger name per route the project configures.
+
+    An unconfigured name stands in for root; every logger in
+    LOGGING["loggers"] is its own route, since it may have handlers or
+    propagate: False of its own.
+    """
+    if logging_config is None:
+        from django.conf import settings
+
+        logging_config = settings.LOGGING
+    return [DEFAULT_LOGGER_NAME, *(logging_config or {}).get("loggers", {})]
+
+
+def route_level(logger_name: str, minimum: int = logging.WARNING) -> int:
+    """The lowest level that every project handler on this route accepts."""
+    logger = logging.getLogger(logger_name)
+    levels = [minimum, logger.getEffectiveLevel()]
+    levels += [h.level for h in _handlers_reached_by(logger) if _is_project_handler(h)]
+    return max(levels)
+
+
+def _has_stream_handler(logger_name: str) -> bool:
+    return any(
+        isinstance(h, logging.StreamHandler) and _is_project_handler(h)
+        for h in _handlers_reached_by(logging.getLogger(logger_name))
+    )
 
 
 def capture_log(
@@ -199,9 +279,28 @@ def count_maskers(handler: logging.Handler) -> int:
 
 class MaskingTestsMixin:
     masking_logger_name = DEFAULT_LOGGER_NAME
+    masking_logger_names: list[str] | None = None
     masking_log_level = logging.WARNING
     masking_test_values = TEST_VALUES
     masking_expected_values = EXPECTED_VALUES
+
+    def masking_routes(self) -> list[tuple[str, int]]:
+        """(logger name, level) for every route: masking_logger_names if set,
+        otherwise root plus every logger in settings.LOGGING["loggers"]."""
+        names = self.masking_logger_names
+        if names is None:
+            names = project_routes()
+        return [
+            (name, route_level(name, self.masking_log_level))
+            for name in names
+            if not logging.getLogger(name).disabled
+        ]
+
+    def readable_routes(self) -> list[tuple[str, int]]:
+        """Routes with a stream handler whose output can be parsed as JSON."""
+        routes = [(name, level) for name, level in self.masking_routes() if _has_stream_handler(name)]
+        self.assertTrue(routes, "No route reaches a project stream handler, so no output can be read back.")
+        return routes
 
     # -- the project's configuration -------------------------------------
 
@@ -235,40 +334,51 @@ class MaskingTestsMixin:
         )
 
     def test_structural_metadata_is_not_masked(self):
-        for record in capture_log(logger_name=self.masking_logger_name, level=self.masking_log_level):
-            for key in ("service", "project", "log"):
-                with self.subTest(field=key):
-                    self.assertNotIn("-MASKED", json.dumps(record.get(key, {})))
+        for name, level in self.readable_routes():
+            for record in capture_log(logger_name=name, level=level):
+                for key in ("service", "project", "log"):
+                    with self.subTest(logger=name, field=key):
+                        self.assertNotIn("-MASKED", json.dumps(record.get(key, {})))
 
     def test_no_handler_carries_a_duplicate_masker(self):
-        for handler in _handlers_reached_by(logging.getLogger(self.masking_logger_name)):
-            if _is_project_handler(handler):
-                with self.subTest(handler=type(handler).__name__):
-                    self.assertLessEqual(count_maskers(handler), 1)
+        for name, _level in self.masking_routes():
+            for handler in _handlers_reached_by(logging.getLogger(name)):
+                if _is_project_handler(handler):
+                    with self.subTest(logger=name, handler=type(handler).__name__):
+                        self.assertLessEqual(count_maskers(handler), 1)
 
     # -- what the project's handlers actually write ----------------------
 
     def test_log_output_is_masked(self):
-        for record in capture_log(
-            logger_name=self.masking_logger_name,
-            level=self.masking_log_level,
-            **self.masking_test_values,
-        ):
-            fields = {**record, **record.get("extra", {})}
-            actual = {field: strip_tokens(fields.get(field)) for field in self.masking_expected_values}
-            self.assertEqual(actual, self.masking_expected_values, f"Log record:\n{record}")
+        for name, level in self.readable_routes():
+            with self.subTest(logger=name):
+                for record in capture_log(logger_name=name, level=level, **self.masking_test_values):
+                    fields = {**record, **record.get("extra", {})}
+                    actual = {field: strip_tokens(fields.get(field)) for field in self.masking_expected_values}
+                    self.assertEqual(actual, self.masking_expected_values, f"Log record:\n{record}")
 
     def test_stdlib_log_with_percent_args_is_masked(self):
         """The path a third-party library takes: no structlog, %s args the
         handler interpolates. Only the handler-level filter can catch it."""
         email = self.masking_test_values["email"]
-        for record in capture_stdlib_log(
-            "third party %s signed in",
-            email,
-            logger_name=self.masking_logger_name,
-            level=self.masking_log_level,
-        ):
-            self.assertEqual(strip_tokens(record.get("message")), "third party [EMAIL-MASKED] signed in")
+        for name, level in self.readable_routes():
+            with self.subTest(logger=name):
+                for record in capture_stdlib_log("third party %s signed in", email, logger_name=name, level=level):
+                    self.assertEqual(strip_tokens(record.get("message")), "third party [EMAIL-MASKED] signed in")
+
+    def test_no_raw_value_reaches_any_handler(self):
+        """Every project handler on every route — email, HTTP, syslog included —
+        is read back and searched for the raw test values, whatever its format."""
+        # Short values like a CVV can turn up inside a timestamp by chance.
+        raw_values = {f: str(v) for f, v in self.masking_test_values.items() if len(str(v)) >= 8}
+        reached = 0
+        for name, level in self.masking_routes():
+            for handler, text in capture_handler_texts(logger_name=name, level=level, **self.masking_test_values):
+                reached += 1
+                with self.subTest(logger=name, handler=handler):
+                    leaked = [field for field, raw in raw_values.items() if raw in text]
+                    self.assertEqual(leaked, [], f"Raw values reached {handler}:\n{text}")
+        self.assertGreater(reached, 0, "No project handler was reached on any route.")
 
     def assert_samples_masked(self, cases):
         for label, sample, expected in cases:
