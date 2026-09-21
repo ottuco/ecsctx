@@ -252,7 +252,9 @@ def masking_check_skip_reason(settings=None) -> str | None:
     if getattr(settings, "ECSCTX_SKIP_MASKING_CHECK", False):
         return "ECSCTX_SKIP_MASKING_CHECK is set"
     env_var = getattr(settings, "ECSCTX_MASKING_CHECK_ENV_VAR", DEFAULT_ENV_VAR)
-    skip_envs = [str(e) for e in getattr(settings, "ECSCTX_MASKING_CHECK_SKIP_ENVS", [])]
+    skip_envs = [
+        str(e) for e in getattr(settings, "ECSCTX_MASKING_CHECK_SKIP_ENVS", [])
+    ]
     current_env = os.environ.get(env_var, "").lower()
     if current_env in {e.lower() for e in skip_envs}:
         return (

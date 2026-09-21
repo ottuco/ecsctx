@@ -106,7 +106,9 @@ def _is_ecs_json_handler(handler: logging.Handler) -> bool:
     return (
         isinstance(handler, logging.StreamHandler)
         and isinstance(formatter, structlog.stdlib.ProcessorFormatter)
-        and any(isinstance(p, ECSFormatter) for p in getattr(formatter, "processors", ()))
+        and any(
+            isinstance(p, ECSFormatter) for p in getattr(formatter, "processors", ())
+        )
     )
 
 
@@ -121,7 +123,9 @@ def _recording_emit(handler: logging.Handler, buffer: io.StringIO):
 
 
 @contextmanager
-def capture_all_handlers(logger_name: str = DEFAULT_LOGGER_NAME) -> Iterator[list[tuple[str, io.StringIO, bool]]]:
+def capture_all_handlers(
+    logger_name: str = DEFAULT_LOGGER_NAME,
+) -> Iterator[list[tuple[str, io.StringIO, bool]]]:
     """Read back every project handler a record on this logger reaches.
 
     Yields (handler class, buffer, is ecsctx JSON) per handler.
@@ -157,7 +161,9 @@ def capture_all_handlers(logger_name: str = DEFAULT_LOGGER_NAME) -> Iterator[lis
 
 
 @contextmanager
-def capture_project_handlers(logger_name: str = DEFAULT_LOGGER_NAME) -> Iterator[list[io.StringIO]]:
+def capture_project_handlers(
+    logger_name: str = DEFAULT_LOGGER_NAME,
+) -> Iterator[list[io.StringIO]]:
     """Buffers of the route's stream handlers that write ecsctx JSON.
 
     Every other handler on the route is silenced meanwhile, so a test record
@@ -292,7 +298,9 @@ def _parse(outputs: list[str], *, logger_name: str, level: int) -> list[dict]:
                 f"compared field by field:\n{output}"
             ) from None
         if len(parsed) != 1:
-            raise MaskingCaptureError(f"Expected exactly one record per handler, got:\n{output}")
+            raise MaskingCaptureError(
+                f"Expected exactly one record per handler, got:\n{output}"
+            )
         records.append(parsed[0])
     return records
 
@@ -333,7 +341,11 @@ class MaskingTestsMixin:
 
     def readable_routes(self) -> list[tuple[str, int]]:
         """Routes reaching a handler that writes ecsctx JSON, so its output can be compared field by field."""
-        routes = [(name, level) for name, level in self.masking_routes() if _has_json_handler(name)]
+        routes = [
+            (name, level)
+            for name, level in self.masking_routes()
+            if _has_json_handler(name)
+        ]
         self.assertTrue(
             routes,
             "No route reaches a stream handler using ecsctx's JSON formatter, so no output can be compared.",
@@ -352,7 +364,11 @@ class MaskingTestsMixin:
     def test_masking_check_is_registered(self):
         from django.core.checks import Tags, registry
 
-        checks = [c for c in registry.registry.get_checks() if getattr(c, "__name__", "") == "check_masking_configured"]
+        checks = [
+            c
+            for c in registry.registry.get_checks()
+            if getattr(c, "__name__", "") == "check_masking_configured"
+        ]
         self.assertEqual(
             len(checks),
             1,
@@ -390,10 +406,17 @@ class MaskingTestsMixin:
     def test_log_output_is_masked(self):
         for name, level in self.readable_routes():
             with self.subTest(logger=name):
-                for record in capture_log(logger_name=name, level=level, **self.masking_test_values):
+                for record in capture_log(
+                    logger_name=name, level=level, **self.masking_test_values
+                ):
                     fields = {**record, **record.get("extra", {})}
-                    actual = {field: strip_tokens(fields.get(field)) for field in self.masking_expected_values}
-                    self.assertEqual(actual, self.masking_expected_values, f"Log record:\n{record}")
+                    actual = {
+                        field: strip_tokens(fields.get(field))
+                        for field in self.masking_expected_values
+                    }
+                    self.assertEqual(
+                        actual, self.masking_expected_values, f"Log record:\n{record}"
+                    )
 
     def test_stdlib_log_with_percent_args_is_masked(self):
         """The path a third-party library takes: no structlog, %s args the
@@ -401,21 +424,32 @@ class MaskingTestsMixin:
         email = self.masking_test_values["email"]
         for name, level in self.readable_routes():
             with self.subTest(logger=name):
-                for record in capture_stdlib_log("third party %s signed in", email, logger_name=name, level=level):
-                    self.assertEqual(strip_tokens(record.get("message")), "third party [EMAIL-MASKED] signed in")
+                for record in capture_stdlib_log(
+                    "third party %s signed in", email, logger_name=name, level=level
+                ):
+                    self.assertEqual(
+                        strip_tokens(record.get("message")),
+                        "third party [EMAIL-MASKED] signed in",
+                    )
 
     def test_no_raw_value_reaches_any_handler(self):
         """Every project handler on every route — email, HTTP, syslog included —
         is read back and searched for the raw test values, whatever its format."""
         # Short values like a CVV can turn up inside a timestamp by chance.
-        raw_values = {f: str(v) for f, v in self.masking_test_values.items() if len(str(v)) >= 8}
+        raw_values = {
+            f: str(v) for f, v in self.masking_test_values.items() if len(str(v)) >= 8
+        }
         reached = 0
         for name, level in self.masking_routes():
-            for handler, text in capture_handler_texts(logger_name=name, level=level, **self.masking_test_values):
+            for handler, text in capture_handler_texts(
+                logger_name=name, level=level, **self.masking_test_values
+            ):
                 reached += 1
                 with self.subTest(logger=name, handler=handler):
                     leaked = [field for field, raw in raw_values.items() if raw in text]
-                    self.assertEqual(leaked, [], f"Raw values reached {handler}:\n{text}")
+                    self.assertEqual(
+                        leaked, [], f"Raw values reached {handler}:\n{text}"
+                    )
         self.assertGreater(reached, 0, "No project handler was reached on any route.")
 
     def assert_samples_masked(self, cases):

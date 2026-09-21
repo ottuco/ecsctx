@@ -28,7 +28,11 @@ from ecsctx.masking.filters import (
     MaskPIIFilter,
     is_masked_object,
 )
-from ecsctx.masking.patterns import SAFE_KEYS, check_if_sensitive_keyword, mask_by_all_patterns
+from ecsctx.masking.patterns import (
+    SAFE_KEYS,
+    check_if_sensitive_keyword,
+    mask_by_all_patterns,
+)
 from ecsctx.masking.tokens import (
     already_masked,
     make_label,
