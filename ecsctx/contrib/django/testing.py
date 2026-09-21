@@ -76,10 +76,18 @@ def strip_tokens(value):
 
 
 def _handlers_reached_by(logger: logging.Logger) -> Iterator[logging.Handler]:
-    """Every handler a record on this logger reaches, as Logger.callHandlers walks them."""
+    """Every handler a record on this logger reaches, as Logger.callHandlers walks them.
+
+    A handler shared by two loggers on the route is yielded once, so a swap
+    made on it is undone exactly once.
+    """
+    seen: set[int] = set()
     current: logging.Logger | None = logger
     while current is not None:
-        yield from current.handlers
+        for handler in current.handlers:
+            if id(handler) not in seen:
+                seen.add(id(handler))
+                yield handler
         if not current.propagate:
             break
         current = current.parent
