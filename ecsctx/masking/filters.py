@@ -37,6 +37,7 @@ from ecsctx.masking.patterns import (
     mask_by_patterns,
     mask_card_value,
     rules_for,
+    scalar_rules,
 )
 from ecsctx.masking.tokens import mask_by_field_type
 
@@ -149,7 +150,7 @@ class MaskPIIFilter(logging.Filter):
         packs = self._packs_in_force()
         return _Pass(packs, rules_for(packs), _get_exempt_patterns(), get_masking_safe_keys())
 
-    def _mask_string(self, text: str, ctx: _Pass | None = None) -> str:
+    def _mask_string(self, text: str, ctx: _Pass | None = None, *, scalar: bool = False) -> str:
         # No already_masked() early-exit here: that helper is a whole-string
         # substring check, so a coincidental "-MASKED]"/"-MASKED:" fragment
         # (e.g. user-controlled text) would suppress content-regex masking
@@ -159,7 +160,11 @@ class MaskPIIFilter(logging.Filter):
         ctx = ctx or self._context()
         if not ctx.rules:
             return text  # a key-only walk: see _mask_json_text
-        return mask_by_patterns(text, ctx.rules)
+        # A whole field value is judged by its key, not by its shape: the
+        # keyless rules would turn a PSP response code into a CVV and an epoch
+        # timestamp into a PAN. Prose has no key, so it keeps every rule.
+        rules = scalar_rules(ctx.rules) if scalar else ctx.rules
+        return mask_by_patterns(text, rules)
 
     def _mask_dict(
         self, data: dict, path: tuple = (), ctx: _Pass | None = None, inherited: str | None = None
@@ -243,11 +248,13 @@ class MaskPIIFilter(logging.Filter):
         if inherited is not None:
             return mask_by_field_type(str(value), inherited)
         if isinstance(value, (bool, int, float)):
-            return value
+            return value  # see scalar= below: the same reasoning, for strings
         if isinstance(value, str):
             if (parsed := _json_container(value, ctx.rules)) is not None:
                 return self._mask_json_text(value, parsed, path, ctx)
-            return self._mask_string(value, ctx)
+            # path == () is the record's own message — prose. Anything deeper
+            # is a field value, and its key has already had its say.
+            return self._mask_string(value, ctx, scalar=path != ())
         # Any other object — a Decimal included — is replaced by its masked
         # text: a JSON renderer falls back to repr() ("Decimal('100.000')"),
         # and that can hold what str() hides. Positional args are the

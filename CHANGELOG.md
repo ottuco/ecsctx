@@ -29,6 +29,38 @@
 
 - The credential text rules no longer read an existing token as a credential
   value (`token=ptok:v1:…`), so masking masked text again changes nothing.
+- The standalone-CVV rule — a bare 3-4 digit group, the loosest rule in the
+  file — no longer destroys three- and four-digit data that is not a CVV. It
+  fired on any such string whatever key it sat under, so a payment gateway's
+  own logs rendered every PSP response code (`"000"`, `"101"`, `"199"`), every
+  `Content-Length`, and every HTTP status inside a message as `[CVV-MASKED]`:
+  the one field an operator needs to read a decline. Two fences now apply.
+
+  It never runs over a **whole scalar field value**, only over prose. A field
+  value has a key to be judged by, and the key rules have already had their
+  say; this is the same reasoning that has always exempted ints and floats
+  (`{"code": 400}` was safe, `{"code": "400"}` was not — and a PSP sends
+  JSON, where codes are strings).
+
+  In prose it runs only when the text carries **card context** — a card-shaped
+  digit run, or the word card/pan/cardholder/credit/cvv/cvc/security. A CVV is
+  worth nothing without the PAN it belongs to, and a 3-4 digit group with no
+  card anywhere near it is a status, a count or an amount. A keyword-anchored
+  CVV (`cvv=123`, `"cvv": "123"`, `the cvv is 123`) is unaffected: rules 4, 5
+  and 9 match it whatever else the text holds.
+
+  Two cases of the documented space-cascade bug are fixed by this and have
+  been promoted out of its strict-xfail list.
+
+### Known
+
+- A 12-19 digit string still masks as a card under any key, so an epoch
+  millisecond timestamp sent as a string (`"1727394279301"`) renders as
+  `[CARD-MASKED:*********9301]`. Narrowing it means gating the rule on a card
+  IIN, which changes a deliberate fail-safe contract ("any 12-19 digit run is
+  a card"). A Luhn check is **not** the fix: PANs in live test use exist that
+  fail Luhn (`4508750000001019`), while epoch timestamps exist that pass it
+  (`1727394280470`) — it would unmask a real card and keep a timestamp masked.
 
 ## v0.9.0 (2026-09-19)
 

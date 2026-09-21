@@ -152,6 +152,7 @@ def _digits_only(text: str) -> str:
     return "".join(c for c in text if c.isdigit())
 
 
+
 # ---------------------------------------------------------------------------
 # Callables that turn a match into a labeled, tokenized replacement
 # ---------------------------------------------------------------------------
@@ -331,6 +332,17 @@ class Rule(NamedTuple):
     # Replaces pattern.sub for rules whose matches can only start at a few
     # positions it can find cheaply; same output as pattern.sub.
     scan: Callable[[re.Pattern, Callable, str], str] | None = None
+    # Unlike `gate`, this one DOES change the result: it says whether the rule
+    # applies to this text at all. Only the standalone-CVV rule has one.
+    precondition: Callable[[str, str], bool] | None = None
+    # True for a rule that may only run over prose -- a human message, a
+    # serialised body -- and never over a whole scalar field value. A field
+    # value has a key to be judged by; applying a keyless shape rule to it
+    # destroys legitimate data (a PSP response code, a Content-Length) that
+    # the same rule leaves alone when it arrives as an int. See
+    # MaskPIIFilter._mask_value, which has always skipped ints for this
+    # reason.
+    prose_only: bool = False
 
 
 # Spelled the way the credential rules spell them: "authori" would also match
@@ -391,6 +403,26 @@ def _has_ssn_shape(text: str, _lowered: str) -> bool:
 
 def _has_three_digits(text: str, _lowered: str) -> bool:
     return _THREE_DIGITS.search(text) is not None
+
+
+# Rules 15 and 16 have already run by the time rule 17 does, so a PAN in the
+# text is now a "[CARD-MASKED:…]" marker rather than a digit run — the word
+# covers both, as it covers a "card"/"pan" key name serialised into the text.
+# _CVV_LITERALS too: text that says "cvv" anywhere is card context even when
+# the keyword rules cannot reach the digits ("the cvv is 123" -- rule 9 needs
+# them adjacent).
+_CARD_CONTEXT = ("card", "pan", "cardholder", "credit", *_CVV_LITERALS)
+
+
+def _text_has_card_context(text: str, lowered: str) -> bool:
+    """Whether this text holds anything a CVV could belong to.
+
+    A 3-4 digit group with no card anywhere near it is a status code, a count
+    or an amount, and a CVV is worth nothing without its PAN. Rules 15 and 16
+    have already run, so a PAN is a "[CARD-MASKED:…]" marker by now -- the word
+    "card" covers that as it covers a card-named key serialised into the text.
+    """
+    return any(word in lowered for word in _CARD_CONTEXT) or _CARD_SHAPE.search(text) is not None
 
 
 # Every credential match contains one of these words, and starts inside the
@@ -460,8 +492,8 @@ def _sub_near_credential_words(pattern: re.Pattern, repl, text: str) -> str:
     return "".join(parts)
 
 
-def _rule(pack, regex, repl, gate, scan=None):
-    return (pack, regex, repl, gate, scan)
+def _rule(pack, regex, repl, gate, scan=None, prose_only=False, precondition=None):
+    return (pack, regex, repl, gate, scan, prose_only, precondition)
 
 
 # ---------------------------------------------------------------------------
@@ -618,19 +650,38 @@ _RULE_TABLE = (
         _has_ssn_shape,
     ),
     # 17. CVV standalone — bare 3-4 digit group, no keyword (call 123 now).
+    # The loosest rule in the file, and now doubly fenced. It never sees a
+    # whole scalar field value (prose_only): there, "000" is a PSP response
+    # code, not a CVV, and the key says which. In prose it fires only when the
+    # same text carries card context, because a 3-4 digit group with no card
+    # anywhere near it is a status, a count or an amount -- and a CVV is worth
+    # nothing without the PAN it belongs to. A keyword-anchored CVV is already
+    # rules 4, 5 and 9's job, whatever else the text holds.
     _rule(
         "pci",
         r"(?:^|(?<=\s))\d{3,4}(?=\s|$)",
         _standalone_cvv,
         _has_three_digits,
+        prose_only=True,
+        precondition=_text_has_card_context,
     ),
 )
 
 
 RULES: tuple[Rule, ...] = tuple(
-    Rule(f"{index}:{repl.__name__}", pack, re.compile(regex, re.IGNORECASE), repl, gate, scan)
-    for index, (pack, regex, repl, gate, scan) in enumerate(_RULE_TABLE, start=1)
+    Rule(f"{index}:{repl.__name__}", pack, re.compile(regex, re.IGNORECASE), repl, gate, scan, pre, prose)
+    for index, (pack, regex, repl, gate, scan, prose, pre) in enumerate(_RULE_TABLE, start=1)
 )
+
+
+@lru_cache(maxsize=64)
+def scalar_rules(rules: tuple[Rule, ...]) -> tuple[Rule, ...]:
+    """``rules`` minus the ones that may only run over prose.
+
+    Cached on the rule tuple so the result is a stable object: mask_by_patterns
+    keys its known-clean set on tuple identity.
+    """
+    return tuple(rule for rule in rules if not rule.prose_only)
 
 
 @lru_cache(maxsize=16)
@@ -682,6 +733,8 @@ _MAX_PASSES = 4
 def _mask_once(text: str, rules: tuple[Rule, ...]) -> str:
     lowered = _folded_lower(text)
     if lowered is None:
+        # No case-folded text to judge a precondition by, so every rule runs:
+        # masking more than necessary is the safe direction to fail in.
         for rule in rules:
             text = rule.pattern.sub(rule.repl, text)
         return text
@@ -743,6 +796,12 @@ def _mask_gated(text: str, lowered: str, rules: tuple[Rule, ...]) -> str:
         if verdict is None:
             verdict = verdicts[rule.gate] = rule.gate(text, lowered)
         if not verdict:
+            continue
+        # Re-asked on every version of the text, like a gate: masking a PAN
+        # replaces it with a "[CARD-MASKED:…]" marker, which ADDS card context
+        # rather than removing it, so a later pass can only become more
+        # permissive — never less.
+        if rule.precondition is not None and not rule.precondition(text, lowered):
             continue
         if rule.scan is not None:
             masked = rule.scan(rule.pattern, rule.repl, text)
