@@ -119,7 +119,34 @@ def capture_log(
     log = structlog.get_logger(logger_name)
     with capture_project_handlers(logger_name) as buffers:
         log.log(level, message, **kwargs)
-    outputs = [buffer.getvalue() for buffer in buffers if buffer.getvalue()]
+    return _parse(
+        [buffer.getvalue() for buffer in buffers if buffer.getvalue()],
+        logger_name=logger_name,
+        level=level,
+    )
+
+
+def capture_stdlib_log(
+    message: str,
+    *args,
+    logger_name: str = DEFAULT_LOGGER_NAME,
+    level: int = logging.WARNING,
+) -> list[dict]:
+    """Same as capture_log(), but emitted through plain stdlib logging.
+
+    This is the path a third-party library takes — no structlog, %s args left
+    for the handler to interpolate.
+    """
+    with capture_project_handlers(logger_name) as buffers:
+        logging.getLogger(logger_name).log(level, message, *args)
+    return _parse(
+        [buffer.getvalue() for buffer in buffers if buffer.getvalue()],
+        logger_name=logger_name,
+        level=level,
+    )
+
+
+def _parse(outputs: list[str], *, logger_name: str, level: int) -> list[dict]:
     if not outputs:
         raise MaskingCaptureError(
             f"No project stream handler wrote anything for logger {logger_name!r} at level "
@@ -222,6 +249,18 @@ class MaskingTestsMixin:
             fields = {**record, **record.get("extra", {})}
             actual = {field: strip_tokens(fields.get(field)) for field in self.masking_expected_values}
             self.assertEqual(actual, self.masking_expected_values, f"Log record:\n{record}")
+
+    def test_stdlib_log_with_percent_args_is_masked(self):
+        """The path a third-party library takes: no structlog, %s args the
+        handler interpolates. Only the handler-level filter can catch it."""
+        email = self.masking_test_values["email"]
+        for record in capture_stdlib_log(
+            "third party %s signed in",
+            email,
+            logger_name=self.masking_logger_name,
+            level=self.masking_log_level,
+        ):
+            self.assertEqual(strip_tokens(record.get("message")), "third party [EMAIL-MASKED] signed in")
 
     def assert_samples_masked(self, cases):
         for label, sample, expected in cases:
