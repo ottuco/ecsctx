@@ -12,7 +12,12 @@ FIELD_RULES: dict[str, FieldRule] = {
     "cvv": FieldRule("cvv", False, False),
     "secret": FieldRule("secret", True, False),
     "payment_id": FieldRule("payment_id", True, False),
-    "card": FieldRule("card", True, False),
+    # Card numbers are truncated (patterns.mask_card_value), never tokenized:
+    # a keyed hash beside the truncated PAN would let the two be correlated.
+    # A direct mask_by_field_type(v, "card") caller gets the bare label.
+    "card": FieldRule("card", False, False),
+    # Expiry is cardholder data when stored with a PAN; nothing needs it in a log.
+    "expiry": FieldRule("expiry", False, False),
     "pem_key": FieldRule("pem_key", True, False),
     "iban": FieldRule("iban", True, False),
     "jwt": FieldRule("jwt", True, False),

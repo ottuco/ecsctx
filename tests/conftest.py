@@ -6,6 +6,8 @@ import os
 
 import pytest
 
+from ecsctx.contrib.net import _reset_redaction
+from ecsctx.masking.config import _reset_masking_config
 from ecsctx.pii import _reset as _reset_pii
 from ecsctx.processors import _reset_masking, _reset_root_fields
 
@@ -75,9 +77,10 @@ def _reset_pii_module():
 
 @pytest.fixture(autouse=True)
 def _reset_masking_module():
-    """Reset masking exemption config between tests."""
+    """Reset masking exemption and pack config between tests."""
     yield
     _reset_masking()
+    _reset_masking_config()
 
 
 @pytest.fixture(autouse=True)
@@ -132,3 +135,10 @@ def isolated_logging_tree(logging_state):
     logging.Logger.manager.loggerDict.clear()
     logging.root.handlers = []
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_redaction_module():
+    """Reset redaction config between tests."""
+    yield
+    _reset_redaction()

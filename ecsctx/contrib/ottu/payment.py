@@ -1,0 +1,180 @@
+"""Shared ``payment.*`` domain: session/attempt lifecycle, charges, operations.
+
+Transcribed from ticket #159487 (Event catalogue, ``payment`` table).
+``state_changed``, ``outcome_resolved``, ``operation_completed`` and
+``inquiry_completed`` keep base level ``info`` (the ticket's success case);
+a failure-flavoured branch overrides the level at the call site, because
+outcome alone cannot distinguish them.
+"""
+
+from ecsctx.events.spec import EventSpec, Reason
+
+PAYMENT_SESSION_CREATED = EventSpec(
+    action="payment.session_created",
+    description="A payment session was created for a merchant's order (payment.orn).",
+    terminal=True,
+    type=("creation",),
+    required=("event.outcome", "session_id", "merchant_id", "payment.orn"),
+)
+
+
+class EligibilityRejection(Reason):
+    """Why a payment was refused before any gateway was called."""
+
+    VALIDATION_FAILED = "validation_failed"
+
+
+PAYMENT_ELIGIBILITY_REJECTED = EventSpec(
+    action="payment.eligibility_rejected",
+    description=(
+        "A payment was refused before any gateway was called, because the request or "
+        "session was not eligible."
+    ),
+    level="warning",
+    terminal=True,
+    type=("denied",),
+    reasons=EligibilityRejection,
+    failure_level="warning",
+    required=("event.outcome", "event.reason", "session_id"),
+)
+
+PAYMENT_ATTEMPT_CREATED = EventSpec(
+    action="payment.attempt_created",
+    description=(
+        "An attempt (one try, with one gateway) was created for a session; "
+        "payment.reference identifies it."
+    ),
+    terminal=True,
+    type=("creation",),
+    required=("event.outcome", "session_id", "payment.reference", "payment.pg_code"),
+)
+
+PAYMENT_STATE_CHANGED = EventSpec(
+    action="payment.state_changed",
+    description=(
+        "A payment moved from labels.state_from to labels.state_to by "
+        "labels.transition. The call site logs warning when the new state is a failure."
+    ),
+    terminal=True,
+    type=("change",),
+    required=(
+        "event.outcome",
+        "session_id",
+        "labels.transition",
+        "labels.state_from",
+        "labels.state_to",
+    ),
+)
+
+PAYMENT_STATE_CHANGE_SKIPPED = EventSpec(
+    action="payment.state_change_skipped",
+    description=(
+        "A transition was asked for but not applied, because the current state "
+        "(labels.state_current) does not allow it."
+    ),
+    level="warning",
+    terminal=True,
+    type=("denied",),
+    failure_level="warning",
+    required=("event.outcome", "event.reason", "labels.transition", "labels.state_current"),
+)
+
+PAYMENT_OUTCOME_RESOLVED = EventSpec(
+    action="payment.outcome_resolved",
+    description=(
+        "An attempt's result was decided from the gateway's status (labels.pg_status to "
+        "labels.resolved_action). The call site logs warning when no rule matched."
+    ),
+    terminal=True,
+    type=("end",),
+    required=("event.outcome", "labels.resolved_action", "labels.pg_status", "payment.reference"),
+)
+
+PAYMENT_CHARGE_REQUESTED = EventSpec(
+    action="payment.charge_requested",
+    description=(
+        "A charge started for a session with an instrument (labels.instrument_type: "
+        "card, saved card, wallet, ...)."
+    ),
+    type=("start",),
+    required=("session_id", "payment.reference", "labels.instrument_type"),
+)
+
+PAYMENT_CHARGE_COMPLETED = EventSpec(
+    action="payment.charge_completed",
+    description="A charge finished; the outcome says whether the payer was charged.",
+    terminal=True,
+    type=("end",),
+    required=("event.outcome", "event.duration", "session_id", "labels.instrument_type"),
+)
+
+PAYMENT_OPERATION_REQUESTED = EventSpec(
+    action="payment.operation_requested",
+    description=(
+        "An operation on an existing payment started (labels.operation: refund, "
+        "capture, void, ...)."
+    ),
+    type=("start",),
+    required=("labels.operation", "payment.reference"),
+)
+
+
+class OperationFailure(Reason):
+    """Why a payment operation (refund, capture, void, …) failed."""
+
+    GATEWAY_CALL_FAILED = "gateway_call_failed"
+    GATEWAY_DECLINED = "gateway_declined"
+    NOT_PERMITTED = "not_permitted"
+    NOT_ACTIONABLE = "not_actionable"
+    INVALID_AMOUNT = "invalid_amount"
+
+
+PAYMENT_OPERATION_COMPLETED = EventSpec(
+    action="payment.operation_completed",
+    description=(
+        "An operation on an existing payment finished; a failure carries the reason."
+    ),
+    terminal=True,
+    type=("end",),
+    reasons=OperationFailure,
+    required=("event.outcome", "event.duration", "labels.operation", "payment.reference"),
+)
+
+PAYMENT_DUPLICATE_SUPPRESSED = EventSpec(
+    action="payment.duplicate_suppressed",
+    description=(
+        "A repeated payment action was stopped by a guard (labels.guard), so it ran "
+        "once."
+    ),
+    level="warning",
+    terminal=True,
+    type=("denied",),
+    failure_level="warning",
+    required=("event.outcome", "event.reason", "labels.guard"),
+)
+
+PAYMENT_INQUIRY_COMPLETED = EventSpec(
+    action="payment.inquiry_completed",
+    description=(
+        "The gateway was asked for a payment's current status; carries the duration. "
+        "The call site logs error when the inquiry was abandoned."
+    ),
+    terminal=True,
+    type=("end",),
+    required=("event.outcome", "event.duration", "payment.reference"),
+)
+
+SPECS: tuple[EventSpec, ...] = (
+    PAYMENT_SESSION_CREATED,
+    PAYMENT_ELIGIBILITY_REJECTED,
+    PAYMENT_ATTEMPT_CREATED,
+    PAYMENT_STATE_CHANGED,
+    PAYMENT_STATE_CHANGE_SKIPPED,
+    PAYMENT_OUTCOME_RESOLVED,
+    PAYMENT_CHARGE_REQUESTED,
+    PAYMENT_CHARGE_COMPLETED,
+    PAYMENT_OPERATION_REQUESTED,
+    PAYMENT_OPERATION_COMPLETED,
+    PAYMENT_DUPLICATE_SUPPRESSED,
+    PAYMENT_INQUIRY_COMPLETED,
+)

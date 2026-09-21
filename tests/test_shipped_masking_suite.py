@@ -6,7 +6,9 @@ ecsctx.contrib.django.testing would otherwise ship green.
 The class builds the same setup a project has — get_logging_config() applied
 with dictConfig, setup_logging(), then the install_maskers() sweep an
 AppConfig.ready() would do — on an isolated logging tree that is restored
-afterwards, since logging is process-wide and nothing else resets it.
+afterwards, since logging is process-wide and nothing else resets it. Every
+masking pack is on, so ecsctx's own run exercises every sample case; the
+conftest resets the pack choice after each test, hence setUp.
 """
 
 import logging
@@ -15,7 +17,7 @@ from django.test import SimpleTestCase, override_settings
 
 from ecsctx.contrib.django import get_logging_config, setup_logging
 from ecsctx.contrib.django.testing import MaskingTestsMixin
-from ecsctx.masking import install_maskers
+from ecsctx.masking import ALL_PACKS, configure_masking_packs, install_maskers
 
 PROJECT_LOGGING = get_logging_config(use_cid_filter=False)
 
@@ -40,6 +42,10 @@ class TestShippedMaskingSuite(MaskingTestsMixin, SimpleTestCase):
         logging.config.dictConfig(PROJECT_LOGGING)
         setup_logging(capture_warnings=False)
         install_maskers(PROJECT_LOGGING)
+
+    def setUp(self):
+        super().setUp()
+        configure_masking_packs(ALL_PACKS)
 
     @classmethod
     def tearDownClass(cls):

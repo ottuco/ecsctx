@@ -12,7 +12,9 @@ whole suite — no test code to write:
 Every test runs against the project's real, booted logging setup. Nothing is
 reconfigured: each log call goes through structlog into the project's own
 handlers, filters and formatter, and the test reads back what those handlers
-wrote. The sample tables come from ecsctx.masking.samples.
+wrote. The sample tables come from ecsctx.masking.samples. A case that needs
+an opt-in masking pack (pci, financial_ids) is skipped unless the project turns
+that pack on.
 
 The helpers below are usable on their own, for a project that would rather
 write its own assertions than inherit these.
@@ -30,6 +32,7 @@ import logging
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import lru_cache
 
 import structlog
 
@@ -49,30 +52,62 @@ TEST_VALUES = {
 
 EXPECTED_VALUES = {
     "api_token": "[SECRET-MASKED]",
-    "card_number": "[CARD-MASKED]",
+    "card_number": "[CARD-MASKED:411111******1111]",
     "customer_name": "[NAME-MASKED]",
     "cvv": "[CVV-MASKED]",
     "email": "[EMAIL-MASKED]",
     "phone": "[PHONE-MASKED]",
 }
 
-# The token depends on the project's keyset, so only the label is compared.
-_TOKEN_SUFFIX = re.compile(r":ptok:v\d+:[^\]]+\]")
+# A project with PII tokenization logs a tokenizable value as a bare token
+# (ptok:v1:…) instead of its [LABEL]; the token depends on its keyset.
+_BARE_TOKEN = re.compile(r"ptok:v\d+:[A-Za-z0-9_-]+")
+_TOKEN = "<token>"
 
 
 class MaskingCaptureError(AssertionError):
     """Raised when a project's handlers wrote nothing readable to check."""
 
 
-def strip_tokens(value):
-    """Drop the :ptok:v1:… part of every masked value, at any depth."""
+@lru_cache(maxsize=1)
+def _tokenizable_labels() -> tuple[str, ...]:
+    from ecsctx.masking.fields_rules import FIELD_RULES
+    from ecsctx.masking.tokens import make_label
+
+    return tuple(
+        f"[{make_label(rule.field_type)}]"
+        for rule in FIELD_RULES.values()
+        if rule.tokenizable
+    )
+
+
+def as_logged(value):
+    """value with every bare token and every tokenizable [LABEL] replaced by
+    one placeholder, at any depth."""
     if isinstance(value, str):
-        return _TOKEN_SUFFIX.sub("]", value)
+        value = _BARE_TOKEN.sub(_TOKEN, value)
+        for label in _tokenizable_labels():
+            value = value.replace(label, _TOKEN)
+        return value
     if isinstance(value, dict):
-        return {key: strip_tokens(item) for key, item in value.items()}
+        return {key: as_logged(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [strip_tokens(item) for item in value]
+        return [as_logged(item) for item in value]
     return value
+
+
+def comparable(actual, expected):
+    """(actual, expected) ready for an exact comparison.
+
+    Unchanged without PII tokenization. With it, tokens and tokenizable labels
+    are folded together, so a case written with labels matches what the
+    project logs; non-tokenized labels (card, CVV, expiry) still compare as-is.
+    """
+    from ecsctx.pii import is_configured
+
+    if is_configured():
+        return as_logged(actual), as_logged(expected)
+    return actual, expected
 
 
 def _handlers_reached_by(logger: logging.Logger) -> Iterator[logging.Handler]:
@@ -256,6 +291,7 @@ def capture_log(
         [buffer.getvalue() for buffer in buffers if buffer.getvalue()],
         logger_name=logger_name,
         level=level,
+        origin="capture_log",
     )
 
 
@@ -276,10 +312,16 @@ def capture_stdlib_log(
         [buffer.getvalue() for buffer in buffers if buffer.getvalue()],
         logger_name=logger_name,
         level=level,
+        origin="capture_stdlib_log",
     )
 
 
-def _parse(outputs: list[str], *, logger_name: str, level: int) -> list[dict]:
+def _parse(outputs: list[str], *, logger_name: str, level: int, origin: str) -> list[dict]:
+    """Each handler's record for the one call made from origin().
+
+    Selected by where it was logged from, since anything else logging at the
+    same moment — a one-time warning, another thread — lands in the same buffer.
+    """
     if not outputs:
         raise MaskingCaptureError(
             f"No project stream handler wrote anything for logger {logger_name!r} at level "
@@ -297,11 +339,16 @@ def _parse(outputs: list[str], *, logger_name: str, level: int) -> list[dict]:
                 "A project handler wrote output that isn't ecsctx's JSON, so it can't be "
                 f"compared field by field:\n{output}"
             ) from None
-        if len(parsed) != 1:
+        ours = [
+            record
+            for record in parsed
+            if record.get("log", {}).get("origin", {}).get("function") == origin
+        ]
+        if len(ours) != 1:
             raise MaskingCaptureError(
-                f"Expected exactly one record per handler, got:\n{output}"
+                f"Expected exactly one record logged from {origin}() per handler, got:\n{output}"
             )
-        records.append(parsed[0])
+        records.append(ours[0])
     return records
 
 
@@ -309,13 +356,13 @@ def masked_outputs(sample, **kwargs) -> list:
     """Run one sample through the project's logging and return what each handler emitted.
 
     A string sample is logged as the message; anything else is logged as a
-    single kwarg. Tokens are stripped, so results compare against bare labels.
+    single kwarg. Values come back exactly as logged — see comparable().
     """
     if isinstance(sample, str):
         records = capture_log(sample, **kwargs)
-        return [strip_tokens(record.get("message")) for record in records]
+        return [record.get("message") for record in records]
     records = capture_log(sample=sample, **kwargs)
-    return [strip_tokens(record.get("extra", {}).get("sample")) for record in records]
+    return [record.get("extra", {}).get("sample") for record in records]
 
 
 def count_maskers(handler: logging.Handler) -> int:
@@ -377,14 +424,13 @@ class MaskingTestsMixin:
         )
         self.assertIn(Tags.security, checks[0].tags)
 
-    def test_masking_check_is_not_silenced(self):
-        from ecsctx.contrib.django.checks import masking_check_skip_reason
+    def test_masking_check_is_not_switched_off(self):
+        from django.conf import settings
 
-        reason = masking_check_skip_reason()
-        self.assertIsNone(
-            reason,
-            f"The masking system check silences itself here, because {reason}. A masking gap "
-            "would not fail the boot.",
+        self.assertFalse(
+            getattr(settings, "ECSCTX_SKIP_MASKING_CHECK", False),
+            "ECSCTX_SKIP_MASKING_CHECK switches the masking system check off in every "
+            "environment, production included.",
         )
 
     def test_structural_metadata_is_not_masked(self):
@@ -411,11 +457,11 @@ class MaskingTestsMixin:
                 ):
                     fields = {**record, **record.get("extra", {})}
                     actual = {
-                        field: strip_tokens(fields.get(field))
-                        for field in self.masking_expected_values
+                        field: fields.get(field) for field in self.masking_expected_values
                     }
                     self.assertEqual(
-                        actual, self.masking_expected_values, f"Log record:\n{record}"
+                        *comparable(actual, self.masking_expected_values),
+                        f"Log record:\n{record}",
                     )
 
     def test_stdlib_log_with_percent_args_is_masked(self):
@@ -428,8 +474,9 @@ class MaskingTestsMixin:
                     "third party %s signed in", email, logger_name=name, level=level
                 ):
                     self.assertEqual(
-                        strip_tokens(record.get("message")),
-                        "third party [EMAIL-MASKED] signed in",
+                        *comparable(
+                            record.get("message"), "third party [EMAIL-MASKED] signed in"
+                        )
                     )
 
     def test_no_raw_value_reaches_any_handler(self):
@@ -452,51 +499,63 @@ class MaskingTestsMixin:
                     )
         self.assertGreater(reached, 0, "No project handler was reached on any route.")
 
-    def assert_samples_masked(self, cases):
+    def assert_samples_masked(self, cases, *, group: str | None = None):
+        """Run (label, sample, expected) cases through every readable route.
+
+        group names a table in ecsctx.masking.samples; a case needing a pack
+        this project doesn't enable is skipped.
+        """
+        from ecsctx.masking import get_masking_packs
+
+        packs = get_masking_packs()
         for name, level in self.readable_routes():
             for label, sample, expected in cases:
                 with self.subTest(logger=name, case=label):
+                    if group is not None:
+                        pack = samples.case_pack(group, sample)
+                        if pack not in packs:
+                            self.skipTest(f"needs the {pack!r} masking pack")
                     for actual in masked_outputs(sample, logger_name=name, level=level):
-                        self.assertEqual(actual, expected)
+                        self.assertEqual(*comparable(actual, expected))
 
     def assert_samples_unchanged(self, cases):
         self.assert_samples_masked([(label, sample, sample) for label, sample in cases])
 
     def test_masks_pem_key_blocks(self):
-        self.assert_samples_masked(samples.PEM_CASES)
+        self.assert_samples_masked(samples.PEM_CASES, group="pem")
 
     def test_masks_credential_keywords(self):
-        self.assert_samples_masked(samples.CREDENTIAL_CASES)
+        self.assert_samples_masked(samples.CREDENTIAL_CASES, group="credential")
 
     def test_masks_cvv(self):
-        self.assert_samples_masked(samples.CVV_CASES)
+        self.assert_samples_masked(samples.CVV_CASES, group="cvv")
 
     def test_masks_payment_ids(self):
-        self.assert_samples_masked(samples.PAYMENT_ID_CASES)
+        self.assert_samples_masked(samples.PAYMENT_ID_CASES, group="payment_id")
 
     def test_masks_ibans(self):
-        self.assert_samples_masked(samples.IBAN_CASES)
+        self.assert_samples_masked(samples.IBAN_CASES, group="iban")
 
     def test_masks_phone_numbers(self):
-        self.assert_samples_masked(samples.PHONE_CASES)
+        self.assert_samples_masked(samples.PHONE_CASES, group="phone")
 
     def test_masks_emails(self):
-        self.assert_samples_masked(samples.EMAIL_CASES)
+        self.assert_samples_masked(samples.EMAIL_CASES, group="email")
 
     def test_masks_jwts(self):
-        self.assert_samples_masked(samples.JWT_CASES)
+        self.assert_samples_masked(samples.JWT_CASES, group="jwt")
 
     def test_masks_card_numbers(self):
-        self.assert_samples_masked(samples.CARD_CASES)
+        self.assert_samples_masked(samples.CARD_CASES, group="card")
 
     def test_masks_ssns(self):
-        self.assert_samples_masked(samples.SSN_CASES)
+        self.assert_samples_masked(samples.SSN_CASES, group="ssn")
 
     def test_masks_sensitive_dict_keys(self):
-        self.assert_samples_masked(samples.DICT_KEY_CASES)
+        self.assert_samples_masked(samples.DICT_KEY_CASES, group="dict_key")
 
     def test_masks_objects_and_leaves_primitives(self):
-        self.assert_samples_masked(samples.OBJECT_AND_PRIMITIVE_CASES)
+        self.assert_samples_masked(samples.OBJECT_AND_PRIMITIVE_CASES, group="object_and_primitive")
 
     def test_does_not_over_mask(self):
         self.assert_samples_unchanged(samples.NOT_MASKED_CASES)

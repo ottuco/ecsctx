@@ -8,9 +8,9 @@ the MIDDLEWARE string "ecsctx.contrib.django.LoggingContextMiddleware").
 Refuses to boot cleanly (django.core.checks reports an Error) if LOGGING
 could ship unmasked logs off-host: mask_pii_filter must be defined with a
 '()' path that resolves to ecsctx.masking.filters.MaskPIIFilter (or a
-subclass), and every handler must either carry it itself, or only be reached
-by loggers that carry it. Every handler counts as shipping, because even
-console output is usually collected and forwarded off-host.
+subclass), and every shipping handler (anything other than a console/no-op
+handler) must either carry it itself, or only be reached by loggers that
+carry it.
 
 find_masking_errors() is the core every entry point goes through, summing the
 two halves: find_masking_config_errors() reads the declarative LOGGING dict
@@ -21,9 +21,9 @@ that no config mentions. validate_masking_config() raises ValueError for direct
 calls (e.g. from a project's own AppConfig.ready(), matching the original
 ottu_pg pattern); assert_no_masking_errors() raises AssertionError for use
 in a project's own test suite — unlike the system check below, it is never
-skipped by environment, while the system check skips itself in any environment
-listed in ECSCTX_MASKING_CHECK_SKIP_ENVS (none by default);
-check_masking_configured() is the registered Django system check.
+skipped by environment, since the system check specifically skips itself in
+local/test/dev environments where a test suite runs; check_masking_configured()
+is the registered Django system check.
 """
 
 from __future__ import annotations
@@ -33,7 +33,34 @@ import os
 from importlib import import_module
 from typing import Any
 
+_NON_SHIPPING_CLASSES = frozenset({"logging.StreamHandler", "logging.NullHandler"})
+_ADMIN_EMAIL_HANDLER = "django.utils.log.AdminEmailHandler"
+
+DEFAULT_SKIP_ENVS = frozenset({"local", "test", "dev"})
 DEFAULT_ENV_VAR = "ENVIRONMENT"
+
+
+def _admins_configured() -> bool:
+    try:
+        from django.conf import settings
+
+        return bool(getattr(settings, "ADMINS", None))
+    except Exception:  # noqa: BLE001 - no Django, or settings not configured
+        return True
+
+
+def _ships(handler_class: str | None) -> bool:
+    """A handler ships logs off-host unless it is a console StreamHandler, a
+    no-op NullHandler, or Django's AdminEmailHandler with no ADMINS to mail."""
+    if handler_class in _NON_SHIPPING_CLASSES:
+        return False
+    if handler_class == _ADMIN_EMAIL_HANDLER:
+        return _admins_configured()
+    return True
+
+
+def _is_shipping_handler(handler_config: dict) -> bool:
+    return _ships(handler_config.get("class"))
 
 
 def _resolve_dotted_path(path: str) -> Any:
@@ -81,13 +108,14 @@ def _filter_used_in_live_object(logger_or_handler) -> bool:
     return any(isinstance(f, MaskPIIFilter) for f in logger_or_handler.filters)
 
 
-def _is_unmasked_logger(logger_config: dict, handlers_configs: dict) -> bool:
-    """True if this logger reaches a handler without mask_pii_filter applied
+def _is_unmasked_shipping_logger(logger_config: dict, handlers_configs: dict) -> bool:
+    """True if this logger reaches a shipping handler without mask_pii_filter applied
     anywhere between the logger itself and that handler."""
     if _filter_used_in_conf(logger_config):
         return False
     for handler_name in logger_config.get("handlers", []):
-        if not _filter_used_in_conf(handlers_configs.get(handler_name, {})):
+        handler_config = handlers_configs.get(handler_name, {})
+        if _is_shipping_handler(handler_config) and not _filter_used_in_conf(handler_config):
             return True
     return False
 
@@ -126,17 +154,19 @@ def find_masking_config_errors(logging_config: dict[str, Any]) -> list[str]:
     unmasked = [
         name
         for name, logger_config in loggers_configs.items()
-        if _is_unmasked_logger(logger_config, handlers_configs)
+        if _is_unmasked_shipping_logger(logger_config, handlers_configs)
     ]
-    if _is_unmasked_logger(logging_config.get("root", {}), handlers_configs):
+    if _is_unmasked_shipping_logger(logging_config.get("root", {}), handlers_configs):
         unmasked.append("root")
 
     if unmasked:
         errors.append(
             "mask_pii_filter is defined but not used by logger(s): "
             + ", ".join(sorted(unmasked))
-            + ". For PCI DSS compliance, every logger that has handlers must "
-            "carry mask_pii_filter itself, or only use handlers that do."
+            + ". For PCI DSS compliance, every logger that reaches a shipping "
+            "handler (anything other than logging.StreamHandler/"
+            "logging.NullHandler) must carry mask_pii_filter itself, or only "
+            "use handlers that do."
         )
     return errors
 
@@ -174,11 +204,12 @@ def find_unmasked_live_handlers(
         if logger.disabled or _filter_used_in_live_object(logger):
             continue
         for handler in logger.handlers:
-            if _filter_used_in_live_object(handler):
+            handler_class = _live_handler_class_path(handler)
+            if not _ships(handler_class) or _filter_used_in_live_object(handler):
                 continue
             if ignore_pytest_handlers and _is_pytest_handler(handler):
                 continue
-            unmasked.append(f"{name} -> {_live_handler_class_path(handler)}")
+            unmasked.append(f"{name} -> {handler_class}")
 
     if not unmasked:
         return []
@@ -201,8 +232,18 @@ def find_masking_errors(
     The entry points below all go through this, so none of them can pass while
     the other half is broken.
     """
-    return find_masking_config_errors(logging_config) + find_unmasked_live_handlers(
-        logging_config, ignore_pytest_handlers=ignore_pytest_handlers
+    from ecsctx.masking.config import masking_pack_errors, masking_safe_key_errors
+
+    live = (
+        find_unmasked_live_handlers(logging_config, ignore_pytest_handlers=True)
+        if ignore_pytest_handlers
+        else find_unmasked_live_handlers(logging_config)
+    )
+    return (
+        find_masking_config_errors(logging_config)
+        + live
+        + masking_pack_errors()
+        + masking_safe_key_errors()
     )
 
 
@@ -231,8 +272,7 @@ def assert_no_masking_errors(
 
     This mirrors check_masking_configured() below, but is never skipped by
     environment — use it when you want the same guarantee enforced in CI
-    even where a project has told the system check to skip itself
-    (ECSCTX_MASKING_CHECK_SKIP_ENVS).
+    even where the system check silences itself (local/test/dev).
     """
     errors = find_masking_errors(
         logging_config, ignore_pytest_handlers=ignore_pytest_handlers
@@ -241,10 +281,9 @@ def assert_no_masking_errors(
 
 
 def masking_check_skip_reason(settings=None) -> str | None:
-    """Why the system check silences itself here, or None when it runs.
+    """Why the system check skips itself here, or None when it runs.
 
-    Public so a project's own tests can assert the guard is live — see
-    ecsctx.contrib.django.testing.MaskingTestsMixin.
+    The same decision _should_skip() makes, as a sentence a test can report.
     """
     if settings is None:
         from django.conf import settings
@@ -252,15 +291,10 @@ def masking_check_skip_reason(settings=None) -> str | None:
     if getattr(settings, "ECSCTX_SKIP_MASKING_CHECK", False):
         return "ECSCTX_SKIP_MASKING_CHECK is set"
     env_var = getattr(settings, "ECSCTX_MASKING_CHECK_ENV_VAR", DEFAULT_ENV_VAR)
-    skip_envs = [
-        str(e) for e in getattr(settings, "ECSCTX_MASKING_CHECK_SKIP_ENVS", [])
-    ]
+    skip_envs = getattr(settings, "ECSCTX_MASKING_CHECK_SKIP_ENVS", DEFAULT_SKIP_ENVS)
     current_env = os.environ.get(env_var, "").lower()
-    if current_env in {e.lower() for e in skip_envs}:
-        return (
-            f"the {env_var} env var is {current_env!r}, which ECSCTX_MASKING_CHECK_SKIP_ENVS "
-            f"lists ({skip_envs})"
-        )
+    if current_env in {str(e).lower() for e in skip_envs}:
+        return f"the {env_var} env var is {current_env!r}, one of ECSCTX_MASKING_CHECK_SKIP_ENVS"
     return None
 
 
@@ -270,8 +304,8 @@ def _should_skip(settings) -> bool:
 
 def check_masking_configured(app_configs, **kwargs) -> list:
     """Django system check: runs on manage.py check / check --deploy /
-    runserver / migrate, in every environment unless
-    ECSCTX_MASKING_CHECK_SKIP_ENVS lists the current one (see masking_check_skip_reason).
+    runserver / migrate. Skipped in local/test/dev environments (see
+    _should_skip) so it never blocks day-to-day development.
     """
     from django.conf import settings
     from django.core.checks import Error

@@ -1,20 +1,28 @@
 """Unified PII/PCI masking engine.
 
 MaskPIIFilter is the single engine every masking path calls into:
-- get_logging_config() puts it in LOGGING["filters"] for every handler it
-  builds — the default path, no consumer code needed.
-- install_maskers() sweeps any handler ecsctx did not build; its halves,
-  install_maskers_in_config() and install_maskers_on_handlers(), are
-  exported too — the latter is the one that reaches handlers no config
-  dict mentions (Django's DEFAULT_LOGGING pass, addHandler() on import).
+- get_logging_config() puts it on every handler it builds: it masks the
+  record in place, before anything else reads it.
 - ecsctx.processors.mask_sensitive_data (a structlog processor) delegates to
-  it, so structlog-only pipelines that don't use get_logging_config() are
-  still covered.
+  it in the formatter chain; that second pass skips strings already known
+  clean, so it costs little.
+- install_maskers() sweeps any live handler ecsctx did not build. Its two
+  halves are exported too: install_maskers_in_config() for a LOGGING dict,
+  install_maskers_on_handlers() for the live tree alone.
 
-See ecsctx.masking.patterns for the masking rules themselves and
-ecsctx.masking.exemptions for the configure_masking() path-exemption API.
+See ecsctx.masking.patterns for the rules and packs, ecsctx.masking.config
+for choosing packs (configure_masking_packs, ECSCTX_MASKING_PACKS), a
+service's own safe key names (configure_masking_safe_keys,
+ECSCTX_MASK_SAFE_KEYS) and skip paths, and ecsctx.masking.exemptions for the configure_masking()
+path-exemption API.
 """
 
+from ecsctx.masking.config import (
+    configure_masking_packs,
+    configure_masking_safe_keys,
+    get_masking_packs,
+    get_masking_safe_keys,
+)
 from ecsctx.masking.exemptions import (
     configure_masking,
     configure_masking_from_env,
@@ -29,9 +37,16 @@ from ecsctx.masking.install import (
     uninstall_maskers_in_config,
     uninstall_maskers_on_handlers,
 )
+from ecsctx.masking.patterns import ALL_PACKS, PACK_NAMES
 from ecsctx.masking.tokens import mask_by_field_type, safe_tokenize
 
 __all__ = [
+    "ALL_PACKS",
+    "PACK_NAMES",
+    "configure_masking_packs",
+    "get_masking_packs",
+    "configure_masking_safe_keys",
+    "get_masking_safe_keys",
     "MaskPIIFilter",
     "install_maskers",
     "install_maskers_in_config",

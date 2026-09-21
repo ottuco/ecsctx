@@ -1,0 +1,303 @@
+"""Tests for network-boundary credential redaction (ecsctx.contrib.net)."""
+
+import json
+
+from django.test import override_settings
+
+from ecsctx.contrib.net import (
+    configure_redaction,
+    ecs_http,
+    ecs_url,
+    loggable_body,
+    loggable_request_body,
+    parse_json_or_raw,
+    redact_body,
+    redact_url,
+    url_host,
+)
+
+
+class _FakeResponse:
+    def __init__(self, text, content_type):
+        self.text = text
+        self.headers = {"Content-Type": content_type}
+
+
+class TestRedactUrl:
+    def test_credential_query_params_are_masked(self):
+        url = "https://sms.example.com/send?username=bob&password=s3cret&to=123"
+        redacted = redact_url(url)
+        assert "s3cret" not in redacted
+        assert "bob" not in redacted
+        assert "to=123" in redacted
+
+    def test_access_code_and_apikey_hints_are_masked(self):
+        url = "https://gw.example.com/pay?access_code=AAAA&order_id=42"
+        redacted = redact_url(url)
+        assert "AAAA" not in redacted
+        assert "order_id=42" in redacted
+
+    def test_single_letter_legacy_keys_are_masked(self):
+        assert "P=s3cret" not in redact_url("https://fcc.example.com/?P=s3cret")
+
+    def test_non_credential_query_survives_verbatim(self):
+        url = "https://api.example.com/v1?order_id=42&reference=REF-1"
+        assert redact_url(url) == url
+
+    def test_empty_none_and_non_string_pass_through(self):
+        assert redact_url("") == ""
+        assert redact_url(None) is None
+        assert redact_url(123) == 123
+
+    def test_unparseable_url_is_fully_redacted(self):
+        assert redact_url("http://[::1") == "[REDACTED]"
+
+
+class TestRedactBody:
+    def test_json_secret_values_are_masked(self):
+        body = '{"access_token": "tok123", "token_type": "bearer"}'
+        redacted = redact_body(body)
+        assert "tok123" not in redacted
+        assert "bearer" in redacted
+
+    def test_form_secret_values_are_masked(self):
+        body = "client_secret=s3cret&grant_type=client_credentials"
+        redacted = redact_body(body)
+        assert "s3cret" not in redacted
+        assert "grant_type=client_credentials" in redacted
+
+    def test_bare_token_key_is_left_alone(self):
+        # Gateways reuse `token` for non-secret payment/session identifiers.
+        body = '{"token": "pay_abc123"}'
+        assert redact_body(body) == body
+
+    def test_clean_body_returns_unchanged(self):
+        body = '{"status": "ok", "id": 42}'
+        assert redact_body(body) == body
+
+
+class TestLoggableBody:
+    def test_non_textual_body_is_omitted(self):
+        assert loggable_body(_FakeResponse("...binary...", "application/pdf")) is None
+
+    def test_textual_body_is_redacted_and_capped(self):
+        body = '{"access_token": "tok123"}' + ("x" * 9000)
+        logged = loggable_body(_FakeResponse(body, "application/json"))
+        assert "tok123" not in logged
+        assert len(logged) <= 4096
+
+    def test_redact_runs_before_the_cap(self):
+        # A cap landing mid-value must not leave a token head exposed: the
+        # JSON pattern needs the closing quote, so redact first, then slice.
+        secret = "s" * 5000
+        body = '{"access_token": "' + secret + '"}'
+        logged = loggable_body(_FakeResponse(body, "application/json"))
+        assert secret not in logged
+        assert "[REDACTED]" in logged
+
+
+class TestRedactionConfig:
+    def test_extra_keys_via_call(self):
+        configure_redaction(extra_secret_keys=["merchant_pin"])
+        assert "1234" not in redact_body('{"merchant_pin": "1234"}')
+
+    def test_extra_keys_via_env(self, monkeypatch):
+        monkeypatch.setenv("ECSCTX_REDACT_EXTRA_SECRET_KEYS", "merchant_pin, terminal_secret")
+        assert "1234" not in redact_body('{"merchant_pin": "1234"}')
+
+    def test_body_cap_via_env(self, monkeypatch):
+        monkeypatch.setenv("ECSCTX_REDACT_BODY_LOG_CAP", "16")
+        logged = loggable_body(_FakeResponse("x" * 100, "text/plain"))
+        assert logged == "x" * 16
+
+    def test_invalid_cap_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("ECSCTX_REDACT_BODY_LOG_CAP", "not-a-number")
+        logged = loggable_body(_FakeResponse("x" * 5000, "text/plain"))
+        assert len(logged) == 4096
+
+    def test_raising_text_property_returns_none(self):
+        # A body that can't be read is omitted, never raised nor logged raw.
+        class _Boom:
+            def __init__(self):
+                self.headers = {"Content-Type": "application/json"}
+
+            @property
+            def text(self):
+                raise ValueError("cannot decode")
+
+        assert loggable_body(_Boom()) is None
+
+
+class TestDjangoSettingsBridge:
+    def test_django_settings_override_keys(self):
+        with override_settings(ECSCTX_REDACT_EXTRA_SECRET_KEYS=["merchant_pin"]):
+            assert "1234" not in redact_body('{"merchant_pin": "1234"}')
+
+    def test_django_settings_accept_csv_string(self):
+        with override_settings(ECSCTX_REDACT_EXTRA_SECRET_KEYS="a_pin, b_pin"):
+            assert "1" not in redact_body('{"a_pin": "1"}')
+            assert "2" not in redact_body('{"b_pin": "2"}')
+
+    def test_explicit_call_wins_over_django_settings(self):
+        configure_redaction(extra_secret_keys=["svc_key"])
+        with override_settings(ECSCTX_REDACT_EXTRA_SECRET_KEYS=["merchant_pin"]):
+            assert "[REDACTED]" in redact_body('{"svc_key": "aaa"}')
+            assert redact_body('{"merchant_pin": "1234"}') == '{"merchant_pin": "1234"}'
+
+    def test_django_settings_win_over_env(self, monkeypatch):
+        monkeypatch.setenv("ECSCTX_REDACT_EXTRA_SECRET_KEYS", "env_key")
+        with override_settings(ECSCTX_REDACT_EXTRA_SECRET_KEYS=["dj_key"]):
+            assert "1" not in redact_body('{"dj_key": "1"}')
+            assert redact_body('{"env_key": "2"}') == '{"env_key": "2"}'
+
+    def test_django_settings_cap(self):
+        with override_settings(ECSCTX_REDACT_BODY_LOG_CAP=16):
+            assert loggable_body(_FakeResponse("x" * 100, "text/plain")) == "x" * 16
+
+
+class TestBoundaryShapers:
+    def test_ecs_url_redacts_credentials_by_default(self):
+        shaped = ecs_url("https://gw.example.com/pay?password=s3cr3t&order_id=42")
+        assert shaped["domain"] == "gw.example.com"
+        assert shaped["path"] == "/pay"
+        assert "s3cr3t" not in shaped["full"]
+        assert "order_id=42" in shaped["full"]
+
+    def test_ecs_url_opt_out_keeps_raw_query(self):
+        url = "https://gw.example.com/pay?password=s3cr3t"
+        assert ecs_url(url, redact=False)["full"] == url
+
+    def test_ecs_url_malformed_never_raises(self):
+        shaped = ecs_url("not a url")
+        assert shaped["domain"] is None
+
+    def test_ecs_http_builds_only_passed_fields(self):
+        assert ecs_http(request_method="POST", response_status_code=200) == {
+            "request": {"method": "POST"},
+            "response": {"status_code": 200},
+        }
+        assert ecs_http() == {}
+
+    def test_parse_json_or_raw(self):
+        assert parse_json_or_raw(b'{"a": 1}') == {"a": 1}
+        assert parse_json_or_raw(b"<html>oops</html>") == b"<html>oops</html>"
+        assert parse_json_or_raw(None) is None
+
+    def test_parse_json_or_raw_non_utf8_bytes_returned_untouched(self):
+        raw = b"\xff\xfe\x00binary-body"
+        assert parse_json_or_raw(raw) is raw
+
+
+class _Response:
+    def __init__(self, text, content_type=None, status_code=200):
+        self.text = text
+        self.status_code = status_code
+        self.headers = {} if content_type is None else {"Content-Type": content_type}
+
+
+class TestUrlHost:
+    def test_names_the_host_only(self):
+        assert url_host("https://gw.example.com:8443/pay?token=x") == "gw.example.com"
+
+    def test_never_raises_on_a_log_path(self):
+        assert url_host("") == "unknown host"
+        assert url_host(None) == "unknown host"
+        assert url_host("http://[::1") == "unknown host"
+
+
+class TestRedactUrlSecrets:
+    def test_a_secret_in_the_path_is_masked(self):
+        assert redact_url("https://h/pbl/card/tok_9f8e/", secrets=["tok_9f8e"]) == (
+            "https://h/pbl/card/[REDACTED]/"
+        )
+
+    def test_a_secret_in_the_query_and_repeated(self):
+        url = redact_url("https://h/a/tok_1/b?ref=tok_1", secrets=["tok_1"])
+        assert "tok_1" not in url
+
+    def test_a_bare_string_is_one_secret_and_empty_ones_are_ignored(self):
+        assert redact_url("https://h/x/abc", secrets="abc") == "https://h/x/[REDACTED]"
+        assert redact_url("https://h/x/abc", secrets=["", None]) == "https://h/x/abc"
+
+    def test_without_secrets_the_path_is_untouched(self):
+        assert redact_url("https://h/checkout/8231045567ab") == "https://h/checkout/8231045567ab"
+
+
+class TestLoggableRequestBody:
+    def test_no_body_is_none(self):
+        assert loggable_request_body(None, None) is None
+
+    def test_keys_are_masked_before_the_body_becomes_a_string(self):
+        logged = loggable_request_body(None, {"card": {"securityCode": "737"}, "amount": "10.000"})
+        assert "737" not in logged
+        assert '"amount": "10.000"' in logged
+
+    def test_json_wins_over_form_data(self):
+        assert loggable_request_body({"a": "form"}, {"a": "json"}) == '{"a": "json"}'
+
+    def test_a_string_body_is_redacted_and_capped(self):
+        logged = loggable_request_body("client_secret=s3cr3t&x=" + "y" * 9000, None)
+        assert "s3cr3t" not in logged
+        assert len(logged) == 4096
+
+    def test_a_body_the_caller_serialised_is_masked_by_key(self):
+        # `data=json.dumps(payload)`: the keys are still there to mask by, and
+        # Telr's merchant credential is `authkey`.
+        body = json.dumps({"authkey": "telr-s3cret", "cvv": "737", "amount": "1.000"})
+        logged = loggable_request_body(body, None)
+        assert "telr-s3cret" not in logged
+        assert "737" not in logged
+        assert '"amount": "1.000"' in logged
+
+    def test_a_form_encoded_authkey_is_redacted(self):
+        logged = loggable_request_body("ivp_method=create&authkey=telr-s3cret", None)
+        assert "telr-s3cret" not in logged
+
+    def test_an_unserialisable_body_is_not_logged(self):
+        loop = {}
+        loop["self"] = loop
+        assert loggable_request_body(None, loop) is None
+
+
+class TestLoggableBodyDenyList:
+    def test_json_without_a_content_type_is_logged(self):
+        assert loggable_body(_Response('{"status": "ok"}')) == '{"status": "ok"}'
+
+    def test_json_labelled_text_plain_is_parsed_and_its_keys_masked(self):
+        logged = loggable_body(_Response('{"securityCode": "737", "ok": true}', "text/plain"))
+        assert "737" not in logged
+        assert '"ok": true' in logged
+
+    def test_an_error_page_is_the_whole_explanation_so_it_is_kept(self):
+        page = "<html><body>Request blocked by edge proxy</body></html>"
+        assert loggable_body(_Response(page, "text/html", status_code=403)) == page
+
+    def test_a_document_on_success_is_not_logged(self):
+        assert loggable_body(_Response("<html>receipt</html>", "text/html")) is None
+        assert loggable_body(_Response("%PDF-1.7", "application/pdf")) is None
+
+
+class TestBodiesAreNotLogRecords:
+    """A gateway body is masked with nothing skipped: service/project/log are
+    ecsctx's own metadata keys in a log record, but in a body they are
+    whatever the gateway put there."""
+
+    def test_a_card_under_a_top_level_log_key_is_masked(self):
+        logged = loggable_request_body(None, {"log": {"cvv": "737", "card_number": "4111111111111111"}})
+        assert "737" not in logged
+        assert "4111111111111111" not in logged
+
+    def test_a_response_with_a_top_level_service_key_is_masked(self):
+        logged = loggable_body(_Response('{"service": {"securityCode": "737"}}', "application/json"))
+        assert "737" not in logged
+
+
+class TestDenyListTradeOff:
+    def test_an_unlisted_content_type_is_logged_as_capped_text(self):
+        # Deliberate, as in ottu_backend's contrib/net: gateways mislabel or omit
+        # Content-Type often enough that an allow-list drops the replies worth
+        # reading. A binary type the deny-list does not name is logged as
+        # (possibly garbled) text, capped.
+        logged = loggable_body(_Response("\x08\x96\x01" + "x" * 5000, "application/protobuf"))
+        assert logged.startswith("\x08\x96\x01")
+        assert len(logged) == 4096

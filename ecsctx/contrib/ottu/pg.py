@@ -1,0 +1,183 @@
+"""Shared ``pg.*`` domain: the PSP boundary only.
+
+Transcribed from ticket #159487 (Event catalogue, ``pg`` table). ``category``
+is ``network`` throughout — every event here crosses to/from a PSP over the
+wire.
+
+``request_failed`` logs at ``warning`` on failure (the expected-4xx case); an
+unexpected failure logs at ``error`` at the call site, because outcome alone
+cannot distinguish them.
+"""
+
+from ecsctx.contrib.ottu.net import OutboundFailure
+from ecsctx.events.spec import EventSpec, Reason
+
+PG_REQUEST_SENT = EventSpec(
+    action="pg.request_sent",
+    description=(
+        "A call to a payment gateway (PSP) is about to be sent; labels.operation names "
+        "it."
+    ),
+    category=("network",),
+    type=("connection",),
+    required=("labels.operation", "payment.pg_code", "http.request.method", "url.full"),
+)
+
+PG_RESPONSE_RECEIVED = EventSpec(
+    action="pg.response_received",
+    description="The PSP answered; carries the status code and duration.",
+    terminal=True,
+    category=("network",),
+    type=("connection",),
+    required=(
+        "event.outcome",
+        "event.duration",
+        "labels.operation",
+        "http.response.status_code",
+    ),
+)
+
+PG_REQUEST_FAILED = EventSpec(
+    action="pg.request_failed",
+    description=(
+        "A PSP call produced no usable answer. Warning for an expected 4xx or timeout; "
+        "the call site logs error for anything unexpected."
+    ),
+    level="warning",
+    terminal=True,
+    category=("network",),
+    type=("error",),
+    reasons=OutboundFailure,
+    failure_level="warning",
+    required=("event.outcome", "event.reason", "error.type", "labels.operation"),
+)
+
+
+class CheckoutFailure(Reason):
+    """Why a gateway checkout could not be created."""
+
+    PG_URL_UNAVAILABLE = "pg_url_unavailable"
+
+
+PG_CHECKOUT_CREATED = EventSpec(
+    action="pg.checkout_created",
+    description=(
+        "A hosted checkout was created at the PSP for an attempt; a failure means no "
+        "payment URL came back."
+    ),
+    terminal=True,
+    category=("network",),
+    type=("creation",),
+    reasons=CheckoutFailure,
+    required=("event.outcome", "payment.reference", "payment.pg_code", "session_id"),
+)
+
+PG_CALLBACK_RECEIVED = EventSpec(
+    action="pg.callback_received",
+    description=(
+        "The PSP called back for an attempt: a server notification or the payer "
+        "returning."
+    ),
+    category=("network",),
+    type=("connection",),
+    required=("payment.reference", "payment.pg_code", "url.path"),
+)
+
+PG_CALLBACK_ANSWERED = EventSpec(
+    action="pg.callback_answered",
+    description=(
+        "A PSP callback was answered; carries the status code returned to the PSP."
+    ),
+    terminal=True,
+    category=("network",),
+    type=("end",),
+    required=("event.outcome", "http.response.status_code", "payment.reference"),
+)
+
+
+class CallbackRejection(Reason):
+    """Why a gateway callback was refused."""
+
+    INVALID_SIGNATURE = "invalid_signature"
+    DECRYPTION_FAILED = "decryption_failed"
+    MISSING_SIGNATURE = "missing_signature"
+    ATTEMPT_NOT_FOUND = "attempt_not_found"
+    MALFORMED_PAYLOAD = "malformed_payload"
+
+
+PG_CALLBACK_REJECTED = EventSpec(
+    action="pg.callback_rejected",
+    description=(
+        "A PSP callback was refused: a bad or missing signature, an undecryptable "
+        "payload, an unknown attempt or a malformed payload."
+    ),
+    level="warning",
+    terminal=True,
+    category=("network",),
+    type=("denied",),
+    reasons=CallbackRejection,
+    failure_level="warning",
+    required=("event.outcome", "event.reason", "url.path"),
+)
+
+
+class CallbackSkip(Reason):
+    """Why a valid gateway callback changed nothing."""
+
+    ALREADY_FINAL = "already_final"
+    DUPLICATE = "duplicate"
+    NOT_APPLICABLE = "not_applicable"
+
+
+PG_CALLBACK_SKIPPED = EventSpec(
+    action="pg.callback_skipped",
+    description=(
+        "A valid PSP callback changed nothing: the attempt was already final, it was a "
+        "duplicate, or it does not apply."
+    ),
+    terminal=True,
+    category=("network",),
+    type=("denied",),
+    reasons=CallbackSkip,
+    required=("event.outcome", "event.reason", "payment.reference"),
+)
+
+PG_SIGNATURE_VERIFICATION_SKIPPED = EventSpec(
+    action="pg.signature_verification_skipped",
+    description=(
+        "A PSP callback's signature was not verified and its payload was trusted as is; "
+        "the reason says why."
+    ),
+    level="warning",
+    terminal=True,
+    category=("network",),
+    type=("denied",),
+    failure_level="warning",
+    required=("event.outcome", "event.reason", "payment.pg_code"),
+)
+
+PG_CREDENTIALS_UNAVAILABLE = EventSpec(
+    action="pg.credentials_unavailable",
+    description=(
+        "A MID's gateway credentials could not be loaded, so the PSP could not be "
+        "called."
+    ),
+    level="error",
+    terminal=True,
+    category=("network",),
+    type=("error",),
+    required=("event.outcome", "event.reason", "payment.pg_code", "error.type"),
+)
+
+SPECS: tuple[EventSpec, ...] = (
+    PG_REQUEST_SENT,
+    PG_RESPONSE_RECEIVED,
+    PG_REQUEST_FAILED,
+    PG_CHECKOUT_CREATED,
+    PG_CALLBACK_RECEIVED,
+    PG_CALLBACK_ANSWERED,
+    PG_CALLBACK_REJECTED,
+    PG_CALLBACK_SKIPPED,
+    PG_SIGNATURE_VERIFICATION_SKIPPED,
+    PG_CREDENTIALS_UNAVAILABLE,
+)

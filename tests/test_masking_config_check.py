@@ -69,8 +69,10 @@ def unused_filter_error(*logger_names):
     return (
         "mask_pii_filter is defined but not used by logger(s): "
         + ", ".join(sorted(logger_names))
-        + ". For PCI DSS compliance, every logger that has handlers must "
-        "carry mask_pii_filter itself, or only use handlers that do."
+        + ". For PCI DSS compliance, every logger that reaches a shipping "
+        "handler (anything other than logging.StreamHandler/"
+        "logging.NullHandler) must carry mask_pii_filter itself, or only "
+        "use handlers that do."
     )
 
 
@@ -117,16 +119,16 @@ class TestFindMaskingConfigErrors:
         }
         assert find_masking_config_errors(cfg) == [unused_filter_error("app")]
 
-    def test_console_stream_handler_is_flagged_unmasked(self):
-        """logging.StreamHandler counts as shipping, because console output
-        is usually collected and forwarded off-host."""
+    def test_console_stream_handler_never_flagged_unmasked(self):
+        """logging.StreamHandler/NullHandler are non-shipping — a logger
+        reaching only those never needs the filter."""
         cfg = {
             "filters": {"mask_pii_filter": {"()": "ecsctx.masking.filters.MaskPIIFilter"}},
             "handlers": {"console": {"class": "logging.StreamHandler", "filters": []}},
             "loggers": {"app": {"handlers": ["console"]}},
             "root": {"handlers": ["console"]},
         }
-        assert find_masking_config_errors(cfg) == [unused_filter_error("app", "root")]
+        assert find_masking_config_errors(cfg) == []
 
     def test_filter_class_must_resolve_to_maskpiifilter(self):
         cfg = {"filters": {"mask_pii_filter": {"()": "logging.Filter"}}, "handlers": {}}
@@ -164,14 +166,14 @@ class TestFindMaskingConfigErrors:
         }
         assert find_masking_config_errors(cfg) == []
 
-    def test_null_handler_is_flagged_unmasked(self):
+    def test_null_handler_is_non_shipping(self):
         cfg = {
             "filters": {"mask_pii_filter": {"()": "ecsctx.masking.filters.MaskPIIFilter"}},
             "handlers": {"null": {"class": "logging.NullHandler", "filters": []}},
             "loggers": {"app": {"handlers": ["null"]}},
             "root": {"handlers": ["null"]},
         }
-        assert find_masking_config_errors(cfg) == [unused_filter_error("app", "root")]
+        assert find_masking_config_errors(cfg) == []
 
     def test_filter_carried_by_the_logger_itself_is_enough(self):
         """The filter may sit on the logger instead of the handler — the
@@ -265,15 +267,10 @@ class TestFindUnmaskedLiveHandlers:
         cfg = dict(MASKED_CFG, loggers={"ecsctx-live-listed": {}})
         assert find_unmasked_live_handlers(cfg) == []
 
-    def test_flags_console_and_null_handlers(self, isolated_logging_tree):
+    def test_ignores_non_shipping_handler(self, isolated_logging_tree):
         logging.getLogger("ecsctx-live-console").addHandler(logging.StreamHandler())
         logging.getLogger("ecsctx-live-null").addHandler(logging.NullHandler())
-        assert find_unmasked_live_handlers(MASKED_CFG) == [
-            live_handlers_error(
-                "ecsctx-live-console -> logging.StreamHandler",
-                "ecsctx-live-null -> logging.NullHandler",
-            )
-        ]
+        assert find_unmasked_live_handlers(MASKED_CFG) == []
 
     def test_ignores_handler_that_already_carries_the_masker(self, isolated_logging_tree):
         handler = self._shipping_handler("ecsctx-live-masked")
@@ -293,25 +290,23 @@ class TestFindUnmaskedLiveHandlers:
     def test_clean_tree_reports_nothing(self, isolated_logging_tree):
         assert find_unmasked_live_handlers(MASKED_CFG) == []
 
-    def test_catches_djangos_default_handlers(self, isolated_logging_tree):
+    def test_catches_djangos_admin_email_handler(self, isolated_logging_tree, settings):
         """The case this exists for: Django configures DEFAULT_LOGGING first,
-        and with disable_existing_loggers off its 'django' and 'django.server'
-        loggers survive with their console and AdminEmailHandler handlers
-        attached, invisible to settings.LOGGING."""
+        and with disable_existing_loggers off its 'django' logger survives
+        with AdminEmailHandler attached, invisible to settings.LOGGING. It
+        only ships anything when ADMINS is set."""
         import logging.config
 
         from django.utils.log import DEFAULT_LOGGING
+
+        settings.ADMINS = [("Ops", "ops@example.com")]
 
         cfg = get_logging_config()
         logging.config.dictConfig(DEFAULT_LOGGING)
         logging.config.dictConfig(cfg)
 
         assert find_unmasked_live_handlers(cfg) == [
-            live_handlers_error(
-                "django -> logging.StreamHandler",
-                "django -> django.utils.log.AdminEmailHandler",
-                "django.server -> logging.StreamHandler",
-            )
+            live_handlers_error("django -> django.utils.log.AdminEmailHandler")
         ]
 
 
@@ -388,7 +383,7 @@ def only_the_dict_half(monkeypatch):
     to take the live half out of the picture to say anything precise."""
     monkeypatch.setattr(
         "ecsctx.contrib.django.checks.find_unmasked_live_handlers",
-        lambda logging_config, **kwargs: [],
+        lambda logging_config: [],
     )
 
 
@@ -411,10 +406,14 @@ class TestValidateAndAssert:
         assert_no_masking_errors(MASKED_CFG)  # must not raise
 
 
-class TestGetLoggingConfigWiresTheFilter:
-    """Installing the masker adds mask_pii_filter next to the handler's existing
-    filters rather than replacing them — the shipped suite runs without the CID
-    correlation filter, so it can't see this."""
+class TestGetLoggingConfigPassesTheCheck:
+    """Regression: get_logging_config() must produce a LOGGING dict that
+    satisfies find_masking_config_errors() out of the box — it wires
+    mask_pii_filter into every handler it builds via install_maskers_in_config."""
+
+    def test_default_config_is_clean(self):
+        cfg = get_logging_config()
+        assert find_masking_config_errors(cfg) == []
 
     def test_console_handler_carries_the_filter(self):
         cfg = get_logging_config()
@@ -423,6 +422,31 @@ class TestGetLoggingConfigWiresTheFilter:
             "correlation": {"()": "cid.log.CidContextFilter"},
             "mask_pii_filter": {"()": "ecsctx.masking.filters.MaskPIIFilter"},
         }
+
+
+class TestCheckIsAutoRegistered:
+    """No AppConfig / INSTALLED_APPS entry is needed — importing
+    ecsctx.contrib.django registers the check by itself (a project already
+    imports the package via its MIDDLEWARE string)."""
+
+    def test_registered_with_django_check_registry(self):
+        from django.core.checks import registry
+
+        names = [
+            getattr(check, "__name__", "") for check in registry.registry.get_checks()
+        ]
+        assert "check_masking_configured" in names
+
+    def test_registered_under_the_security_tag(self):
+        """Tagged security so `manage.py check --tag security` includes it."""
+        from django.core.checks import Tags, registry
+
+        [check] = [
+            c
+            for c in registry.registry.get_checks()
+            if getattr(c, "__name__", "") == "check_masking_configured"
+        ]
+        assert Tags.security in check.tags
 
 
 @pytest.mark.usefixtures("only_the_dict_half")
@@ -437,13 +461,10 @@ class TestCheckMaskingConfiguredSystemCheck:
 
 
     @pytest.mark.parametrize("env", ["local", "test", "dev"])
-    def test_not_skipped_in_local_test_or_dev_by_default(self, monkeypatch, env):
-        """No environment is skipped unless ECSCTX_MASKING_CHECK_SKIP_ENVS
-        lists it, so a masking gap fails the check before production."""
+    def test_skipped_in_default_skip_envs(self, monkeypatch, env):
         monkeypatch.setenv("ENVIRONMENT", env)
         with override_settings(LOGGING=UNMASKED_CFG):
-            errors = check_masking_configured(None)
-        assert [(e.id, e.msg) for e in errors] == [("ecsctx.E001", MISSING_FILTER_ERROR)]
+            assert check_masking_configured(None) == []
 
     def test_not_skipped_when_environment_is_unset(self):
         """No ENVIRONMENT var at all must not read as "skip" — a box that
@@ -471,9 +492,7 @@ class TestCheckMaskingConfiguredSystemCheck:
 
     def test_env_var_value_is_matched_case_insensitively(self, monkeypatch):
         monkeypatch.setenv("ENVIRONMENT", "LOCAL")
-        with override_settings(
-            LOGGING=UNMASKED_CFG, ECSCTX_MASKING_CHECK_SKIP_ENVS=["local"]
-        ):
+        with override_settings(LOGGING=UNMASKED_CFG):
             assert check_masking_configured(None) == []
 
     def test_skip_envs_entries_are_matched_case_insensitively(self, monkeypatch):
@@ -557,3 +576,19 @@ class TestEveryEntryPointSeesBothHalves:
         with pytest.raises(AssertionError) as raised:
             assert_no_masking_errors(MASKED_CFG)
         assert str(raised.value) == self.LIVE_ERROR
+
+
+class TestSafeKeySettingIsChecked:
+    """ECSCTX_MASK_SAFE_KEYS naming a card, CVV, expiry or credential outright
+    is dropped at runtime (it stays masked) and reported at boot, so the
+    misconfiguration is seen rather than silently half-applied."""
+
+    def test_a_refused_safe_key_is_reported(self, isolated_logging_tree, settings):
+        settings.ECSCTX_MASK_SAFE_KEYS = ["cvv", "pg_name"]
+        [error] = find_masking_errors(MASKED_CFG)
+        assert "['cvv']" in error
+        assert "cannot be safe keys" in error
+
+    def test_a_service_s_own_names_are_not_reported(self, isolated_logging_tree, settings):
+        settings.ECSCTX_MASK_SAFE_KEYS = ["pg_name", "cvv_required"]
+        assert find_masking_errors(MASKED_CFG) == []

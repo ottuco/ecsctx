@@ -21,7 +21,7 @@ def _render(event_dict: dict) -> dict:
 def test_message_is_human_readable_and_event_is_nested():
     # What the api_logging decorator produces after structlog formats the message:
     out = _render({
-        "event": "OUTBOUND POST /b/checkout/v1/pymt-txn/ (201)",
+        "event": "api response sent: POST /b/checkout/v1/pymt-txn/ (201)",
         "ecs_event": {
             "kind": "event",
             "category": ["web"],
@@ -32,7 +32,7 @@ def test_message_is_human_readable_and_event_is_nested():
         "url": {"path": "/b/checkout/v1/pymt-txn/"},
     })
 
-    assert out["message"] == "OUTBOUND POST /b/checkout/v1/pymt-txn/ (201)"
+    assert out["message"] == "api response sent: POST /b/checkout/v1/pymt-txn/ (201)"
     assert out["event"] == {
         "kind": "event",
         "category": ["web"],
@@ -48,11 +48,11 @@ def test_event_keys_survive_double_processor_pass():
     """foreign_pre_chain + main processors can run namespace_ecs_fields twice on
     stdlib records; the dotted event.* keys must not leak into `extra`."""
     first = namespace_ecs_fields(None, "info", {
-        "event": "INBOUND GET /x",
+        "event": "api request received: GET /x",
         "ecs_event": {"kind": "event", "category": ["web"], "type": ["access"]},
     })
     second = namespace_ecs_fields(None, "info", dict(first))
     out = json.loads(StructlogFormatter()(None, "info", second))
-    assert out["message"] == "INBOUND GET /x"
+    assert out["message"] == "api request received: GET /x"
     assert out["event"] == {"kind": "event", "category": ["web"], "type": ["access"]}
     assert "extra" not in out or "event.kind" not in out.get("extra", {})

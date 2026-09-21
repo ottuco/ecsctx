@@ -7,11 +7,14 @@ For Django integration, use ecsctx.contrib.django.processors which reads from se
 
 import contextlib
 import os
+import re
 import sys
 import traceback
 
 from structlog.contextvars import get_contextvars
 
+from ecsctx import identity
+from ecsctx.contrib.net import ecs_url, parse_json_or_raw
 from ecsctx.context import get_logging_context, get_trace_id
 from ecsctx.masking.exemptions import (
     _reset_masking,
@@ -21,40 +24,17 @@ from ecsctx.masking.exemptions import (
 )
 from ecsctx.masking.tokens import safe_tokenize
 from ecsctx.masking.filters import MaskPIIFilter
+from ecsctx.masking.patterns import _truncate_pan
 
 
 def _get_app_version() -> str:
-    """Get application version from environment."""
-    return os.environ.get("APP_VERSION", "0.0.0")
+    """Application version. Kept as a name other modules import."""
+    return identity.get_app_version()
 
 
 def _detect_service():
-    """Detect service name and version from environment or process name.
-
-    Returns tuple of (name, version).
-    """
-    service_type = os.environ.get("SERVICE_TYPE")
-    if service_type:
-        if service_type == "rq":
-            import rq  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
-
-            return "rq", rq.VERSION
-        if service_type == "rqscheduler":
-            import rq_scheduler  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
-
-            return "rqscheduler", ".".join(map(str, rq_scheduler.VERSION))
-        return service_type, _get_app_version()
-
-    # Auto-detect from command line
-    if any("rqworker" in arg for arg in sys.argv):
-        import rq  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
-
-        return "rq", rq.VERSION
-    if any("rqscheduler" in arg for arg in sys.argv):
-        import rq_scheduler  # noqa: E402 - Deferred: optional dependency, absent in non-rq deployments
-
-        return "rqscheduler", ".".join(map(str, rq_scheduler.VERSION))
-    return "app", _get_app_version()
+    """(service.name, service.version). See ecsctx.identity for the order."""
+    return identity.detect_service()
 
 
 # ECS-compliant root allowlist for log events.
@@ -367,13 +347,23 @@ def contextvars_injector(_logger, _method_name, event_dict):
                     event_dict[key] = value
 
     # 4. Add service metadata (always injected)
+    #
+    # Merged, not assigned: `service` is a shared ECS root. We own `name` and
+    # `version` and always win on those, but ECS also puts `service.target.*`
+    # ("the target service in case of an outgoing request") and `service.node.*`
+    # there, and a caller that sets them on an outbound boundary line has just as
+    # much right to the root as we do. Replacing the dict dropped them silently.
     service_name, service_version = _detect_service()
+    service = event_dict.get("service")
+    if not isinstance(service, dict):
+        service = {}
     event_dict["service"] = {
+        **service,
         "name": service_name,
         "version": service_version,
     }
     event_dict["project"] = {
-        "name": os.environ.get("PROJECT_NAME", "connect"),
+        "name": identity.get_project_name(),
     }
 
     return event_dict
@@ -383,30 +373,89 @@ def contextvars_injector(_logger, _method_name, event_dict):
 # SENSITIVE DATA MASKING/TOKENIZATION
 # =============================================================================
 #
-# The actual masking rules live in ecsctx.masking (MaskPIIFilter) — a stdlib
-# logging.Filter that runs on every LogRecord reaching a handler it is
-# attached to, structlog or not. This processor is a second, structlog-only
-# net: it delegates to the same filter instance, so a pipeline that only
-# calls configure_structlog() (no get_logging_config()/install_maskers())
-# still gets masked, and so a payload nested under `extra` (moved there by
-# namespace_ecs_fields) is covered too — not just the payload/headers/http
-# containers this processor scanned in earlier versions.
-#
-# STRUCTURAL_ECS_KEYS (service/project) is skipped by MaskPIIFilter's
-# default skip_keys — see ecsctx.masking.filters for why.
+# The actual masking rules live in ecsctx.masking (MaskPIIFilter). This
+# processor is the engine for every handler whose formatter runs it —
+# get_logging_config()'s among them — and it delegates to a filter instance,
+# so a pipeline that only calls configure_structlog() still gets masked, and
+# a payload nested under `extra` (moved there by namespace_ecs_fields) is
+# covered too. Structural fields and correlation ids are skipped — see
+# DEFAULT_SKIP_KEYS in ecsctx.masking.filters.
 _default_filter = MaskPIIFilter()
+
+# ECS event fields whose values come from closed sets or the event registry.
+# event.reason and anything else under event.* is free text and is masked.
+_BOUNDED_EVENT_FIELDS = frozenset(
+    {"event.action", "event.kind", "event.category", "event.type", "event.outcome", "event.duration"}
+)
+
+
+def mask_pan(number: str) -> str:
+    """Truncate a PAN: first 6 + last 4 from 15 digits up, last 4 below.
+
+    Bare-core counterpart of the engine's card rule, which emits the same
+    truncation label-wrapped (`[CARD-MASKED:411111******1111]`): use this
+    helper at call sites that must mask a PAN before logging (e.g.
+    replacing a hand-rolled helper). The core truncation is shared with
+    `ecsctx.masking.patterns._truncate_pan` so the two can never drift.
+    Logs are stored data (PCI DSS 3.5.1); FAQ 1091 allows first 6 + last 4
+    for 15/16-digit PANs of every listed brand and covers shorter ones only
+    for Discover. Separators are stripped, so grouped input comes back as one
+    contiguous masked value. Values of 10 or fewer digits are fully starred:
+    this path only receives PAN-length input, so anything else is a caller
+    bug, and starring fails closed.
+    """
+    digits = re.sub(r"[ -]", "", number)
+    if len(digits) > 10:
+        return _truncate_pan(digits)
+    return "*" * len(digits)
+
+
+def normalize_url_field(_logger, _method_name, event_dict: dict) -> dict:
+    """Auto-normalize a bare-string ``url=`` into the ECS url object.
+
+    Call sites log the raw string; the processor shapes it via ``ecs_url()``
+    (credential query redacted by default), so no call site imports helpers
+    itself. An already-shaped dict passes through unchanged.
+    """
+    url = event_dict.get("url")
+    if isinstance(url, str):
+        event_dict["url"] = ecs_url(url)
+    return event_dict
+
+
+def normalize_payload_field(_logger, _method_name, event_dict: dict) -> dict:
+    """Auto-parse a bytes ``payload=`` into real JSON for structured logging.
+
+    Deliberately bytes-only, not str: JSON also parses bare primitives
+    ("123" -> 123), so auto-parsing arbitrary strings risks silently changing
+    a plain-text payload's type. Bytes always means raw wire data, so the
+    intent there is unambiguous. Falls back to the original bytes unchanged
+    if it isn't valid JSON (e.g. an HTML error page).
+
+    Must run BEFORE ``mask_sensitive_data`` in the processor chain: the
+    masker only walks parsed structures, so a bytes payload reaching it
+    first gets regex-only scrubbing, then parses here into an unmasked
+    dict with no second masking pass.
+    """
+    payload = event_dict.get("payload")
+    if isinstance(payload, bytes):
+        event_dict["payload"] = parse_json_or_raw(payload)
+    return event_dict
 
 
 def mask_sensitive_data(_logger, _method_name, event_dict):
     """Structlog processor for PII/PCI masking and tokenization.
 
     Delegates to MaskPIIFilter, which walks the whole event_dict (except
-    STRUCTURAL_ECS_KEYS and the `event.*` dotted ECS event fields)
-    recursively, masking sensitive content and dict keys. Idempotent: a
-    record already masked by MaskPIIFilter (e.g. via install_maskers() on
-    the same handler chain) is not re-processed.
+    the structural fields in DEFAULT_SKIP_KEYS and the bounded `event.*`
+    fields — action, kind, category, type, outcome, duration) recursively, masking sensitive
+    content and dict keys with the packs in force. Idempotent: masked
+    markers are left as they are.
+
+    Bytes ``payload=`` must be parsed by ``normalize_payload_field``
+    earlier in the chain — this processor never parses raw bytes itself.
     """
-    to_mask = {k: v for k, v in event_dict.items() if not (isinstance(k, str) and k.startswith("event."))}
+    to_mask = {k: v for k, v in event_dict.items() if k not in _BOUNDED_EVENT_FIELDS}
     masked = _default_filter._mask_dict(to_mask)
     event_dict.update(masked)
     return event_dict

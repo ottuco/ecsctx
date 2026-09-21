@@ -6,10 +6,10 @@ using bind_logging_context(extra={"merchant_id": "..."})
 """
 
 import contextlib
-import os
 
 from structlog.contextvars import get_contextvars
 
+from ecsctx import identity
 from ecsctx.context import get_trace_id
 from ecsctx.pii import configure_pii_from_env
 from ecsctx.processors import _detect_service, _inject_logging_context
@@ -20,50 +20,6 @@ def _auto_configure_pii():
     configure_pii_from_env()
 
 
-_mask_settings_attempted = False
-
-
-def _auto_configure_masking() -> None:
-    """Bridge the Django ``ECSCTX_MASK_EXEMPT_PATHS`` setting into the core
-    masking config, lazily on first use.
-
-    Runs at log time (when Django settings are fully loaded), so the setting is
-    honored regardless of how logging was wired (setup_logging,
-    get_logging_config, or manual). Retries until settings are accessible.
-    Precedence is preserved: an explicit configure_masking() call wins, then
-    this setting, then the PII_MASK_EXEMPT_PATHS env var.
-    """
-    global _mask_settings_attempted
-    if _mask_settings_attempted:
-        return
-
-    from ecsctx.processors import configure_masking, masking_is_configured
-
-    # An explicit configure_masking() (or a prior load) already won.
-    if masking_is_configured():
-        _mask_settings_attempted = True
-        return
-
-    try:
-        from django.conf import settings
-
-        exempt = getattr(settings, "ECSCTX_MASK_EXEMPT_PATHS", None)
-    except Exception:
-        # Settings not ready yet (e.g. during settings.py import) — leave the
-        # flag unset so we retry on the next call (at real log time).
-        return
-
-    _mask_settings_attempted = True
-    if exempt is not None:
-        configure_masking(exempt_paths=list(exempt))
-
-
-def _reset_masking_settings_flag() -> None:
-    """Reset the settings-bridge guard. For testing only."""
-    global _mask_settings_attempted
-    _mask_settings_attempted = False
-
-
 _root_fields_settings_attempted = False
 
 
@@ -71,7 +27,7 @@ def _auto_configure_root_fields() -> None:
     """Bridge the Django ``ECSCTX_ROOT_FIELDS`` setting into the core
     root-fields config, lazily on first use.
 
-    Same shape as _auto_configure_masking: runs at log time (settings fully
+    Runs at log time (settings fully
     loaded), retries until settings are accessible, and preserves precedence —
     an explicit configure_root_fields() call wins, then this setting, then the
     ECSCTX_ROOT_FIELDS env var.
@@ -165,7 +121,6 @@ def contextvars_injector(_logger, _method_name, event_dict):
 
     # 0. Auto-configure PII + masking exemptions + root fields on first call
     _auto_configure_pii()
-    _auto_configure_masking()
     _auto_configure_root_fields()
 
     # 1. Inject from LoggingContext (decorators set this)
@@ -186,13 +141,21 @@ def contextvars_injector(_logger, _method_name, event_dict):
                     event_dict[key] = value
 
     # 4. Add service metadata (always injected)
+    #
+    # Merged, not assigned — see the same block in ecsctx/processors.py. We own
+    # `name` and `version`; `service.target.*` and `service.node.*` belong to the
+    # caller and must survive.
     service_name, service_version = _detect_service()
+    service = event_dict.get("service")
+    if not isinstance(service, dict):
+        service = {}
     event_dict["service"] = {
+        **service,
         "name": service_name,
         "version": service_version,
     }
     event_dict["project"] = {
-        "name": os.environ.get("PROJECT_NAME", "connect"),
+        "name": identity.get_project_name(),
     }
 
     # 5. Serialize Django User objects

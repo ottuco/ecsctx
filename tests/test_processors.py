@@ -1,25 +1,35 @@
 """Tests for PII masking and field reshaping in log processors."""
 
+import json
+
+import pytest
+from ecsctx import processors
 from ecsctx.masking.exemptions import _compile_path, _path_is_exempt
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.pii import configure_pii, is_configured
 from ecsctx.processors import (
     callsite_ecs_fields,
-    error_ecs_fields,
-    safe_tokenize,
     configure_masking,
     configure_masking_from_env,
     configure_root_fields,
+    error_ecs_fields,
+    mask_pan,
+    mask_sensitive_data,
     masking_is_configured,
-    root_fields_are_configured,
     namespace_ecs_fields,
+    normalize_payload_field,
+    normalize_url_field,
     reshape_log_event,
+    root_fields_are_configured,
+    safe_tokenize,
 )
 
 # MaskPIIFilter._mask_value is the direct engine entry point the old
 # ecsctx.processors._safe_dump_and_mask used to wrap — mask_sensitive_data
 # (the structlog processor) now delegates to the same MaskPIIFilter instance.
 _mask = MaskPIIFilter()._mask_value
+# Card-number and CVV content rules are the opt-in `pci` pack.
+_mask_pci = MaskPIIFilter(packs=("pci",))._mask_value
 
 
 class TestTokenizeInProcessor:
@@ -172,6 +182,30 @@ class TestNamespaceEcsFields:
         assert "ecs_event" not in result
         assert result["merchant_id"] == "m1"
 
+    def test_caller_supplied_service_subfields_survive(self):
+        """`service.name`/`version` are ours; the rest of `service` is not.
+
+        ECS puts `service.target.name` — "the target service in case of an
+        outgoing request" — under the same root we stamp identity into. Assigning
+        the whole dict silently dropped it, so a gateway boundary line could name
+        the merchant's own MID but never the upstream it called.
+        """
+        event_dict = {
+            "event": "response received from mpgs (201)",
+            "service": {"target": {"name": "mpgs"}, "node": {"name": "n1"}},
+        }
+        result = processors.contextvars_injector(None, None, event_dict)
+        assert result["service"]["target"] == {"name": "mpgs"}
+        assert result["service"]["node"] == {"name": "n1"}
+        # identity still wins for the two fields it owns
+        assert result["service"]["name"]
+        assert "version" in result["service"]
+
+    def test_identity_still_owns_service_name_and_version(self):
+        event_dict = {"event": "x", "service": {"name": "not-ours"}}
+        result = processors.contextvars_injector(None, None, event_dict)
+        assert result["service"]["name"] != "not-ours"
+
 
 class TestCompilePath:
     def test_array_wildcard(self):
@@ -237,7 +271,7 @@ class TestMaskWalker:
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=["payment_methods[*].name"])
         out = _mask({"profile": {"name": "John Doe"}})
-        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out["profile"]["name"].startswith("ptok:v1:")
 
     def test_subtree_exemption_with_email_still_scrubbed(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
@@ -248,7 +282,7 @@ class TestMaskWalker:
         assert out["audit"]["customer_name"] == "X"
         # Key-based masking is exempted under "audit", but the email regex
         # still catches the value content-wise (defense in depth).
-        assert out["audit"]["billing_email"].startswith("[EMAIL-MASKED:ptok:v1:")
+        assert out["audit"]["billing_email"].startswith("ptok:v1:")
 
     def test_nested_dict_path(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
@@ -257,13 +291,13 @@ class TestMaskWalker:
             {"a": {"b": {"customer_name": "Keep", "payer_name": "Mask"}}}
         )
         assert out["a"]["b"]["customer_name"] == "Keep"
-        assert out["a"]["b"]["payer_name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out["a"]["b"]["payer_name"].startswith("ptok:v1:")
 
     def test_arrays_of_arrays(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=[])
         out = _mask({"matrix": [[{"customer_email": "x@y.com"}]]})
-        assert out["matrix"][0][0]["customer_email"].startswith("[EMAIL-MASKED:ptok:v1:")
+        assert out["matrix"][0][0]["customer_email"].startswith("ptok:v1:")
 
     def test_list_of_strings_email_scrubbed(self, token_keyset_path):
         # "notes" (not itself a sensitive key, unlike "emails") so each list
@@ -271,7 +305,7 @@ class TestMaskWalker:
         # being blanket-masked as one key-based match.
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask({"notes": ["x@y.com", "plain"]})
-        assert out["notes"][0].startswith("[EMAIL-MASKED:ptok:v1:")
+        assert out["notes"][0].startswith("ptok:v1:")
         assert out["notes"][1] == "plain"
 
     def test_non_sensitive_key_scalars_untouched(self, token_keyset_path):
@@ -287,7 +321,7 @@ class TestMaskWalker:
         numeric/bool/None content-level passthrough."""
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask({"customer_name": 123})
-        assert out["customer_name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out["customer_name"].startswith("ptok:v1:")
 
     def test_idempotent_rerun(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
@@ -313,12 +347,12 @@ class TestMaskTopLevel:
     def test_top_level_list(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask([{"customer_name": "John"}])
-        assert out[0]["customer_name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out[0]["customer_name"].startswith("ptok:v1:")
 
     def test_top_level_string_email(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask("contact a@b.com please")
-        assert "[EMAIL-MASKED:ptok:v1:" in out
+        assert "ptok:v1:" in out
 
     def test_top_level_scalars(self):
         assert _mask(42) == 42
@@ -337,19 +371,19 @@ class TestMaskConfigEnv:
             {"payment_methods": [{"name": "KNET"}], "profile": {"name": "John"}}
         )
         assert out["payment_methods"][0]["name"] == "KNET"
-        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out["profile"]["name"].startswith("ptok:v1:")
 
     def test_explicit_beats_env(self, token_keyset_path, monkeypatch):
         monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "profile.name")
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=[])
         out = _mask({"profile": {"name": "John"}})
-        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out["profile"]["name"].startswith("ptok:v1:")
 
     def test_empty_default_still_configured(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask({"profile": {"name": "John"}})
-        assert out["profile"]["name"].startswith("[NAME-MASKED:ptok:v1:")
+        assert out["profile"]["name"].startswith("ptok:v1:")
         assert masking_is_configured()
 
 
@@ -582,3 +616,178 @@ class TestStandalonePipelineSafety:
         assert event["error"]["stack_trace"].startswith("Traceback")
         assert "exc_info" not in event
         assert "exc_info" not in event.get("extra", {})
+
+
+class TestCardholderDataMasking:
+    """Ported from the pre-unification engine suite (#159488, #159500).
+
+    The unified engine truncates card numbers to BIN + last 4 (#159795) and
+    has no Luhn gate, so the display / Luhn / key-predicate assertions from
+    the old engine do not apply here. Pinned below against the new engine:
+    PSP card/token key spellings mask, order diagnostics pass through.
+    """
+
+    def test_a_saved_card_token_is_masked(self, token_keyset_path):
+        """Not cardholder data, but the credential that charges a stored card:
+        anyone who can read it from the index can replay a payment.
+
+        Found by instrumenting Connect's submit-token endpoint, which ships
+        `{"token": ..., "cvv": ...}` into http.request.body via api_logging
+        (#159500). The cvv half was already covered; this is the other half.
+        """
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _mask({"token": "tok_live_9f3a2b", "cvv": "123"})
+        assert "tok_live_9f3a2b" not in str(masked)
+        assert masked["cvv"] == "[CVV-MASKED]"
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "token",
+            "cardtoken",
+            "card_token",
+            "cardToken",
+            "paymenttoken",
+            "payment_token",
+            "sourcetoken",
+            "source_token",
+        ],
+    )
+    def test_every_token_spelling_a_psp_uses_is_masked(self, key, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _mask({key: "tok_live_9f3a"})
+        assert "tok_live_9f3a" not in str(masked)
+
+    def test_the_real_mpgs_payload_number_cvv_masked_order_survives(
+        self, token_keyset_path
+    ):
+        """End-to-end over a real MPGS sourceOfFunds payload (#159488).
+
+        `card` is a card key, so the whole card object — number, expiry and
+        security code — is one label; order diagnostics survive.
+        """
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        payload = {
+            "sourceOfFunds": {
+                "provided": {
+                    "card": {
+                        "number": "4111111111111111",
+                        "expiry": {"year": "27", "month": "01"},
+                        "securityCode": "123",
+                    }
+                }
+            },
+            "order": {"reference": "deltabRKJ5X_0", "amount": 20},
+        }
+        masked = _mask(payload)
+        assert masked["sourceOfFunds"]["provided"]["card"] == "[CARD-MASKED]"
+        assert masked["order"] == {"reference": "deltabRKJ5X_0", "amount": 20}
+
+    def test_nothing_outside_a_card_container_is_newly_masked(self, token_keyset_path):
+        """An `order` subtree keeps its diagnostics."""
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = _mask(
+            {"order": {"reference": "deltabRKJ5X_0", "nested": {"id": "abc123"}}}
+        )
+        assert masked["order"]["reference"] == "deltabRKJ5X_0"
+        assert masked["order"]["nested"]["id"] == "abc123"
+
+    def test_a_reference_with_letters_is_untouched(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        assert "deltabRKJ5X_0" in _mask("ref deltabRKJ5X_0")
+
+
+# Luhn-valid PANs per length (brand in comment).
+PAN_BY_LENGTH = {
+    12: "675964982093",  # Maestro
+    13: "4222222222222",  # Visa
+    14: "30569309025904",  # Diners
+    15: "378282246310005",  # Amex
+    16: "4111111111111111",  # Visa
+    19: "4111111111111111102",  # UnionPay length
+}
+
+def _display(pan: str) -> str:
+    # First 6 + last 4 from 15 digits up; last 4 only for shorter PANs, which
+    # FAQ 1091 covers only for Discover.
+    if len(pan) >= 15:
+        return f"{pan[:6]}{'*' * (len(pan) - 10)}{pan[-4:]}"
+    return f"{'*' * (len(pan) - 4)}{pan[-4:]}"
+
+
+class TestPanDisplayMasking:
+    @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
+    def test_mask_pan_keeps_at_most_the_bin_and_last_four(self, length, pan):
+        assert mask_pan(pan) == _display(pan)
+        assert pan not in mask_pan(pan)
+
+    def test_mask_pan_grouped_input_comes_back_contiguous(self):
+        assert mask_pan("4111 1111 1111 1111") == "411111******1111"
+        assert mask_pan("3782-822463-10005") == "378282*****0005"
+
+    def test_mask_pan_short_value_stars_fully(self):
+        assert mask_pan("123") == "***"
+
+    @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
+    def test_engine_output_contains_mask_pan_core(self, length, pan):
+        """The engine rule and mask_pan share _truncate_pan: the labeled
+        engine output always embeds the helper's bare core."""
+        assert mask_pan(pan) in _mask_pci(f"pay {pan} ok")
+
+    @pytest.mark.parametrize("length,pan", sorted(PAN_BY_LENGTH.items()))
+    def test_pans_masked_in_every_grouping(self, length, pan):
+        grouped = " ".join(pan[i : i + 4] for i in range(0, len(pan), 4))
+        dashed = "-".join(pan[i : i + 4] for i in range(0, len(pan), 4))
+        for body in (grouped, dashed):
+            masked = _mask_pci(f"pay {body} ok")
+            assert body not in masked
+            assert pan not in masked
+            assert masked == f"pay [CARD-MASKED:{_display(pan)}] ok"
+
+    def test_small_ints_bools_and_none_survive(self):
+        masked = _mask(
+            {"status_code": 200, "count": 100, "ok": True, "nothing": None}
+        )
+        assert masked == {"status_code": 200, "count": 100, "ok": True, "nothing": None}
+
+    def test_short_int_under_cvv_key_is_masked(self):
+        # The CVV rule is not tokenizable: any int under a CVV key becomes
+        # the bare label, never a token and never the raw value.
+        assert _mask({"source": {"securityCode": 123}}) == {
+            "source": {"securityCode": "[CVV-MASKED]"}
+        }
+
+    def test_order_ids_and_timestamps_are_not_masked(self):
+        payload = {
+            "order": {"id": "deltabRKJ5X_0", "reference_number": "REF-2026-09187654"},
+            "timestamps": {"created": 1750000000},
+        }
+        assert _mask(payload) == payload
+
+
+class TestNormalizeProcessors:
+    def test_url_string_is_shaped_and_redacted(self):
+        out = normalize_url_field(None, None, {"url": "https://gw.example.com/p?password=s3cr3t"})
+        assert out["url"]["domain"] == "gw.example.com"
+        assert "s3cr3t" not in out["url"]["full"]
+
+    def test_url_dict_passes_through(self):
+        shaped = {"full": "https://x.example/", "domain": "x.example", "path": "/"}
+        assert normalize_url_field(None, None, {"url": shaped}) == {"url": shaped}
+
+    def test_payload_bytes_are_parsed(self):
+        out = normalize_payload_field(None, None, {"payload": b'{"a": 1}'})
+        assert out == {"payload": {"a": 1}}
+
+    def test_payload_str_and_invalid_bytes_untouched(self):
+        assert normalize_payload_field(None, None, {"payload": "123"}) == {"payload": "123"}
+        raw = b"<html>oops</html>"
+        assert normalize_payload_field(None, None, {"payload": raw}) == {"payload": raw}
+
+    def test_bytes_payload_masked_when_normalize_runs_first(self):
+        # Under the unified engine the name key yields a [NAME-MASKED]
+        # label (unconfigured PII); the point pinned here is the ORDER:
+        # normalize first so the masker sees a parsed dict, not bytes.
+        event = {"payload": b'{"customer_name": "John"}'}
+        out = mask_sensitive_data(None, None, normalize_payload_field(None, None, event))
+        assert out["payload"] == {"customer_name": "[NAME-MASKED]"}

@@ -30,6 +30,7 @@ Usage in settings.py:
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import Protocol
 
 import structlog
@@ -37,12 +38,14 @@ import structlog
 from ecsctx import (
     ECSFormatter,
     callsite_ecs_fields,
-    error_ecs_fields,
     ecs_validator,
+    error_ecs_fields,
     mask_sensitive_data,
     namespace_ecs_fields,
 )
 from ecsctx.contrib.django.processors import contextvars_injector
+from ecsctx.events.validator import event_contract
+from ecsctx.masking.config import configure_masking_packs
 from ecsctx.masking.install import install_maskers_in_config
 
 # =============================================================================
@@ -106,11 +109,13 @@ CELERY_LOGGERS_DEBUG: dict = {
 # LOGGING CONFIGURATION
 # =============================================================================
 
+
 def get_logging_config(
     root_level: str = "INFO",
     handler_level: str = "DEBUG",
     use_cid_filter: bool = True,
     loggers: dict | None = None,
+    masking_packs: Iterable[str] | None = None,
 ) -> dict:
     """
     Returns a complete Django LOGGING configuration dict.
@@ -121,6 +126,9 @@ def get_logging_config(
         use_cid_filter: Whether to add CID correlation filter (default: True)
         loggers: Additional logger configurations to merge (use presets like
             RQ_LOGGERS, CELERY_LOGGERS)
+        masking_packs: Content-masking packs to enable on top of "default",
+            e.g. ("pci", "financial_ids") for a service that handles card data.
+            None leaves the choice to ECSCTX_MASKING_PACKS (setting, then env).
 
     Returns:
         Complete LOGGING dict ready to use in Django settings. "mask_pii_filter"
@@ -150,6 +158,9 @@ def get_logging_config(
             "myapp.api": {"level": "DEBUG", "propagate": True},
         })
     """
+    if masking_packs is not None:
+        configure_masking_packs(masking_packs)
+
     filters = {}
     handler_filters = []
 
@@ -167,6 +178,7 @@ def get_logging_config(
                 "processors": [
                     structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                     structlog.processors.ExceptionRenderer(),
+                    event_contract,
                     namespace_ecs_fields,
                     mask_sensitive_data,
                     ecs_validator,
@@ -187,6 +199,7 @@ def get_logging_config(
                     callsite_ecs_fields,
                     error_ecs_fields,
                     contextvars_injector,
+                    event_contract,
                     namespace_ecs_fields,
                     mask_sensitive_data,
                     ecs_validator,
@@ -308,8 +321,9 @@ def setup_logging(
     # settings module is still importing. Reading django.conf.settings at that
     # point forces an early settings._setup(), which caches a *partial* settings
     # object (everything defined after the setup_logging() call is lost) and
-    # breaks the whole app. The exemptions are bridged lazily at log time instead
-    # (contextvars_injector -> _auto_configure_masking), when settings are ready.
+    # breaks the whole app. The exemptions read it themselves, lazily, the first
+    # time anything masks once settings are configured
+    # (ecsctx.masking.exemptions._get_exempt_patterns).
     configure_structlog(integrations=integrations)
     if capture_warnings:
         logging.captureWarnings(True)
