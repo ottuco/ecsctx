@@ -1025,7 +1025,7 @@ dict half is untouched. `MaskingTestsMixin` below passes it for you.
 
 Both read the live tree as well as the dict, so call them once Django has finished booting. In a test suite that means the sweep your `AppConfig.ready()` does must have run too — without it they report Django's own `django` / `django.server` handlers and the test fails. Loggers named in `LOGGING` (including `root`) are left to the dict half, so handlers pytest attaches to `root` are not reported.
 
-**Ready-made tests for your project.** `ecsctx.contrib.django.testing` ships both checks as tests you plug into your own suite. They run against the project's real, booted logging setup — nothing is reconfigured:
+**Ready-made tests for your project.** `ecsctx.contrib.django.testing` ships the whole masking suite as tests you inherit into your own suite — under pytest, Django's `manage.py test` or plain `unittest`. They run against the project's real, booted logging setup — nothing is reconfigured:
 
 ```python
 from django.test import SimpleTestCase
@@ -1035,7 +1035,7 @@ class TestLogMasking(MaskingTestsMixin, SimpleTestCase):
     pass
 ```
 
-You inherit 20 tests covering 321 sample cases:
+You inherit 21 tests covering 321 sample cases:
 
 | Test | What it proves |
 |---|---|
@@ -1045,11 +1045,12 @@ You inherit 20 tests covering 321 sample cases:
 | `test_structural_metadata_is_not_masked` | The project's own `service` / `project` / `log` fields stay readable — `skip_keys` still works |
 | `test_no_handler_carries_a_duplicate_masker` | No handler picked up the filter twice |
 | `test_log_output_is_masked` | A real structlog call with test values comes out of every project stream handler with each field exactly equal to its masked label, e.g. `email == "[EMAIL-MASKED]"`. The `:ptok:v1:…` token is ignored, because it depends on the project's keyset |
+| `test_stdlib_log_with_percent_args_is_masked` | A plain stdlib call with `%s` args — the path a third-party library takes, no structlog involved — comes out masked. Only the handler-level filter can catch this |
 | `test_masks_*` (12 tests) | Every case in `ecsctx.masking.samples` — PEM keys, credentials, CVV, payment ids, IBANs, phones, emails, JWTs, card numbers, SSNs, sensitive dict keys, objects and primitives — logged through the project and compared exactly |
 | `test_does_not_over_mask` | Values that must stay readable (`cache_key=…`, prose like "token expired", non-IBAN refs) come through untouched |
 | `test_accepted_leaks_are_unchanged` | The cases ecsctx knowingly lets through, so a project sees them instead of assuming they're covered |
 
-These are ecsctx's own filter-test tables, run through your pipeline instead of against the engine directly, so your exemptions, `skip_keys` and formatter are all in the path. The whole suite takes about a tenth of a second.
+These are ecsctx's own filter-test tables, run through your pipeline instead of against the engine directly, so your exemptions, `skip_keys` and formatter are all in the path. The whole suite takes about a tenth of a second. ecsctx runs this same class in its own CI (`tests/test_shipped_masking_suite.py`), so what you inherit is tested before it ships.
 
 The tests read back what the project's stream handlers (console, file) actually wrote, so they cover your real filters and formatter. That output must be ecsctx's JSON (what `get_logging_config()` produces), because each field is compared exactly. pytest's own capture handler is skipped, because it isn't part of your config. It is a mixin rather than a `TestCase` subclass, because test runners collect any `TestCase` they find in a module, so an imported base class would run as a test of its own.
 
@@ -1058,11 +1059,12 @@ To adapt it, override `masking_logger_name`, `masking_log_level` (default `WARNI
 The helpers work standalone too, for a project that would rather write its own assertions:
 
 ```python
-from ecsctx.contrib.django.testing import capture_log, masked_outputs
+from ecsctx.contrib.django.testing import capture_log, capture_stdlib_log, masked_outputs
 
 masked_outputs("card 4111111111111111")   # ['card [CARD-MASKED]']
 masked_outputs({"cvv": "123"})            # [{'cvv': '[CVV-MASKED]'}]
 capture_log(order_id="A-1")               # the full parsed record each handler wrote
+capture_stdlib_log("user %s", "bob@example.com")  # same, through plain stdlib logging
 ```
 
 ### Configuration
