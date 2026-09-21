@@ -7,7 +7,7 @@ Django middleware and processors; the `contextvars_injector` lazily imports the 
 - `processors.py` - Django-aware `contextvars_injector`
 - `logging.py` - `get_logging_config()`, `setup_logging()`, presets (`RQ_LOGGERS`, `CELERY_LOGGERS`)
 - `checks.py` - masking boot check, auto-registered as a Django system check on import
-- `testing.py` - `MaskingTestsMixin`: 21 pluggable tests (321 sample cases) for a project's own suite — the masking check passes, and every case in `ecsctx.masking.samples` is logged through the project and compared exactly against its label (token ignored; pytest's capture handler skipped). Helpers `capture_log()` / `capture_stdlib_log()` / `masked_outputs()` are usable standalone. ecsctx's own `tests/test_shipped_masking_suite.py` inherits the mixin, so CI runs what ships
+- `testing.py` - `MaskingTestsMixin`: 22 pluggable tests (321 sample cases) for a project's own suite — the masking check passes, and every case in `ecsctx.masking.samples` is logged through the project and compared exactly against its label (token ignored; pytest's capture handler skipped). Output tests run through every route (`root` + each `LOGGING["loggers"]` entry) at the lowest level every handler on it accepts; non-stream handlers are read back through their own formatter with `emit()` swapped out, so test values never leave the process. Helpers `capture_log()` / `capture_stdlib_log()` / `capture_handler_texts()` / `masked_outputs()` are usable standalone. ecsctx's own `tests/test_shipped_masking_suite.py` inherits the mixin, so CI runs what ships
 
 ## Critical Context
 - `LogContextBinder` NOT in `__all__` - must import explicitly to avoid circular imports during Django setup
