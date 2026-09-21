@@ -1025,7 +1025,7 @@ dict half is untouched. `MaskingTestsMixin` below passes it for you.
 
 Both read the live tree as well as the dict, so call them once Django has finished booting. In a test suite that means the sweep your `AppConfig.ready()` does must have run too — without it they report Django's own `django` / `django.server` handlers and the test fails. Loggers named in `LOGGING` (including `root`) are left to the dict half, so handlers pytest attaches to `root` are not reported.
 
-**Ready-made tests for your project.** `ecsctx.contrib.django.testing` ships the whole masking suite as tests you inherit into your own suite — under pytest, Django's `manage.py test` or plain `unittest`. They run against the project's real, booted logging setup — nothing is reconfigured:
+**Ready-made tests for your project.** `ecsctx.contrib.django.testing` ships a full masking test suite. Inherit one class and your test suite runs it — under pytest, Django's `manage.py test` or plain `unittest`:
 
 ```python
 from django.test import SimpleTestCase
@@ -1034,6 +1034,15 @@ from ecsctx.contrib.django.testing import MaskingTestsMixin
 class TestLogMasking(MaskingTestsMixin, SimpleTestCase):
     pass
 ```
+
+**How it works: your real logging, nothing sent.**
+
+- **Your loggers and handlers.** Each test makes a real log call through your project's own loggers, handlers, filters and formatter — the same path your production logs take. Nothing is mocked or reconfigured.
+- **Every route.** It logs through `root`, every logger in `LOGGING["loggers"]`, and every other logger that has its own handlers (Django's `django` and `django.server`, or a package that added one). Each route logs at a level all of its handlers accept, so an `ERROR`-only handler is tested too.
+- **Nothing is really sent.** While a test logs, every handler writes into memory instead of to its real destination: console and file handlers are pointed at a buffer, and email, HTTP, syslog and queue handlers have their send step swapped out. Their filters and formatter still run. When the log call is done, every handler is put back exactly as it was.
+- **Everything captured is checked.** Handlers that write ecsctx's JSON are compared field by field against the exact masked label (`email == "[EMAIL-MASKED]"`). Every handler, whatever its format, is searched for the raw test values — none may appear.
+
+So masking is tested on the full logging flow of your project, and no test value ever leaves the process.
 
 You inherit 22 tests covering 321 sample cases:
 
@@ -1051,24 +1060,52 @@ You inherit 22 tests covering 321 sample cases:
 | `test_does_not_over_mask` | Values that must stay readable (`cache_key=…`, prose like "token expired", non-IBAN refs) come through untouched |
 | `test_accepted_leaks_are_unchanged` | The cases ecsctx knowingly lets through, so a project sees them instead of assuming they're covered |
 
-These are ecsctx's own filter-test tables, run through your pipeline instead of against the engine directly, so your exemptions, `skip_keys` and formatter are all in the path. The whole suite runs in under a second. ecsctx runs this same class in its own CI (`tests/test_shipped_masking_suite.py`), so what you inherit is tested before it ships.
+The whole suite runs in under a second, and ecsctx runs this same class in its own CI (`tests/test_shipped_masking_suite.py`), so what you inherit is tested before it ships. It is a mixin rather than a `TestCase` subclass because test runners collect any `TestCase` they find in a module, so an imported base class would run as a test of its own.
 
-**What they exercise.** Every test that logs does it once per route a record can take in your project: `root`, every logger in `LOGGING["loggers"]` (including ones with `propagate: False` and their own handlers), and every live logger carrying handlers of its own that `LOGGING` never mentions — Django's `django` and `django.server` loggers, or a package that attached a handler on import. A route whose logger drops every record before any handler sees it is skipped, since nothing on it can leak; Sentry's `sentry_sdk.errors` is one. Each route logs at the lowest level every handler on it accepts, so an `ERROR`-only handler still receives the record.
+**Run them with your production logging.** The suite tests whatever `LOGGING` your test settings load. If production adds a handler your test settings don't have — an Elasticsearch handler configured only in prod, say — that handler is never checked. Point your test settings at the same `LOGGING` as production, or run this class once in CI with production-like settings.
 
-Handlers that write ecsctx's JSON (what `get_logging_config()` produces) are read back from what they actually wrote and compared field by field — the six-value check and all 321 sample cases, on every route. Every other handler — plain-text consoles, email, HTTP, syslog, queue — gets the leak check, which searches its output for the raw test values whatever the format; non-stream ones are read through their own formatter instead of sending, with their filters still running first, so the fake values never leave the process. pytest's own capture handler is skipped, because it isn't part of your config.
+**Writing your own tests.** Add test methods to the same class. `assert_samples_masked()` runs your cases exactly like the shipped ones — through every route, with the same capture and checks — and `assert_samples_unchanged()` checks values that must stay readable. A case is `(label, sample, expected)`: a string sample is logged as the message, a dict is logged as a field, and what your handlers write must equal `expected` exactly. Write the bare label, e.g. `[EMAIL-MASKED]`; the `:ptok:v1:…` token is ignored.
 
-**Run them with your production logging.** The suite tests whatever `LOGGING` your test settings load. If production adds handlers the test settings don't have — an Elasticsearch handler only configured in prod, say — those handlers are never checked. Point your test settings at the same `LOGGING` as production, or run this class once in CI with production-like settings. It is a mixin rather than a `TestCase` subclass, because test runners collect any `TestCase` they find in a module, so an imported base class would run as a test of its own.
+```python
+class TestLogMasking(MaskingTestsMixin, SimpleTestCase):
+    def test_our_fields_are_masked(self):
+        self.assert_samples_masked([
+            ("card in a refund note",
+             "refund to 4111 1111 1111 1111 approved",
+             "refund to [CARD-MASKED] approved"),
+            ("merchant contact email",
+             {"merchant": {"contact_email": "ops@shop.example"}},
+             {"merchant": {"contact_email": "[EMAIL-MASKED]"}}),
+            ("api key header",
+             {"headers": {"X-Api-Key": "sk_live_51H8abc"}},
+             {"headers": {"X-Api-Key": "[SECRET-MASKED]"}}),
+        ])
 
-To adapt it, override `masking_logger_names` (a list of logger names to use instead of discovering routes from `LOGGING`), `masking_log_level` (the minimum level, default `WARNING`), or `masking_test_values` / `masking_expected_values` — add your own field to both, with the value to log and the exact label you expect.
+    def test_our_fields_stay_readable(self):
+        self.assert_samples_unchanged([
+            ("order reference", {"order_ref": "ORD-A1B2C3"}),
+            ("gateway name", {"gateway_name": "knet"}),
+        ])
+```
 
-The helpers work standalone too, for a project that would rather write its own assertions:
+A failing case names the case and the logger, and shows the value your handlers actually wrote next to the one you expected.
+
+To change the defaults, set these on the class:
+
+| Attribute | Default | Use it to |
+|---|---|---|
+| `masking_test_values` / `masking_expected_values` | email, card, token, name, phone, CVV | add your own field to both — the value to log and the exact label expected — for `test_log_output_is_masked` |
+| `masking_logger_names` | every route | test only the loggers you list |
+| `masking_log_level` | `WARNING` | raise the minimum level the tests log at |
+
+**Without the class.** For plain pytest functions, the same capture is available as helpers:
 
 ```python
 from ecsctx.contrib.django.testing import capture_handler_texts, capture_log, capture_stdlib_log, masked_outputs
 
 masked_outputs("card 4111111111111111")   # ['card [CARD-MASKED]']
 masked_outputs({"cvv": "123"})            # [{'cvv': '[CVV-MASKED]'}]
-capture_log(order_id="A-1")               # the full parsed record each handler wrote
+capture_log(order_id="A-1")               # the full parsed record each JSON handler wrote
 capture_stdlib_log("user %s", "bob@example.com")  # same, through plain stdlib logging
 capture_handler_texts(email="a@b.co")      # (handler, text) for every handler, network ones included
 ```
