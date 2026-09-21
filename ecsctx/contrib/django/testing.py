@@ -98,6 +98,18 @@ def _is_project_handler(handler: logging.Handler) -> bool:
     return not type(handler).__module__.startswith("_pytest")
 
 
+def _is_ecs_json_handler(handler: logging.Handler) -> bool:
+    """A stream handler whose formatter ends in ecsctx's ECSFormatter, so each line is one ECS JSON document."""
+    from ecsctx.formatters import ECSFormatter
+
+    formatter = handler.formatter
+    return (
+        isinstance(handler, logging.StreamHandler)
+        and isinstance(formatter, structlog.stdlib.ProcessorFormatter)
+        and any(isinstance(p, ECSFormatter) for p in getattr(formatter, "processors", ()))
+    )
+
+
 _UNSET = object()
 
 
@@ -112,6 +124,8 @@ def _recording_emit(handler: logging.Handler, buffer: io.StringIO):
 def capture_all_handlers(logger_name: str = DEFAULT_LOGGER_NAME) -> Iterator[list[tuple[str, io.StringIO, bool]]]:
     """Read back every project handler a record on this logger reaches.
 
+    Yields (handler class, buffer, is ecsctx JSON) per handler.
+
     Stream handlers write to a buffer instead of their stream. Every other
     handler — email, HTTP, syslog, queue — has its emit() swapped for one that
     records handler.format(record) and sends nothing: its filters still run
@@ -124,9 +138,8 @@ def capture_all_handlers(logger_name: str = DEFAULT_LOGGER_NAME) -> Iterator[lis
         if not _is_project_handler(handler):
             continue
         buffer = io.StringIO()
-        is_stream = isinstance(handler, logging.StreamHandler)
-        buffers.append((type(handler).__name__, buffer, is_stream))
-        if is_stream:
+        buffers.append((type(handler).__name__, buffer, _is_ecs_json_handler(handler)))
+        if isinstance(handler, logging.StreamHandler):
             swapped_streams.append((handler, handler.setStream(buffer)))
         else:
             swapped_emits.append((handler, handler.__dict__.get("emit", _UNSET)))
@@ -145,13 +158,14 @@ def capture_all_handlers(logger_name: str = DEFAULT_LOGGER_NAME) -> Iterator[lis
 
 @contextmanager
 def capture_project_handlers(logger_name: str = DEFAULT_LOGGER_NAME) -> Iterator[list[io.StringIO]]:
-    """The project's stream handlers' buffers for the duration of the block.
+    """Buffers of the route's stream handlers that write ecsctx JSON.
 
     Every other handler on the route is silenced meanwhile, so a test record
     logged at a raised level never reaches a real email or HTTP endpoint.
+    Handlers in other formats are only covered by the leak check.
     """
     with capture_all_handlers(logger_name) as captured:
-        yield [buffer for _name, buffer, is_stream in captured if is_stream]
+        yield [buffer for _name, buffer, is_json in captured if is_json]
 
 
 def capture_handler_texts(
@@ -164,21 +178,32 @@ def capture_handler_texts(
     """Log one record through structlog; return (handler class, text) for every project handler it reached."""
     with capture_all_handlers(logger_name) as buffers:
         structlog.get_logger(logger_name).log(level, message, **kwargs)
-    return [(name, buffer.getvalue()) for name, buffer, _is_stream in buffers]
+    return [(name, buffer.getvalue()) for name, buffer, _is_json in buffers]
 
 
 def project_routes(logging_config: dict | None = None) -> list[str]:
-    """One logger name per route the project configures.
+    """One logger name per route a record can take in this process.
 
-    An unconfigured name stands in for root; every logger in
+    An unconfigured name stands in for root. Every logger in
     LOGGING["loggers"] is its own route, since it may have handlers or
-    propagate: False of its own.
+    propagate: False of its own. So is every live logger carrying handlers of
+    its own that LOGGING never mentions — Django's DEFAULT_LOGGING pass and
+    packages that attach a handler on import put those there. A logger with no
+    handlers of its own only hands records to a route already listed.
     """
     if logging_config is None:
         from django.conf import settings
 
         logging_config = settings.LOGGING
-    return [DEFAULT_LOGGER_NAME, *(logging_config or {}).get("loggers", {})]
+    names = [DEFAULT_LOGGER_NAME, *(logging_config or {}).get("loggers", {})]
+    for name, logger in sorted(logging.Logger.manager.loggerDict.items()):
+        if (
+            name not in names
+            and isinstance(logger, logging.Logger)
+            and any(_is_project_handler(h) for h in logger.handlers)
+        ):
+            names.append(name)
+    return names
 
 
 def route_level(logger_name: str, minimum: int = logging.WARNING) -> int:
@@ -189,9 +214,23 @@ def route_level(logger_name: str, minimum: int = logging.WARNING) -> int:
     return max(levels)
 
 
-def _has_stream_handler(logger_name: str) -> bool:
+def _route_accepts(logger_name: str, level: int) -> bool:
+    """Whether the route's logger passes a record on to handlers at all.
+
+    Logger.handle() checks only the logger's own filters and disabled flag
+    before calling any handler, so a throwaway record gets the same verdict a
+    real one would. Sentry's sentry_sdk.errors, for one, drops everything
+    unless Sentry debug mode is on — nothing on such a route ever reaches a
+    handler, so there is nothing there to read or to leak.
+    """
+    logger = logging.getLogger(logger_name)
+    probe = logger.makeRecord(logger_name, level, __file__, 0, EVENT, (), None)
+    return not logger.disabled and bool(logger.filter(probe))
+
+
+def _has_json_handler(logger_name: str) -> bool:
     return any(
-        isinstance(h, logging.StreamHandler) and _is_project_handler(h)
+        _is_ecs_json_handler(h) and _is_project_handler(h)
         for h in _handlers_reached_by(logging.getLogger(logger_name))
     )
 
@@ -278,7 +317,6 @@ def count_maskers(handler: logging.Handler) -> int:
 
 
 class MaskingTestsMixin:
-    masking_logger_name = DEFAULT_LOGGER_NAME
     masking_logger_names: list[str] | None = None
     masking_log_level = logging.WARNING
     masking_test_values = TEST_VALUES
@@ -290,16 +328,16 @@ class MaskingTestsMixin:
         names = self.masking_logger_names
         if names is None:
             names = project_routes()
-        return [
-            (name, route_level(name, self.masking_log_level))
-            for name in names
-            if not logging.getLogger(name).disabled
-        ]
+        routes = [(name, route_level(name, self.masking_log_level)) for name in names]
+        return [(name, level) for name, level in routes if _route_accepts(name, level)]
 
     def readable_routes(self) -> list[tuple[str, int]]:
-        """Routes with a stream handler whose output can be parsed as JSON."""
-        routes = [(name, level) for name, level in self.masking_routes() if _has_stream_handler(name)]
-        self.assertTrue(routes, "No route reaches a project stream handler, so no output can be read back.")
+        """Routes reaching a handler that writes ecsctx JSON, so its output can be compared field by field."""
+        routes = [(name, level) for name, level in self.masking_routes() if _has_json_handler(name)]
+        self.assertTrue(
+            routes,
+            "No route reaches a stream handler using ecsctx's JSON formatter, so no output can be compared.",
+        )
         return routes
 
     # -- the project's configuration -------------------------------------
@@ -381,12 +419,11 @@ class MaskingTestsMixin:
         self.assertGreater(reached, 0, "No project handler was reached on any route.")
 
     def assert_samples_masked(self, cases):
-        for label, sample, expected in cases:
-            with self.subTest(case=label):
-                for actual in masked_outputs(
-                    sample, logger_name=self.masking_logger_name, level=self.masking_log_level
-                ):
-                    self.assertEqual(actual, expected)
+        for name, level in self.readable_routes():
+            for label, sample, expected in cases:
+                with self.subTest(logger=name, case=label):
+                    for actual in masked_outputs(sample, logger_name=name, level=level):
+                        self.assertEqual(actual, expected)
 
     def assert_samples_unchanged(self, cases):
         self.assert_samples_masked([(label, sample, sample) for label, sample in cases])
