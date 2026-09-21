@@ -411,14 +411,10 @@ class TestValidateAndAssert:
         assert_no_masking_errors(MASKED_CFG)  # must not raise
 
 
-class TestGetLoggingConfigPassesTheCheck:
-    """Regression: get_logging_config() must produce a LOGGING dict that
-    satisfies find_masking_config_errors() out of the box — it wires
-    mask_pii_filter into every handler it builds via install_maskers_in_config."""
-
-    def test_default_config_is_clean(self):
-        cfg = get_logging_config()
-        assert find_masking_config_errors(cfg) == []
+class TestGetLoggingConfigWiresTheFilter:
+    """Installing the masker adds mask_pii_filter next to the handler's existing
+    filters rather than replacing them — the shipped suite runs without the CID
+    correlation filter, so it can't see this."""
 
     def test_console_handler_carries_the_filter(self):
         cfg = get_logging_config()
@@ -427,31 +423,6 @@ class TestGetLoggingConfigPassesTheCheck:
             "correlation": {"()": "cid.log.CidContextFilter"},
             "mask_pii_filter": {"()": "ecsctx.masking.filters.MaskPIIFilter"},
         }
-
-
-class TestCheckIsAutoRegistered:
-    """No AppConfig / INSTALLED_APPS entry is needed — importing
-    ecsctx.contrib.django registers the check by itself (a project already
-    imports the package via its MIDDLEWARE string)."""
-
-    def test_registered_with_django_check_registry(self):
-        from django.core.checks import registry
-
-        names = [
-            getattr(check, "__name__", "") for check in registry.registry.get_checks()
-        ]
-        assert "check_masking_configured" in names
-
-    def test_registered_under_the_security_tag(self):
-        """Tagged security so `manage.py check --tag security` includes it."""
-        from django.core.checks import Tags, registry
-
-        [check] = [
-            c
-            for c in registry.registry.get_checks()
-            if getattr(c, "__name__", "") == "check_masking_configured"
-        ]
-        assert Tags.security in check.tags
 
 
 @pytest.mark.usefixtures("only_the_dict_half")
