@@ -131,6 +131,44 @@ class TestASafeKeyWorksInBothSpellings:
         assert classify_key("pgName", ALL_PACKS, safe) is None
 
 
+class TestTheOrderOfTheChecks:
+    """`classify_key` decides in a fixed order, and several keys match more
+    than one rule, so the order is the answer. It used to live implicitly in a
+    table; now it is written out, which is exactly the kind of change that can
+    reorder something without failing anything else."""
+
+    @pytest.mark.parametrize(
+        "key,expected",
+        [
+            # A card token is a credential, not a PAN: credentials are checked
+            # after card, and `cardtoken` matches both.
+            ("cardtoken", "secret"),
+            ("card_token", "secret"),
+            # ... but a card number is a card, and CVV wins over both.
+            ("cardnumber", "card"),
+            ("card_cvv", "cvv"),
+            ("cardcvv", "cvv"),
+            # SAD is decided before everything, so a PIN inside a card object
+            # is destroyed rather than read through as card data.
+            ("pinBlock", "sad"),
+            # name beats generic, which both `customer_name` and `contact_name`
+            # match; the container words alone stay generic.
+            ("customer_name", "name"),
+            ("contact_name", "name"),
+            ("customer", "generic"),
+            ("billing", "generic"),
+            # address beats generic for `billing_address`.
+            ("billing_address", "address"),
+            # email and phone beat generic for a customer's.
+            ("customer_email", "email"),
+            ("customer_phone", "phone"),
+            ("customer_tel", "phone"),
+        ],
+    )
+    def test_a_key_matching_two_rules_gets_the_earlier_one(self, key, expected):
+        assert classify(key) == expected
+
+
 class TestSensitiveAuthenticationData:
     @pytest.mark.parametrize(
         "key", ["track2", "track2Data", "track_2", "magstripe", "pinBlock", "pin", "emvRequest"]

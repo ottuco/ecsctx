@@ -114,12 +114,6 @@ _CVV_KEYWORD = r"(?:cvv|cvc|security[_\s]?code)"
 # Payment/transaction/auth id keywords.
 _PAYMENT_ID_KEYWORD = r"(?:payment|transaction|auth)[_\s-]?id"
 
-# The key prefix before a credential word is bounded ({0,128}) in the content
-# rules: unbounded, "a-a-a-…token" backtracks quadratically, seconds for one
-# 20 KB string. A key-name match searches a short key, where the bound would
-# only get in the way, so it keeps the unbounded form.
-_CRED_KEY_NAME = _CRED_KEYWORD.replace("[\\w-]{0,128}", "[\\w-]*")
-
 # Substring matching on the lowercased key, as since 0.7.0: it fails closed on
 # glued and plural names payloads use (phonenumber, cardcvv, nameoncard,
 # tokens). Its known false positives are listed in SAFE_KEYS instead.
@@ -128,7 +122,6 @@ _EMAIL_KEY_WORDS = r"email"
 # hotel, hostel and intel are not phone numbers.
 _PHONE_KEY_WORDS = r"phone|mobile"
 _ADDRESS_KEY_WORDS = r"address"
-_NAME_KEY_WORDS = r"name|cardholder|beneficiary|recipient|payer"
 _GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
 
 
@@ -920,17 +913,21 @@ def mask_by_all_patterns(text: str) -> str:
 # ---------------------------------------------------------------------------
 # A key whose lowercased name contains a sensitive keyword masks its whole
 # value. Substring matching fails closed on the glued and plural names real
-# payloads use (phonenumber, cardcvv, nameoncard, tokens); its known false
-# positives are SAFE_KEYS. Card and expiry keys are matched precisely instead:
-# "card" alone is in card_id and discard, and "exp" in export and expected.
+# payloads use (phonenumber, cardcvv, nameoncard); its known false positives are
+# SAFE_KEYS.
+#
+# Four types are NOT here, because a substring was the wrong test for them and
+# each has a named predicate instead (see classify_key, which spells the order
+# out): `card` and `sad`, matched precisely -- "card" alone is in card_id and
+# discard; `secret`, where the credential word must END the key, so
+# `schemeTokenProvisioningMode` is not a token; and `name`, which needs a person
+# qualifier, so `domainName` is not a person.
 KEYWORD_REGEX_FIELD_TYPE = (
     (_CVV_KEYWORD, "cvv"),
-    (_CRED_KEY_NAME, "secret"),
     (_PAYMENT_ID_KEYWORD, "payment_id"),
     (_EMAIL_KEY_WORDS, "email"),
     (_PHONE_KEY_WORDS, "phone"),
     (_ADDRESS_KEY_WORDS, "address"),
-    (_NAME_KEY_WORDS, "name"),
     (_GENERIC_PII_KEY_WORDS, "generic"),
 )
 
@@ -1086,31 +1083,30 @@ def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozens
     if joined in _SAFE_KEYS_JOINED or joined in _joined_names(safe):
         return None
     words = [word.lower() for word in _KEY_SPLIT.split(key) if word]
+    # Order is load-bearing, so it is written out rather than left implicit in a
+    # table. Card is checked after CVV and before credentials, so "cardtoken"
+    # stays a secret. Expiry is NOT classified: it is Cardholder Data, not
+    # Sensitive Authentication Data, so PCI DSS permits storing it and masking
+    # it only cost the ability to read an expired-card decline. Unclassified,
+    # its value still reaches the content rules, so a PAN pasted into an expiry
+    # field is still truncated.
     if _is_sad_key(joined, words):
         return "sad"
-    if _is_holder_key(words):
-        return "name"
     for pattern, field_type in KEYWORD_PATTERN_FIELD_TYPE:
-        # Card is checked after CVV and before credentials, so "cardtoken"
-        # stays a secret. Expiry is NOT classified: it is Cardholder Data, not
-        # Sensitive Authentication Data, so PCI DSS permits storing it and
-        # masking it only cost the ability to read an expired-card decline.
-        # Unclassified, its value still reaches the content rules, so a PAN
-        # pasted into an expiry field is still truncated.
-        if field_type == "secret":
+        if field_type == "payment_id":
+            # The two name-matched types sit here, between CVV and payment_id,
+            # which is where their regexes used to sit in the table.
             if _is_card_key(lowered, joined, words):
                 return "card"
             if _is_cred_key(joined):
                 return "secret"
-            continue
-        if field_type == "name":
-            if _is_name_key(joined):
-                return "name"
-            continue
-        if field_type == "payment_id" and "financial_ids" not in packs:
-            continue
+            if "financial_ids" not in packs:
+                continue
         if field_type == "phone" and _is_tel_key(words):
             return "phone"
+        if field_type == "generic" and (_is_name_key(joined) or _is_holder_key(words)):
+            # Also between address and generic, as before.
+            return "name"
         if pattern.search(lowered):
             return field_type
     return None
