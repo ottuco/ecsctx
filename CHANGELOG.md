@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.12.0 (2026-09-22)
+
+### Features
+- feat(masking)!: a PAN outranks its key; expiry is readable; a card key shows what is not a PAN (a86feaf)
+- feat(masking)!: brackets mean nothing survived; a truncated PAN is bare (18ddcd8)
+
+### Fixes
+- fix(masking): the standalone-CVV rule stops eating response codes (e7fff60)
+
+### Other
+- Merge pull request #60 from ottuco/fix/masking-false-positives (dc72224)
+- Stop documenting expiry as a name no service may whitelist (d220b55)
+- docs+test: correct the deferred example, pin how narrow the pass-through is (785ab8c)
+
+
 ## v0.10.0 (2026-09-19)
 
 ### Features
