@@ -59,10 +59,12 @@ class TestBracketsStillMeanNothingSurvived:
     def test_a_cvv_keeps_its_label(self, mask):
         assert mask({"cvv": "123"}) == {"cvv": "[CVV-MASKED]"}
 
-    def test_a_card_object_with_no_pan_keeps_its_label(self, mask):
-        """Nothing to truncate, so nothing to carry."""
+    def test_a_card_object_with_no_pan_keeps_what_is_not_sensitive(self, mask):
+        """Walked since 0.13.0, so the label no longer stands for the whole
+        object. `holder` is the cardholder's name and is masked as one; `scheme`
+        is not cardholder data and reads through."""
         assert mask({"card": {"holder": "Far", "scheme": "visa"}}) == {
-            "card": "[CARD-MASKED]"
+            "card": {"holder": "[NAME-MASKED]", "scheme": "visa"}
         }
 
     def test_a_card_key_holding_a_value_with_no_digits_at_all(self, mask):
@@ -249,8 +251,13 @@ class TestACardKeyShowsWhatIsNotAPan:
     def test_a_clean_pan_still_truncates(self, mask):
         assert mask({"card_number": PAN}) == {"card_number": TRUNCATED}
 
-    def test_a_card_object_still_collapses(self, mask):
-        assert mask({"card": {"number": PAN, "holder": "Far"}}) == {"card": "[CARD-MASKED]"}
+    def test_a_card_object_is_walked_field_by_field(self, mask):
+        """This relaxation used to be carved out for containers. Since 0.13.0 it
+        applies to every leaf: the PAN truncates, and the holder is masked by
+        its own rule rather than by the object disappearing around it."""
+        assert mask({"card": {"number": PAN, "holder": "Far"}}) == {
+            "card": {"number": TRUNCATED, "holder": "[NAME-MASKED]"}
+        }
 
     def test_a_long_digit_run_that_is_not_a_pan_is_still_refused(self, mask):
         """Twelve or more digits under a card key gets content-scanned, not

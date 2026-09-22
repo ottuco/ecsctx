@@ -2,8 +2,17 @@
 
 ecsctx's own safe keys hold only names that mean the same in every service. These
 are Ottu's vocabulary, where a generic key rule would mask a value that is not
-personal or card data — "name" in ``pg_name``, "cvv" in ``cvv_required``,
-"token" in ``tokenization_status``. A service opts in from its settings::
+personal or card data — "cvv" in ``cvv_required``.
+
+Most of this list is redundant as of 0.13.0: the key rules stopped claiming
+every ``*_name`` as a person and every name containing "token" as a credential,
+so ``pg_name``, ``gateway_name``, ``vendor_name``, ``bank_name``,
+``install_name``, ``installation_name``, ``tokenization_status`` and
+``authorizationresponse`` all read through without being listed. They are kept
+so a service pinned to an older ecsctx keeps working, and because listing a key
+that is already safe costs nothing.
+
+A service opts in from its settings::
 
     from ecsctx.contrib.ottu.masking import SAFE_KEYS as OTTU_SAFE_KEYS
 

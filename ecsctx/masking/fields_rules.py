@@ -10,6 +10,10 @@ class FieldRule(NamedTuple):
 FIELD_RULES: dict[str, FieldRule] = {
     # field_type: FieldRule(field_type, tokenizable, exemptable)
     "cvv": FieldRule("cvv", False, False),
+    # Track data, PIN blocks, EMV images: Sensitive Authentication Data that is
+    # not the CVV. Never stored after authorization in any form, so unlike a PAN
+    # there is nothing to truncate and nothing to tokenize — only the label.
+    "sad": FieldRule("sad", False, False),
     "secret": FieldRule("secret", True, False),
     "payment_id": FieldRule("payment_id", True, False),
     # Card numbers are truncated (patterns.mask_card_value), never tokenized:
