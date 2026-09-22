@@ -165,7 +165,7 @@ def configure_masking_safe_keys(keys: Iterable[str] | str | None) -> None:
     ecsctx's own SAFE_KEYS hold only names that mean the same in every
     service; the rest is the service's to list (``ecsctx.contrib.ottu.masking``
     has Ottu's). A listed key's value is still content-scanned. Raises on a
-    name that is a card, CVV, expiry or credential outright: listing one would
+    name that is a card, CVV or credential outright: listing one would
     switch off a mask PCI requires.
     """
     global _explicit_safe, _resolved_safe
@@ -175,7 +175,7 @@ def configure_masking_safe_keys(keys: Iterable[str] | str | None) -> None:
         names = _safe_names(keys)
         refused = sorted(name for name in names if never_safe(name))
         if refused:
-            raise ValueError(f"{refused} cannot be a safe key: it names a card, CVV, expiry or credential")
+            raise ValueError(f"{refused} cannot be a safe key: it names a card, CVV or credential")
         _explicit_safe = names
     _resolved_safe = None
 
@@ -189,7 +189,7 @@ def masking_safe_key_errors() -> list[str]:
     if not refused:
         return []
     message = (
-        f"{source} lists {refused}, which name a card, CVV, expiry or credential and "
+        f"{source} lists {refused}, which name a card, CVV or credential and "
         "cannot be safe keys. They stay masked."
     )
     return [message]
@@ -212,7 +212,7 @@ def get_masking_safe_keys() -> frozenset[str]:
     if refused and source not in _warned:
         _warned.add(source)
         warnings.warn(
-            f"{source}: {list(refused)} cannot be safe keys (a card, CVV, expiry or credential); they stay masked.",
+            f"{source}: {list(refused)} cannot be safe keys (a card, CVV or credential); they stay masked.",
             RuntimeWarning,
             stacklevel=2,
         )

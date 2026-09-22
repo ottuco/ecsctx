@@ -215,8 +215,8 @@ _TOKEN = re.compile(r"ptok:v1:[\w-]+")
 class TestTokensAreBare:
     """A tokenized value is the token itself, `ptok:v1:…`, as in 0.6.x. A
     `[LABEL]` is what stands where no token can: PII tokenization not
-    configured or failing, or a type that is never tokenized (CVV, expiry, a
-    truncated card)."""
+    configured or failing, or a type that is never tokenized (CVV, a truncated
+    card)."""
 
     @pytest.fixture(autouse=True)
     def _pii(self, token_keyset_path):

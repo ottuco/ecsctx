@@ -515,7 +515,7 @@ class TestEveryEntryPointSeesBothHalves:
 
 
 class TestSafeKeySettingIsChecked:
-    """ECSCTX_MASK_SAFE_KEYS naming a card, CVV, expiry or credential outright
+    """ECSCTX_MASK_SAFE_KEYS naming a card, CVV or credential outright
     is dropped at runtime (it stays masked) and reported at boot, so the
     misconfiguration is seen rather than silently half-applied."""
 

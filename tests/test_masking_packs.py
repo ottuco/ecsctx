@@ -102,8 +102,8 @@ class TestPackSelection:
 
 class TestKeyNames:
     """Key names: substring matching as in 0.7.x (fail closed), with the known
-    false positives listed as safe keys; card and expiry keys matched
-    precisely. The decision is cached per (key, packs)."""
+    false positives listed as safe keys; card keys matched precisely. The
+    decision is cached per (key, packs)."""
 
     DEFAULT = frozenset({"default"})
 
@@ -285,10 +285,18 @@ class TestConfiguredSafeKeys:
     )
     def test_a_card_cvv_or_credential_name_is_refused(self, key):
         """Listing one would switch off the mask PCI requires for it: any card
-        or expiry key the classifier knows, and any name ending in a CVV or
-        credential word — the name of the value itself."""
+        key the classifier knows, and any name ending in a CVV or credential
+        word — the name of the value itself."""
         with pytest.raises(ValueError, match="cannot be a safe key"):
             configure_masking_safe_keys([key])
+
+    @pytest.mark.parametrize("key", ["expiry_month", "expiry_year", "card_expiry", "expiration_date"])
+    def test_an_expiry_name_is_not_refused(self, key):
+        """Expiry is Cardholder Data, not SAD, and nothing masks it any more.
+        Refusing to let a service whitelist a key that nothing masks would say
+        nothing — so it is accepted, and redundant, since SAFE_KEYS holds it."""
+        configure_masking_safe_keys([key])
+        assert get_masking_safe_keys() == {key.lower()}
 
     @pytest.mark.parametrize(
         "key", ["cvv_required", "cvv_required_for_card_payment", "tokenization_status", "pg_name", "card_id"]
