@@ -1114,8 +1114,16 @@ class TestJsonTextIsMaskedByKey:
         as_dict = _mask({"http": {"request": {"body": {"body": json.loads(_CALLBACK_BODY)}}}})
         body = json.loads(as_text["http"]["request"]["body"]["body"])
         assert body == as_dict["http"]["request"]["body"]["body"]
-        # A card or token object is masked as one unit, as it is in a dict.
-        assert body["pg_response"]["sourceOfFunds"]["provided"]["card"] == "[CARD-MASKED]"
+        # The card object is walked exactly as it is in a dict: the cardholder
+        # name is masked, the brand and expiry read through, and the number --
+        # already truncated by the gateway -- is left as it arrived. A token
+        # object is still one unit: `secret` is not walkable.
+        assert body["pg_response"]["sourceOfFunds"]["provided"]["card"] == {
+            "brand": "VISA",
+            "expiry": {"month": "1", "year": "28"},
+            "nameOnCard": "[NAME-MASKED]",
+            "number": "450875xxxxxx1019",
+        }
         assert body["token"] == "[SECRET-MASKED]"
         # What is not sensitive is still there to debug with.
         assert body["operation"] == "purchase"

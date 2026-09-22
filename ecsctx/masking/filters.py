@@ -229,14 +229,24 @@ class MaskPIIFilter(logging.Filter):
                 child_path in self._name_rule_exempt or _path_is_exempt(child_path, ctx.exempt)
             ):
                 result[key] = self._mask_value(value, child_path, ctx)
-            elif field_type == "card":
+            elif field_type == "card" and not isinstance(value, (dict, list, tuple, set)):
                 result[key] = mask_card_value(value)
-            elif field_rule.exemptable and isinstance(value, (dict, list, tuple, set)):
+            elif (field_rule.exemptable or field_type == "card") and isinstance(
+                value, (dict, list, tuple, set)
+            ):
                 # A PII container keeps its shape: each field is masked on its
                 # own, so the same email or phone yields the same token across
                 # records — what fraud correlation joins on — and an id stays
-                # readable. Card, CVV, secret and other non-exemptable
-                # containers stay masked as one unit.
+                # readable. CVV, secret and the other non-exemptable types stay
+                # masked as one unit.
+                #
+                # A card object is walked too, though `card` is not exemptable:
+                # collapsing it threw away the PAN's truncation — the one form
+                # PCI DSS 3.5.1 lets us keep — along with expiry and scheme,
+                # which it never asked us to hide. `card` is spelled out rather
+                # than made exemptable because `exemptable` also governs
+                # ECSCTX_MASK_EXEMPT_PATHS (above), and a card path must never
+                # be whitelistable.
                 result[key] = self._mask_value(value, child_path, ctx, inherited=field_type)
             else:
                 result[key] = _mask_pii_leaf(str(value), field_type, ctx)

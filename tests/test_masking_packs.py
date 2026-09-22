@@ -131,8 +131,24 @@ class TestKeyNames:
     @pytest.mark.parametrize(
         "key",
         [
-            # A service's own vocabulary is its to list (ECSCTX_MASK_SAFE_KEYS),
-            # not the library's: ecsctx masks these unless told otherwise.
+            # A key whose name says which person it names. A service's own
+            # vocabulary is still its to list (ECSCTX_MASK_SAFE_KEYS), but since
+            # 0.13.0 the library no longer claims every `*_name` as a person, so
+            # there is far less for a service to list.
+            "customer_name",
+            "cvv_required",
+            "card_token",
+        ],
+    )
+    def test_a_services_own_names_are_masked_until_it_lists_them(self, key):
+        assert classify_key(key, self.DEFAULT) is not None
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            # These named no person and carried no credential, and were masked
+            # anyway because the keyword was a substring. Ottu had to list every
+            # one; now none of them needs listing.
             "pg_name",
             "gateway_name",
             "vendor_name",
@@ -140,12 +156,11 @@ class TestKeyNames:
             "install_name",
             "installation_name",
             "tokenization_status",
-            "cvv_required",
             "X-Script-Name",
         ],
     )
-    def test_a_services_own_names_are_masked_until_it_lists_them(self, key):
-        assert classify_key(key, self.DEFAULT) is not None
+    def test_a_name_that_names_no_person_needs_no_listing(self, key):
+        assert classify_key(key, self.DEFAULT) is None
 
     @pytest.mark.parametrize(
         "key,expected",
@@ -200,9 +215,9 @@ class TestKeyNames:
             "cvv": "[CVV-MASKED]",
         }
 
-    def test_a_card_object_under_a_card_key_is_masked_whole(self):
+    def test_a_card_object_under_a_card_key_is_walked(self):
         masked = _mask({"card": {"number": "4111111111111111", "expiry": {"month": "01", "year": "27"}}})
-        assert masked == {"card": "[CARD-MASKED]"}
+        assert masked == {"card": {"number": "411111******1111", "expiry": {"month": "01", "year": "27"}}}
 
     def test_a_card_key_holding_no_pan_shows_what_it_does_hold(self):
         """Too few digits to be a PAN, so there is nothing to hide and
@@ -250,11 +265,14 @@ class TestConfiguredSafeKeys:
         assert _mask({"pg_name": "a@b.com"}) == {"pg_name": "[EMAIL-MASKED]"}
 
     def test_the_decision_follows_a_reconfiguration(self, monkeypatch):
+        # `customer_name` rather than `pg_name`: since 0.13.0 a name key is only
+        # a person's when the name says so, so `pg_name` reads through whether
+        # it is listed or not and proves nothing about the listing.
         monkeypatch.delenv("ECSCTX_MASK_SAFE_KEYS", raising=False)
-        configure_masking_safe_keys(["pg_name"])
-        assert _mask({"pg_name": "mpgs"}) == {"pg_name": "mpgs"}
+        configure_masking_safe_keys(["customer_name"])
+        assert _mask({"customer_name": "Jane"}) == {"customer_name": "Jane"}
         configure_masking_safe_keys(None)
-        assert _mask({"pg_name": "mpgs"}) == {"pg_name": "[NAME-MASKED]"}
+        assert _mask({"customer_name": "Jane"}) == {"customer_name": "[NAME-MASKED]"}
 
     def test_a_named_flag_about_a_cvv_can_be_listed(self):
         configure_masking_safe_keys(["cvv_required"])

@@ -663,8 +663,9 @@ class TestCardholderDataMasking:
     ):
         """End-to-end over a real MPGS sourceOfFunds payload (#159488).
 
-        `card` is a card key, so the whole card object — number, expiry and
-        security code — is one label; order diagnostics survive.
+        The card object is walked: the PAN truncates to the form PCI DSS 3.5.1
+        permits, the expiry — Cardholder Data, not SAD — reads through, and the
+        security code is destroyed. Order diagnostics survive either way.
         """
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         payload = {
@@ -680,7 +681,11 @@ class TestCardholderDataMasking:
             "order": {"reference": "deltabRKJ5X_0", "amount": 20},
         }
         masked = _mask(payload)
-        assert masked["sourceOfFunds"]["provided"]["card"] == "[CARD-MASKED]"
+        assert masked["sourceOfFunds"]["provided"]["card"] == {
+            "number": "411111******1111",
+            "expiry": {"year": "27", "month": "01"},
+            "securityCode": "[CVV-MASKED]",
+        }
         assert masked["order"] == {"reference": "deltabRKJ5X_0", "amount": 20}
 
     def test_nothing_outside_a_card_container_is_newly_masked(self, token_keyset_path):

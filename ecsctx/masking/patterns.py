@@ -114,12 +114,6 @@ _CVV_KEYWORD = r"(?:cvv|cvc|security[_\s]?code)"
 # Payment/transaction/auth id keywords.
 _PAYMENT_ID_KEYWORD = r"(?:payment|transaction|auth)[_\s-]?id"
 
-# The key prefix before a credential word is bounded ({0,128}) in the content
-# rules: unbounded, "a-a-a-…token" backtracks quadratically, seconds for one
-# 20 KB string. A key-name match searches a short key, where the bound would
-# only get in the way, so it keeps the unbounded form.
-_CRED_KEY_NAME = _CRED_KEYWORD.replace("[\\w-]{0,128}", "[\\w-]*")
-
 # Substring matching on the lowercased key, as since 0.7.0: it fails closed on
 # glued and plural names payloads use (phonenumber, cardcvv, nameoncard,
 # tokens). Its known false positives are listed in SAFE_KEYS instead.
@@ -128,7 +122,6 @@ _EMAIL_KEY_WORDS = r"email"
 # hotel, hostel and intel are not phone numbers.
 _PHONE_KEY_WORDS = r"phone|mobile"
 _ADDRESS_KEY_WORDS = r"address"
-_NAME_KEY_WORDS = r"name|cardholder|beneficiary|recipient|payer"
 _GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
 
 
@@ -241,8 +234,14 @@ def mask_card_value(value) -> str:
     """The value of a card-named key: the PAN truncated, the rest readable.
 
     Never tokenized — a keyed hash of a PAN next to its truncated form is the
-    correlation FAQ 1117 warns about. A whole card object (number, expiry,
-    holder) is one label.
+    correlation FAQ 1117 warns about.
+
+    Scalars only. A card *object* is walked leaf by leaf in `_mask_dict`, which
+    re-enters here for each leaf, so `number` truncates while `expiry` and
+    `scheme` read through. Collapsing the object was how `holder`, `track2` and
+    `pinBlock` stayed out of a log without ever being classified; they are
+    classified now, and this function is deliberately permissive below twelve
+    digits, so it must not be handed a whole container again.
 
     What is *not* a PAN is shown. Collapsing every non-PAN value to a label
     made a gateway token, a scheme name and an error string all look identical
@@ -914,17 +913,21 @@ def mask_by_all_patterns(text: str) -> str:
 # ---------------------------------------------------------------------------
 # A key whose lowercased name contains a sensitive keyword masks its whole
 # value. Substring matching fails closed on the glued and plural names real
-# payloads use (phonenumber, cardcvv, nameoncard, tokens); its known false
-# positives are SAFE_KEYS. Card and expiry keys are matched precisely instead:
-# "card" alone is in card_id and discard, and "exp" in export and expected.
+# payloads use (phonenumber, cardcvv, nameoncard); its known false positives are
+# SAFE_KEYS.
+#
+# Four types are NOT here, because a substring was the wrong test for them and
+# each has a named predicate instead (see classify_key, which spells the order
+# out): `card` and `sad`, matched precisely -- "card" alone is in card_id and
+# discard; `secret`, where the credential word must END the key, so
+# `schemeTokenProvisioningMode` is not a token; and `name`, which needs a person
+# qualifier, so `domainName` is not a person.
 KEYWORD_REGEX_FIELD_TYPE = (
     (_CVV_KEYWORD, "cvv"),
-    (_CRED_KEY_NAME, "secret"),
     (_PAYMENT_ID_KEYWORD, "payment_id"),
     (_EMAIL_KEY_WORDS, "email"),
     (_PHONE_KEY_WORDS, "phone"),
     (_ADDRESS_KEY_WORDS, "address"),
-    (_NAME_KEY_WORDS, "name"),
     (_GENERIC_PII_KEY_WORDS, "generic"),
 )
 
@@ -935,6 +938,16 @@ KEYWORD_PATTERN_FIELD_TYPE = tuple(
 
 _KEY_SEPARATORS = re.compile(r"[_\-.\s]+")
 _KEY_SPLIT = re.compile(r"[_\-.\s]+|(?<=[a-z0-9])(?=[A-Z])")
+
+
+@lru_cache(maxsize=32)
+def _joined_names(names: frozenset[str]) -> frozenset[str]:
+    """The same names with separators removed, so a key listed as `pg_name`
+    also matches `pgName`. Cached on the set: a service has one."""
+    return frozenset(_KEY_SEPARATORS.sub("", name) for name in names)
+
+
+_SAFE_KEYS_JOINED = _joined_names(SAFE_KEYS)
 
 
 def _is_card_key(lowered: str, joined: str, words: list[str]) -> bool:
@@ -949,6 +962,78 @@ def _is_card_key(lowered: str, joined: str, words: list[str]) -> bool:
 def _is_tel_key(words: list[str]) -> bool:
     # tel, tel_no, telNo, customer_tel, and the numbered form fields tel1, tel2.
     return any(word == "tel" or (word.startswith("tel") and word[3:].isdigit()) for word in words)
+
+
+# Sensitive Authentication Data that is not the CVV: the magnetic-stripe image,
+# its chip equivalent, and the PIN. PCI DSS forbids storing these after
+# authorization in ANY form — unlike a PAN there is no truncation to keep, so
+# the value is destroyed outright. They matter most inside a card object, whose
+# leaves are walked since 0.13.0; before that the container collapsed and these
+# never reached a log by name.
+_SAD_KEY_WORDS = frozenset({
+    "track", "track1", "track2", "trackdata", "track1data", "track2data",
+    "magstripe", "magneticstripe", "magnetic",
+    "pin", "pinblock", "pincode", "cardpin", "atmpin",
+    "emvrequest", "emvresponse", "emvdata",
+})
+
+
+def _is_sad_key(joined: str, words: list[str]) -> bool:
+    # Whole words, never substrings: "pin" is inside shipping and mapping,
+    # "track" inside backtrack. The glued form is checked too, for track2data.
+    return joined in _SAD_KEY_WORDS or any(word in _SAD_KEY_WORDS for word in words)
+
+
+def _is_holder_key(words: list[str]) -> bool:
+    # The cardholder's name. A word, not a substring: "holder" is inside
+    # placeholder. The glued "cardholder" is already a name keyword.
+    return "holder" in words
+
+
+# Key names only. The content rules have to find a credential anywhere in a
+# line; a key name *is* the name of its value, so the credential word is
+# matched at the END -- `scheme_token` and `api_token` name a token, while
+# `schemeTokenProvisioningMode` and `tokenization_status` name something about
+# one. `authorization` must be the whole key: `authorizationCode` is the
+# acquirer's approval code, a payment verdict field that Connect's own masking
+# deliberately keeps readable.
+_CRED_KEY_JOINED = re.compile(
+    r"^(?:bearer|basic|digest|credentials?)$"
+    r"|^authori[sz]ation(?:header)?$"
+    # The credential word ends the key, or is followed only by a word naming a
+    # derivative of it -- `password_hash` is still the password's secret, while
+    # `tokenization_status` and `schemeTokenProvisioningMode` are metadata about
+    # a token and carry none of it.
+    r"|(?:token|secret|password|passwd)s?(?:hash|digest|value|blob|data)?$"
+    r"|(?:secret|private|public|encryption|decryption|signing|"
+    r"access|master|root|session|api)key$"
+)
+
+
+def _is_cred_key(joined: str) -> bool:
+    return _CRED_KEY_JOINED.search(joined) is not None
+
+
+# A `*name` key names a PERSON only when something else in the name says which
+# person. Matching "name" anywhere made people of `domainName`, `merchantName`,
+# `requestorName` and `schemeName`. A bare role word is a person too -- `payer`
+# is a container of one -- but `payerInteraction` is an enum about the
+# interaction, not a payer.
+_PERSON_ROLES = frozenset({"name", "names", "cardholder", "beneficiary", "recipient", "payer", "holder"})
+_PERSON_QUALIFIERS = (
+    "customer", "payer", "payee", "holder", "card", "first", "last", "middle",
+    "full", "given", "family", "sur", "nick", "account", "beneficiary",
+    "recipient", "sender", "buyer", "shopper", "billing", "shipping", "contact",
+    "person", "owner", "applicant", "guest", "passenger", "user",
+)
+
+
+def _is_name_key(joined: str) -> bool:
+    if joined in _PERSON_ROLES:
+        return True
+    if "name" not in joined:
+        return False
+    return any(qualifier in joined for qualifier in _PERSON_QUALIFIERS)
 
 
 # A name ending in one of these names the CVV or credential itself, which no
@@ -973,6 +1058,7 @@ def never_safe(key: str) -> bool:
     words = [word.lower() for word in _KEY_SPLIT.split(key) if word]
     return (
         _is_card_key(lowered, joined, words)
+        or _is_sad_key(joined, words)
         or _NEVER_SAFE_ENDING.search(joined) is not None
     )
 
@@ -988,23 +1074,39 @@ def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozens
     this is a dict lookup instead of a regex scan per key per line.
     """
     lowered = key.lower()
+    joined = _KEY_SEPARATORS.sub("", lowered)
+    # Both spellings. A safe key is listed one way ("domain_name") and the
+    # payload writes it the other ("domainName"); looking up only the
+    # lowercased key meant every safe key silently stopped working in camelCase.
     if lowered in SAFE_KEYS or lowered in safe:
         return None
-    joined = _KEY_SEPARATORS.sub("", lowered)
+    if joined in _SAFE_KEYS_JOINED or joined in _joined_names(safe):
+        return None
     words = [word.lower() for word in _KEY_SPLIT.split(key) if word]
+    # Order is load-bearing, so it is written out rather than left implicit in a
+    # table. Card is checked after CVV and before credentials, so "cardtoken"
+    # stays a secret. Expiry is NOT classified: it is Cardholder Data, not
+    # Sensitive Authentication Data, so PCI DSS permits storing it and masking
+    # it only cost the ability to read an expired-card decline. Unclassified,
+    # its value still reaches the content rules, so a PAN pasted into an expiry
+    # field is still truncated.
+    if _is_sad_key(joined, words):
+        return "sad"
     for pattern, field_type in KEYWORD_PATTERN_FIELD_TYPE:
-        # Card is checked after CVV and before credentials, so "cardtoken"
-        # stays a secret. Expiry is NOT classified: it is Cardholder Data, not
-        # Sensitive Authentication Data, so PCI DSS permits storing it and
-        # masking it only cost the ability to read an expired-card decline.
-        # Unclassified, its value still reaches the content rules, so a PAN
-        # pasted into an expiry field is still truncated.
-        if field_type == "secret" and _is_card_key(lowered, joined, words):
-            return "card"
-        if field_type == "payment_id" and "financial_ids" not in packs:
-            continue
+        if field_type == "payment_id":
+            # The two name-matched types sit here, between CVV and payment_id,
+            # which is where their regexes used to sit in the table.
+            if _is_card_key(lowered, joined, words):
+                return "card"
+            if _is_cred_key(joined):
+                return "secret"
+            if "financial_ids" not in packs:
+                continue
         if field_type == "phone" and _is_tel_key(words):
             return "phone"
+        if field_type == "generic" and (_is_name_key(joined) or _is_holder_key(words)):
+            # Also between address and generic, as before.
+            return "name"
         if pattern.search(lowered):
             return field_type
     return None

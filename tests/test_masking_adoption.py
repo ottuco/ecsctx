@@ -118,11 +118,16 @@ class TestPIIContainersKeepTheirShape:
             "billing": {"line1": "[GENERIC-MASKED]", "city": "[GENERIC-MASKED]", "zip": "[GENERIC-MASKED]"}
         }
 
-    def test_a_card_inside_a_customer_is_still_masked_whole(self):
+    def test_a_card_inside_a_customer_keeps_its_shape_too(self):
+        """The card resists the container's sweep -- its number truncates as a
+        PAN rather than being tokenized as the customer's generic data -- but it
+        is still walked, so expiry survives."""
         masked = MaskPIIFilter()._mask_dict(
             {"customer": {"id": 3, "card": {"number": "4111111111111111", "expiry": "12/27"}}}
         )
-        assert masked == {"customer": {"id": 3, "card": "[CARD-MASKED]"}}
+        assert masked == {
+            "customer": {"id": 3, "card": {"number": "411111******1111", "expiry": "12/27"}}
+        }
 
     def test_a_list_of_contacts_is_walked(self):
         masked = MaskPIIFilter()._mask_dict({"contacts": [{"name": "Jane", "email": "a@b.co"}]})

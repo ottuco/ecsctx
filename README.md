@@ -966,7 +966,10 @@ A PII container — a dict or list under a key such as `customer`, `billing` or
 `contact` — keeps its shape: each field is masked on its own (an `email` field
 gets an email token, so the same address correlates across records), a safe key
 such as `id` stays readable, and any other field is tokenized as the container's
-type. Card, CVV, expiry and secret containers are masked as one unit.
+type. A **card** container keeps its shape too: the PAN truncates to first six
+and last four, expiry and scheme read through, and the CVV, track data and PIN
+are destroyed — collapsing it threw away the one form PCI DSS 3.5.1 permits us
+to keep. CVV and secret containers are still masked as one unit.
 
 A digit run that touches a letter is never a phone number — it is part of an
 id. The card rule still matches a PAN followed by a letter, because Track 2
