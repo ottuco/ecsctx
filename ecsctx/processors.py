@@ -393,7 +393,7 @@ def mask_pan(number: str) -> str:
     """Truncate a PAN: first 6 + last 4 from 15 digits up, last 4 below.
 
     Bare-core counterpart of the engine's card rule, which emits the same
-    truncation label-wrapped (`[CARD-MASKED:411111******1111]`): use this
+    truncation as the masking engine emits it (`411111******1111`): use this
     helper at call sites that must mask a PAN before logging (e.g.
     replacing a hand-rolled helper). The core truncation is shared with
     `ecsctx.masking.patterns._truncate_pan` so the two can never drift.

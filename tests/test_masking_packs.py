@@ -47,7 +47,7 @@ class TestPacks:
 
     def test_pci_pack_truncates_the_pan_and_masks_the_cvv(self):
         assert _mask("card 4111111111111111 cvv 123", packs=("pci",)) == (
-            "card [CARD-MASKED:411111******1111] cvv [CVV-MASKED]"
+            "card 411111******1111 cvv [CVV-MASKED]"
         )
 
     def test_pci_pack_masks_a_cvv_sent_with_a_saved_card_token(self):
@@ -102,8 +102,8 @@ class TestPackSelection:
 
 class TestKeyNames:
     """Key names: substring matching as in 0.7.x (fail closed), with the known
-    false positives listed as safe keys; card and expiry keys matched
-    precisely. The decision is cached per (key, packs)."""
+    false positives listed as safe keys; card keys matched precisely. The
+    decision is cached per (key, packs)."""
 
     DEFAULT = frozenset({"default"})
 
@@ -167,11 +167,7 @@ class TestKeyNames:
             ("pan", "card"),
             ("card_number", "card"),
             ("cardNumber", "card"),
-            ("expiry", "expiry"),
-            ("exp_month", "expiry"),
-            ("expirationDate", "expiry"),
-            ("cardExpiry", "expiry"),
-            ("telephone", "phone"),
+                            ("telephone", "phone"),
             ("mobile", "phone"),
             ("tel", "phone"),
             ("tel_no", "phone"),
@@ -193,10 +189,14 @@ class TestKeyNames:
         assert classify_key("transaction_id", self.DEFAULT | {"financial_ids"}) == "payment_id"
 
     def test_card_fields_are_masked_by_key_in_every_service(self):
+        """Expiry is readable: Cardholder Data, not Sensitive Authentication
+        Data, so PCI DSS permits storing it and masking it only cost the
+        ability to read an expired-card decline. CVV is the half that is not
+        optional."""
         masked = _mask({"card_number": "4111 1111 1111 1111", "expiry": "12/27", "cvv": "123"})
         assert masked == {
-            "card_number": "[CARD-MASKED:411111******1111]",
-            "expiry": "[EXPIRY-MASKED]",
+            "card_number": "411111******1111",
+            "expiry": "12/27",
             "cvv": "[CVV-MASKED]",
         }
 
@@ -204,8 +204,10 @@ class TestKeyNames:
         masked = _mask({"card": {"number": "4111111111111111", "expiry": {"month": "01", "year": "27"}}})
         assert masked == {"card": "[CARD-MASKED]"}
 
-    def test_a_card_key_holding_no_pan_is_labelled_not_truncated(self):
-        assert _mask({"pan": "n/a"}) == {"pan": "[CARD-MASKED]"}
+    def test_a_card_key_holding_no_pan_shows_what_it_does_hold(self):
+        """Too few digits to be a PAN, so there is nothing to hide and
+        everything to debug with."""
+        assert _mask({"pan": "n/a"}) == {"pan": "n/a"}
 
 
 class TestConfiguredSafeKeys:
@@ -272,11 +274,6 @@ class TestConfiguredSafeKeys:
             "card_number",
             "pan",
             "pan_no",
-            "expiry",
-            "exp_month",
-            "expiry_month",
-            "expiry_year",
-            "cardExpiry",
             "password",
             "db_password",
             "api_key",
@@ -286,12 +283,20 @@ class TestConfiguredSafeKeys:
             "Authorization",
         ],
     )
-    def test_a_card_cvv_expiry_or_credential_name_is_refused(self, key):
+    def test_a_card_cvv_or_credential_name_is_refused(self, key):
         """Listing one would switch off the mask PCI requires for it: any card
-        or expiry key the classifier knows, and any name ending in a CVV or
-        credential word — the name of the value itself."""
+        key the classifier knows, and any name ending in a CVV or credential
+        word — the name of the value itself."""
         with pytest.raises(ValueError, match="cannot be a safe key"):
             configure_masking_safe_keys([key])
+
+    @pytest.mark.parametrize("key", ["expiry_month", "expiry_year", "card_expiry", "expiration_date"])
+    def test_an_expiry_name_is_not_refused(self, key):
+        """Expiry is Cardholder Data, not SAD, and nothing masks it any more.
+        Refusing to let a service whitelist a key that nothing masks would say
+        nothing — so it is accepted, and redundant, since SAFE_KEYS holds it."""
+        configure_masking_safe_keys([key])
+        assert get_masking_safe_keys() == {key.lower()}
 
     @pytest.mark.parametrize(
         "key", ["cvv_required", "cvv_required_for_card_payment", "tokenization_status", "pg_name", "card_id"]
@@ -331,12 +336,12 @@ class TestBoundariesAndTruncation:
 
     def test_a_pan_between_separators_is_still_truncated(self):
         assert _mask('"pan":"4111111111111111",', packs=("pci",)) == (
-            '"pan":"[CARD-MASKED:411111******1111]",'
+            '"pan":"411111******1111",'
         )
 
     def test_a_short_pan_keeps_only_its_last_four(self):
         assert _mask("pay 5018123456789 ok", packs=("pci",)) == (
-            "pay [CARD-MASKED:*********6789] ok"
+            "pay *********6789 ok"
         )
 
     def test_mask_pan_agrees_with_the_rule(self):

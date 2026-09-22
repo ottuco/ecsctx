@@ -36,7 +36,9 @@ from ecsctx.masking.patterns import (
     known_clean,
     mask_by_patterns,
     mask_card_value,
+    pan_shaped,
     rules_for,
+    scalar_rules,
 )
 from ecsctx.masking.tokens import mask_by_field_type
 
@@ -110,6 +112,33 @@ class _Pass(NamedTuple):
     safe: frozenset[str]  # the service's own safe keys (ECSCTX_MASK_SAFE_KEYS)
 
 
+def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
+    """One PII leaf, except that cardholder data outranks the key it arrived
+    under.
+
+    Customers mistype the card number into the name box, and the key used to
+    win: the PAN was tokenized as a name. With a keyset configured that put a
+    keyed hash of a PAN in the record while the same PAN elsewhere in it was a
+    truncation -- the combination PCI DSS FAQ 1117 warns about, and the one
+    `mask_card_value` refuses by never tokenizing. The card path honoured that
+    rule; every other path ignored it, so a key ecsctx recognised as PII came
+    off worse than one it did not recognise at all.
+
+    Only the tokenize path is diverted: a type that is never tokenized (`cvv`)
+    already renders safely and keeps its label. Gated on `pci` because "does
+    this value look like a PAN" is a content-shaped test, like every other card
+    rule -- a service that never opted in keeps tokenizing a long id in a name
+    field, as it does today.
+    """
+    if (
+        "pci" in ctx.packs
+        and get_field_rule(field_type).tokenizable
+        and pan_shaped(text)
+    ):
+        return mask_card_value(text)
+    return mask_by_field_type(text, field_type)
+
+
 class MaskPIIFilter(logging.Filter):
     """Masks PII and PCI-sensitive data in log records before they reach a handler.
 
@@ -149,7 +178,7 @@ class MaskPIIFilter(logging.Filter):
         packs = self._packs_in_force()
         return _Pass(packs, rules_for(packs), _get_exempt_patterns(), get_masking_safe_keys())
 
-    def _mask_string(self, text: str, ctx: _Pass | None = None) -> str:
+    def _mask_string(self, text: str, ctx: _Pass | None = None, *, scalar: bool = False) -> str:
         # No already_masked() early-exit here: that helper is a whole-string
         # substring check, so a coincidental "-MASKED]"/"-MASKED:" fragment
         # (e.g. user-controlled text) would suppress content-regex masking
@@ -159,7 +188,11 @@ class MaskPIIFilter(logging.Filter):
         ctx = ctx or self._context()
         if not ctx.rules:
             return text  # a key-only walk: see _mask_json_text
-        return mask_by_patterns(text, ctx.rules)
+        # A whole field value is judged by its key, not by its shape: the
+        # keyless rules would turn a PSP response code into a CVV and an epoch
+        # timestamp into a PAN. Prose has no key, so it keeps every rule.
+        rules = scalar_rules(ctx.rules) if scalar else ctx.rules
+        return mask_by_patterns(text, rules)
 
     def _mask_dict(
         self, data: dict, path: tuple = (), ctx: _Pass | None = None, inherited: str | None = None
@@ -206,7 +239,7 @@ class MaskPIIFilter(logging.Filter):
                 # containers stay masked as one unit.
                 result[key] = self._mask_value(value, child_path, ctx, inherited=field_type)
             else:
-                result[key] = mask_by_field_type(str(value), field_type)
+                result[key] = _mask_pii_leaf(str(value), field_type, ctx)
         return result
 
     def _mask_iterable(
@@ -241,13 +274,15 @@ class MaskPIIFilter(logging.Filter):
         if isinstance(value, dict):
             return self._mask_dict(value, path, ctx, inherited)
         if inherited is not None:
-            return mask_by_field_type(str(value), inherited)
+            return _mask_pii_leaf(str(value), inherited, ctx)
         if isinstance(value, (bool, int, float)):
-            return value
+            return value  # see scalar= below: the same reasoning, for strings
         if isinstance(value, str):
             if (parsed := _json_container(value, ctx.rules)) is not None:
                 return self._mask_json_text(value, parsed, path, ctx)
-            return self._mask_string(value, ctx)
+            # path == () is the record's own message — prose. Anything deeper
+            # is a field value, and its key has already had its say.
+            return self._mask_string(value, ctx, scalar=path != ())
         # Any other object — a Decimal included — is replaced by its masked
         # text: a JSON renderer falls back to repr() ("Decimal('100.000')"),
         # and that can hold what str() hides. Positional args are the

@@ -16,10 +16,11 @@ ecsctx's own PII key-name list. Two independent detection strategies:
    to match.
 
 Every masked value becomes a bare token or a `[LABEL]` via mask_by_field_type —
-never a bare `***`. Cardholder data never carries a token: CVV and expiry
+never a bare `***`. Cardholder data never carries a token: a CVV
 are bare labels, because PCI forbids storing CVV in any form; card numbers
 are truncated — first 6 + last 4 from 15 digits up, last 4 only below
-(`[CARD-MASKED:411111******1111]`, PCI DSS 3.5.1, FAQ 1091).
+(`411111******1111`, bare, PCI DSS 3.5.1, FAQ 1091 — brackets mean
+nothing survived, and a truncation carries the BIN and the last four).
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from collections.abc import Callable
 from functools import lru_cache
 from typing import NamedTuple
 
-from ecsctx.masking.tokens import make_label, mask_by_field_type
+from ecsctx.masking.tokens import _TRUNCATED_PAN, make_label, mask_by_field_type
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -66,6 +67,31 @@ SAFE_KEYS = frozenset({
     "filename",
     "token_type",
     "sec-ch-ua-mobile",
+    # Expiry. Cardholder Data rather than Sensitive Authentication Data, so
+    # PCI DSS permits storing it and ecsctx no longer classifies it. Listed
+    # here as well so it escapes a PII container's sweep: inside a `payer` or
+    # `customer` object an unclassified key is masked as the container's type,
+    # which would turn an expiry's month and year into [NAME-MASKED] -- less
+    # readable than the label it replaced. Both separator forms, since this set
+    # is matched on the lowercased key as written.
+    "expiry",
+    "expiry_date",
+    "expirydate",
+    "expiry_month",
+    "expirymonth",
+    "expiry_year",
+    "expiryyear",
+    "expiration",
+    "expiration_date",
+    "expirationdate",
+    "exp_month",
+    "expmonth",
+    "exp_year",
+    "expyear",
+    "exp_date",
+    "expdate",
+    "card_expiry",
+    "cardexpiry",
 })
 
 # Sensitive credential keywords / auth schemes. Matched case-insensitively.
@@ -146,10 +172,20 @@ _CARD_TAIL_GUARD = r"(?![-\s]?\d)"
 _PHONE_TAIL_GUARD = _CARD_TAIL_GUARD + r"(?![A-Za-z])"
 # 11 more digits after the leading one = 12 total; 18 more = 19 total.
 _CARD_BODY = r"(?:[-\s]?\d){11,18}"
+# The shortest PAN issued. A value with fewer digits than this cannot be one.
+_MIN_PAN_DIGITS = 12
 
 
 def _digits_only(text: str) -> str:
     return "".join(c for c in text if c.isdigit())
+
+
+# Every CVV rule replaces the match with this, whatever it matched: PCI forbids
+# keeping a CVV in any form, so there is no value to carry and nothing to
+# tokenize. Stated directly rather than via mask_by_field_type('', 'cvv'),
+# which made these rules depend on how an empty value is rendered.
+_CVV_LABEL = f"[{make_label('cvv')}]"
+
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +213,9 @@ def _mask_truncated_card(match: re.Match) -> str:
     # carries a BIN and a last-4 to preserve — no short-input path needed.
     # Deliberately not mask_by_field_type: that would tokenize (or, with
     # PII unconfigured, collapse to a bare label), losing the truncation.
-    return f"[{make_label('card')}:{_truncate_pan(_digits_only(match.group(0)))}]"
+    # Emitted bare: the truncation IS the value, and the stars alone make it a
+    # fixed point — they break the digit run so no later pass re-matches it.
+    return _truncate_pan(_digits_only(match.group(0)))
 
 
 _PAN_VALUE = re.compile(r"\d(?:[-\s]?\d){11,18}")
@@ -185,23 +223,54 @@ _PAN_VALUE = re.compile(r"\d(?:[-\s]?\d){11,18}")
 # label with a token, or a truncated card. A marker somewhere inside a longer
 # value, or brackets around anything else, do not make it safe.
 _SINGLE_MARKER = re.compile(
-    r"\[[A-Z0-9-]+-MASKED(?::ptok:[\w:.-]+)?\]|\[CARD-MASKED:(?:\d{6})?\*+\d{4}\]|ptok:[\w:.-]+"
+    rf"\[[A-Z0-9-]+-MASKED(?::ptok:[\w:.-]+)?\]|{_TRUNCATED_PAN}"
+    rf"|\[CARD-MASKED:{_TRUNCATED_PAN}\]|ptok:[\w:.-]+"
 )
 
 
+def pan_shaped(text: str) -> bool:
+    """Whether ``text`` is, in its entirety, a PAN.
+
+    Public because the filter asks it of a value that a PII key already
+    claimed: a card number typed into the name box is still a card number.
+    """
+    return _PAN_VALUE.fullmatch(text.strip()) is not None
+
+
 def mask_card_value(value) -> str:
-    """The value of a card-named key: truncated when it is a PAN, else a label.
+    """The value of a card-named key: the PAN truncated, the rest readable.
 
     Never tokenized — a keyed hash of a PAN next to its truncated form is the
     correlation FAQ 1117 warns about. A whole card object (number, expiry,
     holder) is one label.
+
+    What is *not* a PAN is shown. Collapsing every non-PAN value to a label
+    made a gateway token, a scheme name and an error string all look identical
+    under `card_number`, which is the one place someone debugging a declined
+    payment goes looking.
     """
+    if isinstance(value, str) and not value:
+        return value  # nothing was there; see mask_by_field_type
     if isinstance(value, str) and _SINGLE_MARKER.fullmatch(value):
         return value
     if isinstance(value, (str, int)) and not isinstance(value, bool):
         text = str(value).strip()
         if _PAN_VALUE.fullmatch(text):
-            return f"[{make_label('card')}:{_truncate_pan(_digits_only(text))}]"
+            return _truncate_pan(_digits_only(text))
+        if sum(character.isdigit() for character in text) < _MIN_PAN_DIGITS:
+            # Too few digits to be a PAN whatever else it holds: 12 is the
+            # shortest one issued (ISO/IEC 7812; Maestro issues from 12).
+            return value
+        # Enough digits to hide one, but not a clean PAN: scan rather than
+        # collapse, so an embedded PAN is truncated and its context survives.
+        scanned = mask_by_patterns(text, _CARD_RULE_ONLY)
+        if scanned != text:
+            return scanned
+        # The scan found nothing to truncate, yet the value carries twelve or
+        # more digits under a card key. `4508750**0001019` is the shape that
+        # matters: 14 of 16 digits kept, far past what PCI DSS 3.5.1 allows,
+        # and no contiguous run for the card rule to catch. Refuse it.
+        return f"[{make_label('card')}]"
     return f"[{make_label('card')}]"
 
 
@@ -257,20 +326,20 @@ def _cred_space(m: re.Match) -> str:
 
 def _cvv_quoted(m: re.Match) -> str:
     q, kw, sep = m.group(1), m.group(2), m.group(3)
-    return f"{q}{kw}{q}{sep}{q}{mask_by_field_type('', 'cvv')}{q}"
+    return f"{q}{kw}{q}{sep}{q}{_CVV_LABEL}{q}"
 
 
 def _cvv_kv(m: re.Match) -> str:
     quote = _unquoted_value_quote(m.group(1))
-    return f"{m.group(1)}{quote}{mask_by_field_type('', 'cvv')}{quote}"
+    return f"{m.group(1)}{quote}{_CVV_LABEL}{quote}"
 
 
 def _cvv_space(m: re.Match) -> str:
-    return f"{m.group(1)} {mask_by_field_type('', 'cvv')}"
+    return f"{m.group(1)} {_CVV_LABEL}"
 
 
 def _standalone_cvv(_m: re.Match) -> str:
-    return mask_by_field_type('', 'cvv')
+    return _CVV_LABEL
 
 
 def _payid_quoted(m: re.Match) -> str:
@@ -331,6 +400,17 @@ class Rule(NamedTuple):
     # Replaces pattern.sub for rules whose matches can only start at a few
     # positions it can find cheaply; same output as pattern.sub.
     scan: Callable[[re.Pattern, Callable, str], str] | None = None
+    # Unlike `gate`, this one DOES change the result: it says whether the rule
+    # applies to this text at all. Only the standalone-CVV rule has one.
+    precondition: Callable[[str, str], bool] | None = None
+    # True for a rule that may only run over prose -- a human message, a
+    # serialised body -- and never over a whole scalar field value. A field
+    # value has a key to be judged by; applying a keyless shape rule to it
+    # destroys legitimate data (a PSP response code, a Content-Length) that
+    # the same rule leaves alone when it arrives as an int. See
+    # MaskPIIFilter._mask_value, which has always skipped ints for this
+    # reason.
+    prose_only: bool = False
 
 
 # Spelled the way the credential rules spell them: "authori" would also match
@@ -391,6 +471,34 @@ def _has_ssn_shape(text: str, _lowered: str) -> bool:
 
 def _has_three_digits(text: str, _lowered: str) -> bool:
     return _THREE_DIGITS.search(text) is not None
+
+
+# Rules 15 and 16 have already run by the time rule 17 does, so a PAN in the
+# text is now a bare truncation rather than a digit run. _TRUNCATED_PAN_RE
+# below is what recognises it; these words cover a "card"/"pan" key name
+# serialised into the text, and the prose cases.
+# _CVV_LITERALS too: text that says "cvv" anywhere is card context even when
+# the keyword rules cannot reach the digits ("the cvv is 123" -- rule 9 needs
+# them adjacent).
+_CARD_CONTEXT = ("card", "pan", "cardholder", "credit", *_CVV_LITERALS)
+_TRUNCATED_PAN_RE = re.compile(_TRUNCATED_PAN)
+
+
+def _text_has_card_context(text: str, lowered: str) -> bool:
+    """Whether this text holds anything a CVV could belong to.
+
+    A 3-4 digit group with no card anywhere near it is a status code, a count
+    or an amount, and a CVV is worth nothing without its PAN. Rules 15 and 16
+    have already run, so a PAN is a bare truncation by now -- the star run is
+    what recognises it, as the words cover a card-named key in the text.
+    """
+    if any(word in lowered for word in _CARD_CONTEXT):
+        return True
+    # A PAN the card rule has already truncated: rule 15 runs first, so by now
+    # the digit run _CARD_SHAPE looks for is gone and the truncation is the
+    # only card context left in the text. Without this, a CVV sitting beside a
+    # masked PAN stops being masked -- which is a leak, not a formatting bug.
+    return _CARD_SHAPE.search(text) is not None or _TRUNCATED_PAN_RE.search(text) is not None
 
 
 # Every credential match contains one of these words, and starts inside the
@@ -460,8 +568,8 @@ def _sub_near_credential_words(pattern: re.Pattern, repl, text: str) -> str:
     return "".join(parts)
 
 
-def _rule(pack, regex, repl, gate, scan=None):
-    return (pack, regex, repl, gate, scan)
+def _rule(pack, regex, repl, gate, scan=None, prose_only=False, precondition=None):
+    return (pack, regex, repl, gate, scan, prose_only, precondition)
 
 
 # ---------------------------------------------------------------------------
@@ -598,7 +706,7 @@ _RULE_TABLE = (
         _jwt,
         _has_jwt_prefix,
     ),
-    # 15. Card number — truncated ([CARD-MASKED:411111******1111]; last 4
+    # 15. Card number — truncated, bare (411111******1111; last 4
     # only below 15 digits, see _truncate_pan); the middle never survives,
     # starred or not.
     # The output stays inside the [LABEL…] convention so already_masked()
@@ -618,19 +726,46 @@ _RULE_TABLE = (
         _has_ssn_shape,
     ),
     # 17. CVV standalone — bare 3-4 digit group, no keyword (call 123 now).
+    # The loosest rule in the file, and now doubly fenced. It never sees a
+    # whole scalar field value (prose_only): there, "000" is a PSP response
+    # code, not a CVV, and the key says which. In prose it fires only when the
+    # same text carries card context, because a 3-4 digit group with no card
+    # anywhere near it is a status, a count or an amount -- and a CVV is worth
+    # nothing without the PAN it belongs to. A keyword-anchored CVV is already
+    # rules 4, 5 and 9's job, whatever else the text holds.
     _rule(
         "pci",
         r"(?:^|(?<=\s))\d{3,4}(?=\s|$)",
         _standalone_cvv,
         _has_three_digits,
+        prose_only=True,
+        precondition=_text_has_card_context,
     ),
 )
 
 
 RULES: tuple[Rule, ...] = tuple(
-    Rule(f"{index}:{repl.__name__}", pack, re.compile(regex, re.IGNORECASE), repl, gate, scan)
-    for index, (pack, regex, repl, gate, scan) in enumerate(_RULE_TABLE, start=1)
+    Rule(f"{index}:{repl.__name__}", pack, re.compile(regex, re.IGNORECASE), repl, gate, scan, pre, prose)
+    for index, (pack, regex, repl, gate, scan, prose, pre) in enumerate(_RULE_TABLE, start=1)
 )
+
+
+# Just the card rule, for mask_card_value: the value already has a card key
+# saying what it is, so the other rules have nothing to add and applying them
+# would mask by shape inside a field that is not about them.
+_CARD_RULE_ONLY: tuple[Rule, ...] = tuple(
+    rule for rule in RULES if rule.repl is _mask_truncated_card
+)
+
+
+@lru_cache(maxsize=64)
+def scalar_rules(rules: tuple[Rule, ...]) -> tuple[Rule, ...]:
+    """``rules`` minus the ones that may only run over prose.
+
+    Cached on the rule tuple so the result is a stable object: mask_by_patterns
+    keys its known-clean set on tuple identity.
+    """
+    return tuple(rule for rule in rules if not rule.prose_only)
 
 
 @lru_cache(maxsize=16)
@@ -682,6 +817,8 @@ _MAX_PASSES = 4
 def _mask_once(text: str, rules: tuple[Rule, ...]) -> str:
     lowered = _folded_lower(text)
     if lowered is None:
+        # No case-folded text to judge a precondition by, so every rule runs:
+        # masking more than necessary is the safe direction to fail in.
         for rule in rules:
             text = rule.pattern.sub(rule.repl, text)
         return text
@@ -743,6 +880,12 @@ def _mask_gated(text: str, lowered: str, rules: tuple[Rule, ...]) -> str:
         if verdict is None:
             verdict = verdicts[rule.gate] = rule.gate(text, lowered)
         if not verdict:
+            continue
+        # Re-asked on every version of the text, like a gate: masking a PAN
+        # replaces it with a bare truncation, which still reads as card context
+        # rather than removing it, so a later pass can only become more
+        # permissive — never less.
+        if rule.precondition is not None and not rule.precondition(text, lowered):
             continue
         if rule.scan is not None:
             masked = rule.scan(rule.pattern, rule.repl, text)
@@ -808,14 +951,6 @@ def _is_tel_key(words: list[str]) -> bool:
     return any(word == "tel" or (word.startswith("tel") and word[3:].isdigit()) for word in words)
 
 
-def _is_expiry_key(joined: str) -> bool:
-    return (
-        "expiry" in joined
-        or "expiration" in joined
-        or joined in {"expmonth", "expyear", "expdate", "cardexpmonth", "cardexpyear"}
-    )
-
-
 # A name ending in one of these names the CVV or credential itself, which no
 # service may list as safe; "cvv_required" or "tokenization_status" only
 # describe one. Matched on the lowercased key with separators removed.
@@ -827,14 +962,17 @@ _NEVER_SAFE_ENDING = re.compile(
 
 
 def never_safe(key: str) -> bool:
-    """Whether no service may list ``key`` as safe: a card or expiry key as the
-    classifier finds them, or a name ending in a CVV or credential word."""
+    """Whether no service may list ``key`` as safe: a card key as the classifier
+    finds them, or a name ending in a CVV or credential word.
+
+    Expiry is not here. It is no longer masked at all, so refusing to let a
+    service whitelist a key that nothing masks would say nothing.
+    """
     lowered = key.lower()
     joined = _KEY_SEPARATORS.sub("", lowered)
     words = [word.lower() for word in _KEY_SPLIT.split(key) if word]
     return (
         _is_card_key(lowered, joined, words)
-        or _is_expiry_key(joined)
         or _NEVER_SAFE_ENDING.search(joined) is not None
     )
 
@@ -855,13 +993,14 @@ def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozens
     joined = _KEY_SEPARATORS.sub("", lowered)
     words = [word.lower() for word in _KEY_SPLIT.split(key) if word]
     for pattern, field_type in KEYWORD_PATTERN_FIELD_TYPE:
-        if field_type == "secret":
-            # Card and expiry are checked after CVV and before credentials,
-            # so "card_expiry" is expiry and "cardtoken" stays a secret.
-            if _is_card_key(lowered, joined, words):
-                return "card"
-            if _is_expiry_key(joined):
-                return "expiry"
+        # Card is checked after CVV and before credentials, so "cardtoken"
+        # stays a secret. Expiry is NOT classified: it is Cardholder Data, not
+        # Sensitive Authentication Data, so PCI DSS permits storing it and
+        # masking it only cost the ability to read an expired-card decline.
+        # Unclassified, its value still reaches the content rules, so a PAN
+        # pasted into an expiry field is still truncated.
+        if field_type == "secret" and _is_card_key(lowered, joined, words):
+            return "card"
         if field_type == "payment_id" and "financial_ids" not in packs:
             continue
         if field_type == "phone" and _is_tel_key(words):

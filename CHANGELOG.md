@@ -25,10 +25,102 @@
 - `ecsctx.contrib.ottu.masking.SAFE_KEYS` includes MPGS's
   `authorizationResponse` (the acquirer's processing and response codes).
 
+### Changed (breaking)
+
+- **Brackets now mean nothing survived.** A masked value that still carries
+  something real is rendered bare: a token was already bare since 0.10.0, and a
+  card's truncation now joins it — `450875******1019`, not
+  `[CARD-MASKED:450875******1019]`. A bracketed label stands only where the
+  value is gone: `[CVV-MASKED]`, `[EXPIRY-MASKED]`, and `[EMAIL-MASKED]` and
+  friends where no token could be made. One rule for a reader: brackets mean
+  there is nothing here, bare text means this IS the value.
+
+  The wrapper was doing three jobs that now need the truncation's own shape —
+  the BIN, a run of stars, the last four — to be recognised directly:
+  `already_masked()`, `mask_card_value()`'s `_SINGLE_MARKER`, and
+  `_text_has_card_context()`. The last one matters most: rule 15 runs before
+  rule 17, so by the time the CVV rule looks at a string the PAN is already
+  truncated, and the truncation is the only card context left. Without it a
+  CVV sitting beside a masked PAN would silently stop being masked.
+
+  `already_masked()` is now an anchored `fullmatch` rather than a substring
+  test, so a marker-shaped fragment can no longer vouch for the value around
+  it. Values masked by an earlier release — `[CARD-MASKED:…]`,
+  `[EMAIL-MASKED:ptok:…]` — are still recognised, so re-masking an old
+  document is still a noop.
+
+- **A PAN is truncated whatever key it arrived under**, instead of being
+  tokenized when the key says PII. Customers mistype the card number into the
+  name box, and the key used to win: with a keyset configured, a record holding
+  the PAN in a card key and in a name key carried a truncation AND a keyed hash
+  of the same PAN. That is the combination PCI DSS FAQ 1117 warns about, and
+  the one `mask_card_value` already refuses by never tokenizing — the card path
+  honoured the rule and every other path ignored it, so a key ecsctx recognised
+  as PII came off worse than one it did not recognise at all. Now covers name,
+  email, phone, address, generic, secret and the rest; gated on the `pci` pack,
+  like every other card rule, so a service that never opted in is unaffected.
+
+- **Expiry is no longer masked.** It is Cardholder Data, not Sensitive
+  Authentication Data: PCI DSS forbids storing SAD (CVV, full track, PIN) at
+  all, but permits storing expiry with protection, and only the PAN must be
+  rendered unreadable. `[EXPIRY-MASKED]` sat above the requirement and cost the
+  one thing worth reading — an expired-card decline. Expiry keys are no longer
+  classified, and are listed in `SAFE_KEYS` so they also escape a PII
+  container's sweep; their values are still content-scanned, so a PAN pasted
+  into an expiry field is still truncated. CVV is unchanged.
+
+- **A card key shows what is not a PAN.** `{"card_number": "not-a-number"}` was
+  `[CARD-MASKED]`, and so were a gateway token, a scheme name and an error
+  string — identical, in the one field someone debugging a decline looks at.
+  Fewer than 12 digits cannot be a PAN (the shortest issued), so the value
+  reads through. Twelve or more is content-scanned rather than collapsed, so an
+  embedded PAN is truncated with its context intact
+  (`card 4508 7500 0000 1019 visa` → `card 450875******1019 visa`); if the scan
+  finds nothing to truncate the value is still refused, because
+  `4508750**0001019` keeps 14 of 16 digits with no run for the rule to catch.
+
+- An **empty value stays empty** instead of becoming its type's label.
+  `{"address": ""}` used to render `[ADDRESS-MASKED]`, which reads as though
+  something had been hidden; nothing was there. Same reasoning as a null
+  staying null. The CVV rules no longer route through `mask_by_field_type("")`
+  to spell their label, since that made them depend on this.
+
 ### Fixed
 
 - The credential text rules no longer read an existing token as a credential
   value (`token=ptok:v1:…`), so masking masked text again changes nothing.
+- The standalone-CVV rule — a bare 3-4 digit group, the loosest rule in the
+  file — no longer destroys three- and four-digit data that is not a CVV. It
+  fired on any such string whatever key it sat under, so a payment gateway's
+  own logs rendered every PSP response code (`"000"`, `"101"`, `"199"`), every
+  `Content-Length`, and every HTTP status inside a message as `[CVV-MASKED]`:
+  the one field an operator needs to read a decline. Two fences now apply.
+
+  It never runs over a **whole scalar field value**, only over prose. A field
+  value has a key to be judged by, and the key rules have already had their
+  say; this is the same reasoning that has always exempted ints and floats
+  (`{"code": 400}` was safe, `{"code": "400"}` was not — and a PSP sends
+  JSON, where codes are strings).
+
+  In prose it runs only when the text carries **card context** — a card-shaped
+  digit run, or the word card/pan/cardholder/credit/cvv/cvc/security. A CVV is
+  worth nothing without the PAN it belongs to, and a 3-4 digit group with no
+  card anywhere near it is a status, a count or an amount. A keyword-anchored
+  CVV (`cvv=123`, `"cvv": "123"`, `the cvv is 123`) is unaffected: rules 4, 5
+  and 9 match it whatever else the text holds.
+
+  Two cases of the documented space-cascade bug are fixed by this and have
+  been promoted out of its strict-xfail list.
+
+### Known
+
+- A 12-19 digit string still masks as a card under any key, so an epoch
+  millisecond timestamp sent as a string (`"1727394279301"`) renders as
+  `*********9301`. Narrowing it means gating the rule on a card
+  IIN, which changes a deliberate fail-safe contract ("any 12-19 digit run is
+  a card"). A Luhn check is **not** the fix: PANs in live test use exist that
+  fail Luhn (`4508750000001019`), while epoch timestamps exist that pass it
+  (`1727394280470`) — it would unmask a real card and keep a timestamp masked.
 
 ## v0.9.0 (2026-09-19)
 

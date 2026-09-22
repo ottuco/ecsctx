@@ -17,7 +17,6 @@ FIELD_RULES: dict[str, FieldRule] = {
     # A direct mask_by_field_type(v, "card") caller gets the bare label.
     "card": FieldRule("card", False, False),
     # Expiry is cardholder data when stored with a PAN; nothing needs it in a log.
-    "expiry": FieldRule("expiry", False, False),
     "pem_key": FieldRule("pem_key", True, False),
     "iban": FieldRule("iban", True, False),
     "jwt": FieldRule("jwt", True, False),
