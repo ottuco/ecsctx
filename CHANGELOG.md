@@ -49,6 +49,36 @@
   `[EMAIL-MASKED:ptok:…]` — are still recognised, so re-masking an old
   document is still a noop.
 
+- **A PAN is truncated whatever key it arrived under**, instead of being
+  tokenized when the key says PII. Customers mistype the card number into the
+  name box, and the key used to win: with a keyset configured, a record holding
+  the PAN in a card key and in a name key carried a truncation AND a keyed hash
+  of the same PAN. That is the combination PCI DSS FAQ 1117 warns about, and
+  the one `mask_card_value` already refuses by never tokenizing — the card path
+  honoured the rule and every other path ignored it, so a key ecsctx recognised
+  as PII came off worse than one it did not recognise at all. Now covers name,
+  email, phone, address, generic, secret and the rest; gated on the `pci` pack,
+  like every other card rule, so a service that never opted in is unaffected.
+
+- **Expiry is no longer masked.** It is Cardholder Data, not Sensitive
+  Authentication Data: PCI DSS forbids storing SAD (CVV, full track, PIN) at
+  all, but permits storing expiry with protection, and only the PAN must be
+  rendered unreadable. `[EXPIRY-MASKED]` sat above the requirement and cost the
+  one thing worth reading — an expired-card decline. Expiry keys are no longer
+  classified, and are listed in `SAFE_KEYS` so they also escape a PII
+  container's sweep; their values are still content-scanned, so a PAN pasted
+  into an expiry field is still truncated. CVV is unchanged.
+
+- **A card key shows what is not a PAN.** `{"card_number": "not-a-number"}` was
+  `[CARD-MASKED]`, and so were a gateway token, a scheme name and an error
+  string — identical, in the one field someone debugging a decline looks at.
+  Fewer than 12 digits cannot be a PAN (the shortest issued), so the value
+  reads through. Twelve or more is content-scanned rather than collapsed, so an
+  embedded PAN is truncated with its context intact
+  (`card 4508 7500 0000 1019 visa` → `card 450875******1019 visa`); if the scan
+  finds nothing to truncate the value is still refused, because
+  `4508750**0001019` keeps 14 of 16 digits with no run for the rule to catch.
+
 - An **empty value stays empty** instead of becoming its type's label.
   `{"address": ""}` used to render `[ADDRESS-MASKED]`, which reads as though
   something had been hidden; nothing was there. Same reasoning as a null

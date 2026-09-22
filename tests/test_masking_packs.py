@@ -167,11 +167,7 @@ class TestKeyNames:
             ("pan", "card"),
             ("card_number", "card"),
             ("cardNumber", "card"),
-            ("expiry", "expiry"),
-            ("exp_month", "expiry"),
-            ("expirationDate", "expiry"),
-            ("cardExpiry", "expiry"),
-            ("telephone", "phone"),
+                            ("telephone", "phone"),
             ("mobile", "phone"),
             ("tel", "phone"),
             ("tel_no", "phone"),
@@ -193,10 +189,14 @@ class TestKeyNames:
         assert classify_key("transaction_id", self.DEFAULT | {"financial_ids"}) == "payment_id"
 
     def test_card_fields_are_masked_by_key_in_every_service(self):
+        """Expiry is readable: Cardholder Data, not Sensitive Authentication
+        Data, so PCI DSS permits storing it and masking it only cost the
+        ability to read an expired-card decline. CVV is the half that is not
+        optional."""
         masked = _mask({"card_number": "4111 1111 1111 1111", "expiry": "12/27", "cvv": "123"})
         assert masked == {
             "card_number": "411111******1111",
-            "expiry": "[EXPIRY-MASKED]",
+            "expiry": "12/27",
             "cvv": "[CVV-MASKED]",
         }
 
@@ -204,8 +204,10 @@ class TestKeyNames:
         masked = _mask({"card": {"number": "4111111111111111", "expiry": {"month": "01", "year": "27"}}})
         assert masked == {"card": "[CARD-MASKED]"}
 
-    def test_a_card_key_holding_no_pan_is_labelled_not_truncated(self):
-        assert _mask({"pan": "n/a"}) == {"pan": "[CARD-MASKED]"}
+    def test_a_card_key_holding_no_pan_shows_what_it_does_hold(self):
+        """Too few digits to be a PAN, so there is nothing to hide and
+        everything to debug with."""
+        assert _mask({"pan": "n/a"}) == {"pan": "n/a"}
 
 
 class TestConfiguredSafeKeys:
@@ -272,11 +274,6 @@ class TestConfiguredSafeKeys:
             "card_number",
             "pan",
             "pan_no",
-            "expiry",
-            "exp_month",
-            "expiry_month",
-            "expiry_year",
-            "cardExpiry",
             "password",
             "db_password",
             "api_key",
@@ -286,7 +283,7 @@ class TestConfiguredSafeKeys:
             "Authorization",
         ],
     )
-    def test_a_card_cvv_expiry_or_credential_name_is_refused(self, key):
+    def test_a_card_cvv_or_credential_name_is_refused(self, key):
         """Listing one would switch off the mask PCI requires for it: any card
         or expiry key the classifier knows, and any name ending in a CVV or
         credential word — the name of the value itself."""

@@ -23,6 +23,7 @@ import pytest
 
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_all_patterns, mask_card_value
+from ecsctx.pii import configure_pii
 
 PAN = "4508750000001019"
 TRUNCATED = "450875******1019"
@@ -58,17 +59,16 @@ class TestBracketsStillMeanNothingSurvived:
     def test_a_cvv_keeps_its_label(self, mask):
         assert mask({"cvv": "123"}) == {"cvv": "[CVV-MASKED]"}
 
-    def test_an_expiry_keeps_its_label(self, mask):
-        assert mask({"expiry_month": "01"}) == {"expiry_month": "[EXPIRY-MASKED]"}
-
     def test_a_card_object_with_no_pan_keeps_its_label(self, mask):
         """Nothing to truncate, so nothing to carry."""
         assert mask({"card": {"holder": "Far", "scheme": "visa"}}) == {
             "card": "[CARD-MASKED]"
         }
 
-    def test_a_card_key_holding_something_that_is_not_a_pan(self, mask):
-        assert mask({"card_number": "not-a-number"}) == {"card_number": "[CARD-MASKED]"}
+    def test_a_card_key_holding_a_value_with_no_digits_at_all(self, mask):
+        """Not a label any more -- see TestACardKeyShowsWhatIsNotAPan. A value
+        with nothing card-shaped in it is what someone is debugging with."""
+        assert mask({"card_number": "not-a-number"}) == {"card_number": "not-a-number"}
 
 
 class TestReMaskingLeavesItAlone:
@@ -130,15 +130,19 @@ class TestAValueAlreadyTruncatedUpstreamPassesThrough:
         assert mask({"account_ref": PAN}) == {"account_ref": TRUNCATED}
         assert mask({"card_number": PAN}) == {"card_number": TRUNCATED}
 
-    @pytest.mark.parametrize(
-        "value", ["4508750**0001019", "45087500**01019", "450875******101"]
-    )
+    @pytest.mark.parametrize("value", ["4508750**0001019", "45087500**01019"])
     def test_a_card_key_still_refuses_anything_off_the_shape(self, mask, value):
-        """The pass-through is narrow. Too few stars, or too many digits kept,
-        and a card key gives back the label -- it is not enough to merely
-        contain stars. `4508750**0001019` keeps 14 of 16 digits, well past what
-        PCI DSS 3.5.1 allows, so it must not be mistaken for a truncation."""
+        """The pass-through is narrow. `4508750**0001019` keeps 14 of 16
+        digits, well past what PCI DSS 3.5.1 allows, and no contiguous run for
+        the card rule to catch -- so a card key refuses it outright."""
         assert mask({"card_number": value}) == {"card_number": "[CARD-MASKED]"}
+
+    def test_a_short_partial_is_shown(self, mask):
+        """`450875******101` is nine digits -- fewer than the twelve a PAN
+        needs, and under the ten PCI DSS 3.5.1 permits keeping."""
+        assert mask({"card_number": "450875******101"}) == {
+            "card_number": "450875******101"
+        }
 
 
 class TestTheCvvBesideAMaskedPanStillMasks:
@@ -178,3 +182,155 @@ class TestAnEmptyValueStaysEmpty:
 
     def test_a_null_still_stays_null(self, mask):
         assert mask({"email": None}) == {"email": None}
+
+
+class TestExpiryIsReadable:
+    """Expiry is Cardholder Data, not Sensitive Authentication Data.
+
+    PCI DSS requires the PAN to be rendered unreadable and forbids storing SAD
+    (CVV, full track, PIN) at all. Expiry is neither: it may be stored with
+    protection, and these logs already sit in a restricted stream. Masking it
+    cost the one thing worth reading -- an expired-card decline -- and
+    `expiry_month: "01"` is twelve possible values.
+    """
+
+    @pytest.mark.parametrize(
+        "key", ["expiry_month", "expiry_year", "expiry", "expiration_date", "exp_month", "card_expiry"]
+    )
+    def test_an_expiry_key_keeps_its_value(self, mask, key):
+        assert mask({key: "01"}) == {key: "01"}
+
+    def test_a_cvv_is_still_masked(self, mask):
+        """The half that is not optional."""
+        assert mask({"cvv": "123", "cvc": "456", "security_code": "789"}) == {
+            "cvv": "[CVV-MASKED]",
+            "cvc": "[CVV-MASKED]",
+            "security_code": "[CVV-MASKED]",
+        }
+
+    def test_an_expiry_inside_a_pii_container_survives(self, mask):
+        """Unclassifying the key was not enough on its own: inside a `payer` or
+        `customer` object an unclassified key is masked as the container's
+        type, so month and year came out [NAME-MASKED] -- less readable than
+        the label they replaced. Expiry is a safe key now, so it escapes."""
+        assert mask({"payer_details": {"expiry": {"month": "1", "year": "28"}}}) == {
+            "payer_details": {"expiry": {"month": "1", "year": "28"}}
+        }
+
+    def test_a_name_beside_it_in_the_same_container_is_still_masked(self, mask):
+        """The container sweep still works; expiry is the exception, not a hole."""
+        out = mask({"payer_details": {"expiry": "12/28", "first_name": "Far"}})
+        assert out["payer_details"]["expiry"] == "12/28"
+        assert out["payer_details"]["first_name"] == "[NAME-MASKED]"
+
+    def test_a_pan_pasted_into_an_expiry_field_is_still_truncated(self, mask):
+        """The safe half of unclassifying the key: the value now reaches the
+        content rules, and the card rule catches it there."""
+        assert mask({"expiry_month": PAN}) == {"expiry_month": TRUNCATED}
+
+
+class TestACardKeyShowsWhatIsNotAPan:
+    """`[CARD-MASKED]` for every non-PAN value left nothing to debug with: a
+    gateway token, a scheme name and an error string all looked identical."""
+
+    @pytest.mark.parametrize(
+        "value", ["not-a-number", "visa", "N/A", "tok_abc123", "null", "MISSING"]
+    )
+    def test_a_value_too_short_to_be_a_pan_passes_through(self, mask, value):
+        """Twelve digits is the shortest PAN there is, so fewer than twelve
+        cannot be one, whatever else the value contains."""
+        assert mask({"card_number": value}) == {"card_number": value}
+
+    def test_a_pan_embedded_in_a_longer_value_is_truncated_in_place(self, mask):
+        assert mask({"card_number": "card 4508 7500 0000 1019 visa"}) == {
+            "card_number": f"card {TRUNCATED} visa"
+        }
+
+    def test_a_clean_pan_still_truncates(self, mask):
+        assert mask({"card_number": PAN}) == {"card_number": TRUNCATED}
+
+    def test_a_card_object_still_collapses(self, mask):
+        assert mask({"card": {"number": PAN, "holder": "Far"}}) == {"card": "[CARD-MASKED]"}
+
+    def test_a_long_digit_run_that_is_not_a_pan_is_still_refused(self, mask):
+        """Twelve or more digits under a card key gets content-scanned, not
+        waved through: `4508750**0001019` keeps 14 of 16 digits."""
+        out = mask({"card_number": "4508750**0001019"})["card_number"]
+        assert out == "[CARD-MASKED]"
+
+
+class TestAPanOutranksEveryOtherClassification:
+    """Customers mistype the card number into the name box, and the key's own
+    type used to win: the value was tokenized as a name.
+
+    That is worse than it sounds. With a keyset configured, a document holding
+    the PAN in a card key and in a name key carried a truncation AND a keyed
+    hash of the same PAN -- the combination PCI DSS FAQ 1117 warns about, and
+    the one `mask_card_value`'s docstring already says must never happen.
+
+    The card path honoured that rule and every other path ignored it, so a key
+    ecsctx recognised as PII came off WORSE than one it did not recognise at
+    all: `holder` and `account_ref` were truncated correctly all along.
+    """
+
+    @pytest.fixture
+    def mask_with_tokens(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        return MaskPIIFilter(packs=ALL_PACKS)._mask_value
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "name_on_card",
+            "customer_first_name",
+            "cardholder_name",
+            "payer_name",
+            "customer_email",
+            "customer_phone",
+            "billing_address",
+            "udf1",
+            "contact",
+            "card_token",
+        ],
+    )
+    def test_a_pan_under_a_pii_key_is_truncated_not_tokenized(
+        self, mask_with_tokens, key
+    ):
+        assert mask_with_tokens({key: PAN}) == {key: TRUNCATED}
+
+    def test_the_faq_1117_combination_cannot_occur(self, mask_with_tokens):
+        """One document, the PAN in both places, and no token of it anywhere."""
+        out = mask_with_tokens(
+            {"card_number": PAN, "name_on_card": PAN, "customer_email": PAN}
+        )
+        assert out == {
+            "card_number": TRUNCATED,
+            "name_on_card": TRUNCATED,
+            "customer_email": TRUNCATED,
+        }
+        assert "ptok:" not in str(out)
+
+    def test_a_pan_inside_a_pii_container_is_truncated(self, mask_with_tokens):
+        """The `inherited` path: a leaf of a customer object, masked as the
+        container's type rather than by a key of its own."""
+        out = mask_with_tokens({"customer": {"first_name": PAN, "city": "Kuwait"}})
+        assert out["customer"]["first_name"] == TRUNCATED
+
+    def test_a_real_name_still_tokenizes(self, mask_with_tokens):
+        """Not a blanket regression: only a PAN outranks the key."""
+        out = mask_with_tokens({"customer_first_name": "Farhan"})
+        assert out["customer_first_name"].startswith("ptok:v1:")
+
+    def test_a_real_email_still_tokenizes(self, mask_with_tokens):
+        out = mask_with_tokens({"customer_email": "far@example.com"})
+        assert out["customer_email"].startswith("ptok:v1:")
+
+    def test_without_the_pci_pack_it_does_not_fire(self, token_keyset_path):
+        """It is a content-shaped test on a key-classified value, so it is
+        gated like every other content rule. A service that never opted into
+        PCI keeps tokenizing a 16-digit id in a name field, as it does today."""
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        out = MaskPIIFilter(packs=frozenset({"default"}))._mask_value(
+            {"customer_first_name": PAN}
+        )
+        assert out["customer_first_name"].startswith("ptok:v1:")

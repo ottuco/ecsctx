@@ -114,8 +114,10 @@ class TestCheckIfSensitiveKeyword:
 
 
 class TestFieldRules:
-    @pytest.mark.parametrize("field_type", ["cvv", "card", "expiry"])
+    @pytest.mark.parametrize("field_type", ["cvv", "card"])
     def test_cardholder_data_is_neither_tokenized_nor_exemptable(self, field_type):
+        """Expiry is not here: it is Cardholder Data rather than Sensitive
+        Authentication Data, so it is no longer classified at all."""
         rule = get_field_rule(field_type)
         assert rule.tokenizable is False
         assert rule.exemptable is False
@@ -237,7 +239,7 @@ class TestTokensAreBare:
         out = _mask({"cvv": "123", "expiry": "12/28", "card_number": "4111111111111111"})
         assert out == {
             "cvv": "[CVV-MASKED]",
-            "expiry": "[EXPIRY-MASKED]",
+            "expiry": "12/28",  # Cardholder Data, not SAD -- readable
             "card_number": "411111******1111",
         }
 
@@ -1126,9 +1128,9 @@ class TestJsonTextIsMaskedByKey:
         [
             ("nameOnCard", "Jane Payer", "[NAME-MASKED]"),
             ("name_on_card", "Jane Payer", "[NAME-MASKED]"),
-            ("expiry", {"month": "1", "year": "28"}, "[EXPIRY-MASKED]"),
-            ("expiry_month", "01", "[EXPIRY-MASKED]"),
-            ("expiry_year", "39", "[EXPIRY-MASKED]"),
+            # Not expiry: a safe key now, so it reads through even inside a
+            # PII container, month and year intact.
+            ("expiry", {"month": "1", "year": "28"}, {"month": "1", "year": "28"}),
         ],
     )
     def test_keys_inside_a_json_string_are_masked(self, key, value, expected):

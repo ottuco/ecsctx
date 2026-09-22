@@ -16,7 +16,7 @@ ecsctx's own PII key-name list. Two independent detection strategies:
    to match.
 
 Every masked value becomes a bare token or a `[LABEL]` via mask_by_field_type —
-never a bare `***`. Cardholder data never carries a token: CVV and expiry
+never a bare `***`. Cardholder data never carries a token: a CVV
 are bare labels, because PCI forbids storing CVV in any form; card numbers
 are truncated — first 6 + last 4 from 15 digits up, last 4 only below
 (`411111******1111`, bare, PCI DSS 3.5.1, FAQ 1091 — brackets mean
@@ -67,6 +67,31 @@ SAFE_KEYS = frozenset({
     "filename",
     "token_type",
     "sec-ch-ua-mobile",
+    # Expiry. Cardholder Data rather than Sensitive Authentication Data, so
+    # PCI DSS permits storing it and ecsctx no longer classifies it. Listed
+    # here as well so it escapes a PII container's sweep: inside a `payer` or
+    # `customer` object an unclassified key is masked as the container's type,
+    # which would turn an expiry's month and year into [NAME-MASKED] -- less
+    # readable than the label it replaced. Both separator forms, since this set
+    # is matched on the lowercased key as written.
+    "expiry",
+    "expiry_date",
+    "expirydate",
+    "expiry_month",
+    "expirymonth",
+    "expiry_year",
+    "expiryyear",
+    "expiration",
+    "expiration_date",
+    "expirationdate",
+    "exp_month",
+    "expmonth",
+    "exp_year",
+    "expyear",
+    "exp_date",
+    "expdate",
+    "card_expiry",
+    "cardexpiry",
 })
 
 # Sensitive credential keywords / auth schemes. Matched case-insensitively.
@@ -147,6 +172,8 @@ _CARD_TAIL_GUARD = r"(?![-\s]?\d)"
 _PHONE_TAIL_GUARD = _CARD_TAIL_GUARD + r"(?![A-Za-z])"
 # 11 more digits after the leading one = 12 total; 18 more = 19 total.
 _CARD_BODY = r"(?:[-\s]?\d){11,18}"
+# The shortest PAN issued. A value with fewer digits than this cannot be one.
+_MIN_PAN_DIGITS = 12
 
 
 def _digits_only(text: str) -> str:
@@ -201,12 +228,26 @@ _SINGLE_MARKER = re.compile(
 )
 
 
+def pan_shaped(text: str) -> bool:
+    """Whether ``text`` is, in its entirety, a PAN.
+
+    Public because the filter asks it of a value that a PII key already
+    claimed: a card number typed into the name box is still a card number.
+    """
+    return _PAN_VALUE.fullmatch(text.strip()) is not None
+
+
 def mask_card_value(value) -> str:
-    """The value of a card-named key: truncated when it is a PAN, else a label.
+    """The value of a card-named key: the PAN truncated, the rest readable.
 
     Never tokenized — a keyed hash of a PAN next to its truncated form is the
     correlation FAQ 1117 warns about. A whole card object (number, expiry,
     holder) is one label.
+
+    What is *not* a PAN is shown. Collapsing every non-PAN value to a label
+    made a gateway token, a scheme name and an error string all look identical
+    under `card_number`, which is the one place someone debugging a declined
+    payment goes looking.
     """
     if isinstance(value, str) and not value:
         return value  # nothing was there; see mask_by_field_type
@@ -216,6 +257,20 @@ def mask_card_value(value) -> str:
         text = str(value).strip()
         if _PAN_VALUE.fullmatch(text):
             return _truncate_pan(_digits_only(text))
+        if sum(character.isdigit() for character in text) < _MIN_PAN_DIGITS:
+            # Too few digits to be a PAN whatever else it holds: 12 is the
+            # shortest one issued (ISO/IEC 7812; Maestro issues from 12).
+            return value
+        # Enough digits to hide one, but not a clean PAN: scan rather than
+        # collapse, so an embedded PAN is truncated and its context survives.
+        scanned = mask_by_patterns(text, _CARD_RULE_ONLY)
+        if scanned != text:
+            return scanned
+        # The scan found nothing to truncate, yet the value carries twelve or
+        # more digits under a card key. `4508750**0001019` is the shape that
+        # matters: 14 of 16 digits kept, far past what PCI DSS 3.5.1 allows,
+        # and no contiguous run for the card rule to catch. Refuse it.
+        return f"[{make_label('card')}]"
     return f"[{make_label('card')}]"
 
 
@@ -695,6 +750,14 @@ RULES: tuple[Rule, ...] = tuple(
 )
 
 
+# Just the card rule, for mask_card_value: the value already has a card key
+# saying what it is, so the other rules have nothing to add and applying them
+# would mask by shape inside a field that is not about them.
+_CARD_RULE_ONLY: tuple[Rule, ...] = tuple(
+    rule for rule in RULES if rule.repl is _mask_truncated_card
+)
+
+
 @lru_cache(maxsize=64)
 def scalar_rules(rules: tuple[Rule, ...]) -> tuple[Rule, ...]:
     """``rules`` minus the ones that may only run over prose.
@@ -888,14 +951,6 @@ def _is_tel_key(words: list[str]) -> bool:
     return any(word == "tel" or (word.startswith("tel") and word[3:].isdigit()) for word in words)
 
 
-def _is_expiry_key(joined: str) -> bool:
-    return (
-        "expiry" in joined
-        or "expiration" in joined
-        or joined in {"expmonth", "expyear", "expdate", "cardexpmonth", "cardexpyear"}
-    )
-
-
 # A name ending in one of these names the CVV or credential itself, which no
 # service may list as safe; "cvv_required" or "tokenization_status" only
 # describe one. Matched on the lowercased key with separators removed.
@@ -907,14 +962,17 @@ _NEVER_SAFE_ENDING = re.compile(
 
 
 def never_safe(key: str) -> bool:
-    """Whether no service may list ``key`` as safe: a card or expiry key as the
-    classifier finds them, or a name ending in a CVV or credential word."""
+    """Whether no service may list ``key`` as safe: a card key as the classifier
+    finds them, or a name ending in a CVV or credential word.
+
+    Expiry is not here. It is no longer masked at all, so refusing to let a
+    service whitelist a key that nothing masks would say nothing.
+    """
     lowered = key.lower()
     joined = _KEY_SEPARATORS.sub("", lowered)
     words = [word.lower() for word in _KEY_SPLIT.split(key) if word]
     return (
         _is_card_key(lowered, joined, words)
-        or _is_expiry_key(joined)
         or _NEVER_SAFE_ENDING.search(joined) is not None
     )
 
@@ -935,13 +993,14 @@ def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozens
     joined = _KEY_SEPARATORS.sub("", lowered)
     words = [word.lower() for word in _KEY_SPLIT.split(key) if word]
     for pattern, field_type in KEYWORD_PATTERN_FIELD_TYPE:
-        if field_type == "secret":
-            # Card and expiry are checked after CVV and before credentials,
-            # so "card_expiry" is expiry and "cardtoken" stays a secret.
-            if _is_card_key(lowered, joined, words):
-                return "card"
-            if _is_expiry_key(joined):
-                return "expiry"
+        # Card is checked after CVV and before credentials, so "cardtoken"
+        # stays a secret. Expiry is NOT classified: it is Cardholder Data, not
+        # Sensitive Authentication Data, so PCI DSS permits storing it and
+        # masking it only cost the ability to read an expired-card decline.
+        # Unclassified, its value still reaches the content rules, so a PAN
+        # pasted into an expiry field is still truncated.
+        if field_type == "secret" and _is_card_key(lowered, joined, words):
+            return "card"
         if field_type == "payment_id" and "financial_ids" not in packs:
             continue
         if field_type == "phone" and _is_tel_key(words):

@@ -36,6 +36,7 @@ from ecsctx.masking.patterns import (
     known_clean,
     mask_by_patterns,
     mask_card_value,
+    pan_shaped,
     rules_for,
     scalar_rules,
 )
@@ -109,6 +110,33 @@ class _Pass(NamedTuple):
     rules: tuple
     exempt: tuple
     safe: frozenset[str]  # the service's own safe keys (ECSCTX_MASK_SAFE_KEYS)
+
+
+def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
+    """One PII leaf, except that cardholder data outranks the key it arrived
+    under.
+
+    Customers mistype the card number into the name box, and the key used to
+    win: the PAN was tokenized as a name. With a keyset configured that put a
+    keyed hash of a PAN in the record while the same PAN elsewhere in it was a
+    truncation -- the combination PCI DSS FAQ 1117 warns about, and the one
+    `mask_card_value` refuses by never tokenizing. The card path honoured that
+    rule; every other path ignored it, so a key ecsctx recognised as PII came
+    off worse than one it did not recognise at all.
+
+    Only the tokenize path is diverted: a type that is never tokenized (`cvv`)
+    already renders safely and keeps its label. Gated on `pci` because "does
+    this value look like a PAN" is a content-shaped test, like every other card
+    rule -- a service that never opted in keeps tokenizing a long id in a name
+    field, as it does today.
+    """
+    if (
+        "pci" in ctx.packs
+        and get_field_rule(field_type).tokenizable
+        and pan_shaped(text)
+    ):
+        return mask_card_value(text)
+    return mask_by_field_type(text, field_type)
 
 
 class MaskPIIFilter(logging.Filter):
@@ -211,7 +239,7 @@ class MaskPIIFilter(logging.Filter):
                 # containers stay masked as one unit.
                 result[key] = self._mask_value(value, child_path, ctx, inherited=field_type)
             else:
-                result[key] = mask_by_field_type(str(value), field_type)
+                result[key] = _mask_pii_leaf(str(value), field_type, ctx)
         return result
 
     def _mask_iterable(
@@ -246,7 +274,7 @@ class MaskPIIFilter(logging.Filter):
         if isinstance(value, dict):
             return self._mask_dict(value, path, ctx, inherited)
         if inherited is not None:
-            return mask_by_field_type(str(value), inherited)
+            return _mask_pii_leaf(str(value), inherited, ctx)
         if isinstance(value, (bool, int, float)):
             return value  # see scalar= below: the same reasoning, for strings
         if isinstance(value, str):

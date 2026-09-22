@@ -99,7 +99,12 @@ class TestCardData:
         assert _filter(session_id).msg == session_id
 
     def test_a_card_value_with_a_marker_inside_is_still_truncated(self):
-        assert mask_card_value("4111111111111111 cvv [CVV-MASKED]") == "[CARD-MASKED]"
+        # Truncated in place now, rather than collapsed: the PAN goes, the
+        # context that makes the line readable stays.
+        assert (
+            mask_card_value("4111111111111111 cvv [CVV-MASKED]")
+            == "411111******1111 cvv [CVV-MASKED]"
+        )
         assert mask_card_value("411111******1111") == "411111******1111"
 
 
@@ -128,8 +133,7 @@ class TestKeyNamesFailClosed:
             ("addressline1", "address"),
             ("billingdetails", "generic"),
             ("card_number", "card"),
-            ("expiry", "expiry"),
-        ],
+            ],
     )
     def test_masked(self, key, expected):
         assert classify_key(key, frozenset({"default"})) == expected
@@ -277,9 +281,11 @@ class TestMoreLinearTime:
 class TestMarkersAndSettings:
     def test_a_card_key_holding_a_fake_marker_with_a_pan_is_masked(self):
         # A full PAN dressed as a marker is not a truncation: the shape is
-        # checked, not believed.
-        assert mask_card_value("[CARD-MASKED:4111111111111111]") == "[CARD-MASKED]"
-        assert mask_card_value("[X-MASKED:4111111111111111 exp 1225]") == "[CARD-MASKED]"
+        # checked, not believed, so the PAN inside is truncated like any other.
+        for fake in ("[CARD-MASKED:4111111111111111]", "[X-MASKED:4111111111111111 exp 1225]"):
+            out = mask_card_value(fake)
+            assert "4111111111111111" not in out
+            assert "411111******1111" in out
 
     @pytest.mark.parametrize("value", [True, 1, ["pci", 1]])
     def test_a_non_string_pack_setting_fails_closed(self, settings, value):
