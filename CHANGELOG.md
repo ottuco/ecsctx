@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.13.0 (2026-09-22)
+
+### Features
+- feat(masking)!: walk a card object; stop masking names that name no person (04a0b4b)
+
+### Other
+- Merge pull request #61 from ottuco/fix/card-container-and-key-false-positives (3f88c22)
+- refactor(masking): the key-classification order is written out, not implied (eeeef78)
+
+
 ## v0.12.0 (2026-09-22)
 
 ### Features
