@@ -54,7 +54,7 @@ class TestScalarFieldValuesKeepTheirDigits:
 
     # Deferred, deliberately: a 12-19 digit string still masks as a card
     # whatever key it sits under, so an epoch-millisecond timestamp sent as a
-    # string ("1727394279301") still comes out [CARD-MASKED:*********9301].
+    # string ("1727394279301") still comes out as the truncation *********9301.
     # Narrowing that means gating rule 15 on a card IIN, which changes a
     # fail-safe PCI contract ("any 12-19 digit run is a card") that 75 corpus
     # cases encode. Its own change, with its own review. Note a Luhn check is

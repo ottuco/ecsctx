@@ -86,7 +86,7 @@
 
 - A 12-19 digit string still masks as a card under any key, so an epoch
   millisecond timestamp sent as a string (`"1727394279301"`) renders as
-  `[CARD-MASKED:*********9301]`. Narrowing it means gating the rule on a card
+  `*********9301`. Narrowing it means gating the rule on a card
   IIN, which changes a deliberate fail-safe contract ("any 12-19 digit run is
   a card"). A Luhn check is **not** the fix: PANs in live test use exist that
   fail Luhn (`4508750000001019`), while epoch timestamps exist that pass it

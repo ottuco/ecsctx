@@ -99,6 +99,48 @@ class TestReMaskingLeavesItAlone:
         assert "4508750000001019" not in mask_card_value(f"[CARD-MASKED:{PAN}]")
 
 
+class TestAValueAlreadyTruncatedUpstreamPassesThrough:
+    """The surface this change widens, pinned deliberately rather than left to
+    chance: with no wrapper, the shape is the marker, so a value an upstream
+    system already truncated is read as masked and passed through.
+
+    That is safe by construction, not by luck. The shape allows at most six
+    leading digits and four trailing ones -- first 6 + last 4, which is exactly
+    the most PCI DSS 3.5.1 permits anyone to keep -- with four or more stars
+    between them. A string of this shape cannot carry a full PAN.
+
+    And passing it through is better than the alternative: tokenizing it would
+    produce a token of a partially-masked string, which correlates with nothing
+    and loses the last four. That is the same reasoning as the re-masking case
+    above; an upstream's truncation is no different from our own.
+    """
+
+    @pytest.mark.parametrize(
+        "value", ["123456****7890", "999999****9999", "*********9301"]
+    )
+    def test_under_a_card_key(self, mask, value):
+        assert mask({"card_number": value}) == {"card_number": value}
+
+    @pytest.mark.parametrize("value", ["123456****7890", "999999****9999"])
+    def test_under_a_tokenizable_key(self, mask, value):
+        assert mask({"account_ref": value}) == {"account_ref": value}
+
+    def test_a_full_pan_is_not_the_shape(self, mask):
+        """Sixteen contiguous digits is a PAN whatever key it sits under."""
+        assert mask({"account_ref": PAN}) == {"account_ref": TRUNCATED}
+        assert mask({"card_number": PAN}) == {"card_number": TRUNCATED}
+
+    @pytest.mark.parametrize(
+        "value", ["4508750**0001019", "45087500**01019", "450875******101"]
+    )
+    def test_a_card_key_still_refuses_anything_off_the_shape(self, mask, value):
+        """The pass-through is narrow. Too few stars, or too many digits kept,
+        and a card key gives back the label -- it is not enough to merely
+        contain stars. `4508750**0001019` keeps 14 of 16 digits, well past what
+        PCI DSS 3.5.1 allows, so it must not be mistaken for a truncation."""
+        assert mask({"card_number": value}) == {"card_number": "[CARD-MASKED]"}
+
+
 class TestTheCvvBesideAMaskedPanStillMasks:
     """The leak this change opens if `_text_has_card_context` is not taught the
     bare shape. Rule 15 runs before rule 17, so by the time the CVV rule looks
