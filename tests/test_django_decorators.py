@@ -1,11 +1,9 @@
 """Tests for ecsctx.contrib.django.decorators.api_logging."""
 
 import json
-import logging.config
 from unittest.mock import patch
 
 import pytest
-import structlog
 from django.contrib.auth.models import AnonymousUser
 from django.urls import path, re_path
 from rest_framework.exceptions import Throttled, ValidationError
@@ -13,7 +11,6 @@ from rest_framework.response import Response
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 from rest_framework.views import APIView
 
-from ecsctx.contrib.django import get_logging_config, setup_logging
 from ecsctx.contrib.django.decorators import _log_user, api_logging
 
 
@@ -257,25 +254,6 @@ urlpatterns = [
 CARD_TOKENS = pytest.mark.parametrize(
     "token", ["9584184138614802", "E4B1C1F4F2B35BD6E05341588E0A4F4F"], ids=["mpgs", "cybersource"]
 )
-
-
-@pytest.fixture
-def rendered(capsys, logging_state):
-    """What a call logs, as the console handler writes it: through the real
-    get_logging_config() and setup_logging(), masking included."""
-
-    def run(call):
-        cfg = get_logging_config(use_cid_filter=False)
-        cfg["loggers"] = {}
-        logging.config.dictConfig(cfg)
-        setup_logging(capture_warnings=False)
-        try:
-            call()
-        finally:
-            structlog.reset_defaults()
-        return capsys.readouterr().err
-
-    return run
 
 
 def _api_lines(output):

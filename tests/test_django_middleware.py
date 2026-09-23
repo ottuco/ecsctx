@@ -1,11 +1,13 @@
 """Tests for ecsctx.contrib.django.middleware."""
 
+import json
 from unittest.mock import patch
 
 import pytest
 import structlog
 from django.contrib.auth import get_user_model
-from django.test import RequestFactory
+from django.test import Client, RequestFactory
+from django.urls import path
 
 from ecsctx import bind_logging_context, reset_logging_context
 from ecsctx.context import _logging_context
@@ -164,3 +166,33 @@ class TestProcessException:
             mock_logger.exception.assert_called_once()
             call_kwargs = mock_logger.exception.call_args
             assert call_kwargs[0][0] == "unhandled_exception"
+            # Never resolved, so there is no route to mask by: the path stands.
+            assert call_kwargs.kwargs["url"] == {"path": "/error/"}
+
+
+def _raise(request, token):
+    raise RuntimeError("the view failed")
+
+
+# The urlconf TestUnhandledExceptionUrl runs under (pytest.mark.urls): a saved
+# card's delete route, whose view raises.
+urlpatterns = [path("v1/cards/<str:token>/", _raise)]
+
+
+@pytest.mark.urls(__name__)
+class TestUnhandledExceptionUrl:
+    """A view on a card route that raised logged the card token in clear, in
+    unhandled_exception's url.path.
+
+    Django's own django.request line ("Internal Server Error: <path>") still
+    carries the path, so the assertions read this middleware's line only.
+    """
+
+    def test_the_token_is_nowhere_in_the_line(self, rendered):
+        token = "E4B1C1F4F2B35BD6E05341588E0A4F4F"
+        client = Client(raise_request_exception=False)
+        output = rendered(lambda: client.delete(f"/v1/cards/{token}/"))
+        docs = [json.loads(line) for line in output.splitlines() if line.strip()]
+        [line] = [doc for doc in docs if doc.get("message") == "unhandled_exception"]
+        assert token not in json.dumps(line)
+        assert line["url"]["path"] == "/v1/cards/[SECRET-MASKED]/"

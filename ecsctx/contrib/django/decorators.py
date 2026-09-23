@@ -3,6 +3,7 @@ from ipware import get_client_ip
 from rest_framework.exceptions import Throttled, ValidationError
 from rest_framework.response import Response
 
+from ecsctx.contrib.django.routes import loggable_path
 from ecsctx.events.http import (
     API_REQUEST_RECEIVED,
     API_REQUEST_REJECTED,
@@ -11,7 +12,6 @@ from ecsctx.events.http import (
 )
 from ecsctx.events.spec import Outcome
 from ecsctx.events.timing import Timer
-from ecsctx.masking import key_field_type, mask_by_field_type
 
 logger = structlog.get_logger(__name__)
 
@@ -49,36 +49,6 @@ def _route(request):
     return f"/{match.route}"
 
 
-def _loggable_path(request):
-    """The path, with each route parameter whose name the engine classifies
-    masked as that type: ``/v1/cards/<str:token>/`` carries a card token as a
-    segment, and ``url.path`` shipped it whole.
-    """
-    path = request.path
-    if (match := request.resolver_match) is None:
-        return path
-    for name, value in match.kwargs.items():
-        # An empty value would match everywhere.
-        if (text := str(value)) and (field_type := key_field_type(name)):
-            path = _mask_in_path(path, text, mask_by_field_type(text, field_type))
-    return path
-
-
-def _mask_in_path(path, text, mask):
-    """``path`` with each segment that is ``text`` masked. Replacing ``text``
-    anywhere in the path also hit segments that merely contain it: ``1234``
-    beside a token of ``23`` lost its middle, and a token that starts with an
-    api key's value kept its tail in clear once the key was masked.
-    """
-    segments = path.split("/")
-    if text in segments:
-        return "/".join(mask if segment == text else segment for segment in segments)
-    # A value that shares its segment (a regex route's `(?P<token>[^/.]+)\.pdf`)
-    # or spans several (`<path:token>`) is masked wherever it appears: a
-    # mangled neighbour beats a credential in clear.
-    return path.replace(text, mask)
-
-
 def api_logging(view_cls):
     """
     Log the request this service received and the response it sent, for DRF views.
@@ -87,7 +57,7 @@ def api_logging(view_cls):
       user agent
     - response sent: logged in dispatch() with response status, headers, body
     - Both messages name the route, not the path (_route); url.path is the path
-      with its classified route parameters masked (_loggable_path)
+      with its classified route parameters masked (loggable_path)
     - Masking/tokenization handled by mask_sensitive_data processor
     - Field explosion prevented by ES flattened type mapping
 
@@ -175,7 +145,7 @@ def api_logging(view_cls):
                         "body": request.data if request.data else None,
                     }
                 },
-                "url": {"path": _loggable_path(request)},
+                "url": {"path": loggable_path(request)},
             }
             if client_ip:
                 log_kwargs["client"] = {"ip": str(client_ip)}
@@ -276,7 +246,7 @@ def api_logging(view_cls):
                         "body": response_body,
                     },
                 },
-                "url": {"path": _loggable_path(request)},
+                "url": {"path": loggable_path(request)},
             }
 
             if exception_type:
