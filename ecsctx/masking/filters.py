@@ -32,10 +32,12 @@ from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import (
     _KEY_SEPARATORS,
     _MIN_PAN_DIGITS,
+    _SAFE_KEYS_JOINED,
     ALL_PACKS,
     SAFE_KEYS,
     _joined_names,
     classify_key,
+    name_context,
     known_clean,
     mask_by_patterns,
     mask_card_value,
@@ -259,6 +261,9 @@ class MaskPIIFilter(logging.Filter):
         ctx = ctx or self._context()
         if inherited == "secret" and _is_card_object(data):
             inherited = "card"
+        # The key this dict sits under, for a bare `name` (list and JSON-text
+        # markers are not keys).
+        container = next((step for step in reversed(path) if step not in ("[*]", _JSON_TEXT)), None)
         result = {}
         for key, value in data.items():
             if path == () and key in self._skip_keys:
@@ -272,6 +277,12 @@ class MaskPIIFilter(logging.Filter):
             lookup_key = str(key)
             child_path = path + (lookup_key,)
             field_type = classify_key(lookup_key, ctx.packs, ctx.safe)
+            lowered = lookup_key.lower()
+            joined = _KEY_SEPARATORS.sub("", lowered)
+            if field_type == "name" and joined in ("name", "names") and container is not None:
+                context = name_context(container)
+                if context == "thing" or (context == "definition" and isinstance(value, _CONTAINERS)):
+                    field_type = None
             if inherited in _FLOOR_TYPES and field_type != "sad":
                 # Only a key the service listed -- a list never_safe() vets --
                 # reads through; anything else is the container's type, however
@@ -281,8 +292,15 @@ class MaskPIIFilter(logging.Filter):
                     continue
                 field_type = inherited
             elif field_type is None:
-                lowered = lookup_key.lower()
-                if inherited is None or lowered in SAFE_KEYS or lowered in ctx.safe:
+                # Both spellings, as classify_key has: `customerId` escapes a
+                # customer container as `customer_id` always did.
+                if (
+                    inherited is None
+                    or lowered in SAFE_KEYS
+                    or lowered in ctx.safe
+                    or joined in _SAFE_KEYS_JOINED
+                    or joined in _joined_names(ctx.safe)
+                ):
                     result[key] = self._mask_value(value, child_path, ctx)
                     continue
                 if value is None:

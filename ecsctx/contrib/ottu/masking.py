@@ -31,6 +31,15 @@ SAFE_KEYS = frozenset({
     # The saved card's gateway code, read through when the card is walked under
     # its `token` key in ottu_pg's webhook.
     "pg_code",
+    # Ottu's `billing` is the fee breakdown shown on the checkout page, not an
+    # address, but `billing` stays a PII container (elsewhere it holds a city
+    # and a postcode). Its own keys are listed instead, so the amounts escape
+    # the container: they went out tokenized on both services.
+    "amount",
+    "sub_total",
+    "fee",
+    "wallet_amount",
+    "pg_amount",
     # MPGS: the acquirer's processing and response codes ("authorization" is a
     # credential word to the key rules).
     "authorizationresponse",

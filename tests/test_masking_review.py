@@ -187,13 +187,13 @@ class TestConfigurationFailsClosed:
 
 class TestExemptionAnchors:
     def test_a_pattern_applies_from_the_root_or_a_payload_container(self):
-        configure_masking(exempt_paths=["payment_methods[*].name"])
+        configure_masking(exempt_paths=["beneficiaries[*].name"])
         masked = MaskPIIFilter()._mask_dict(
-            {"payload": {"payment_methods": [{"name": "KNET"}]}, "extra": {"payment_methods": [{"name": "VISA"}]}}
+            {"payload": {"beneficiaries": [{"name": "KNET"}]}, "extra": {"beneficiaries": [{"name": "VISA"}]}}
         )
         assert masked == {
-            "payload": {"payment_methods": [{"name": "KNET"}]},
-            "extra": {"payment_methods": [{"name": "VISA"}]},
+            "payload": {"beneficiaries": [{"name": "KNET"}]},
+            "extra": {"beneficiaries": [{"name": "VISA"}]},
         }
 
     def test_a_short_pattern_does_not_reach_into_nested_objects(self):

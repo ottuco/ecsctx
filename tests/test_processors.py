@@ -263,13 +263,13 @@ class TestMaskWalker:
 
     def test_exempted_leaf_notsafe_tokenized(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        configure_masking(exempt_paths=["payment_methods[*].name"])
-        out = _mask({"payment_methods": [{"name": "VISA-John"}]})
-        assert out["payment_methods"][0]["name"] == "VISA-John"
+        configure_masking(exempt_paths=["beneficiaries[*].name"])
+        out = _mask({"beneficiaries": [{"name": "VISA-John"}]})
+        assert out["beneficiaries"][0]["name"] == "VISA-John"
 
     def test_same_key_non_exempt_tokenized(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        configure_masking(exempt_paths=["payment_methods[*].name"])
+        configure_masking(exempt_paths=["beneficiaries[*].name"])
         out = _mask({"profile": {"name": "John Doe"}})
         assert out["profile"]["name"].startswith("ptok:v1:")
 
@@ -365,12 +365,12 @@ class TestMaskTopLevel:
 
 class TestMaskConfigEnv:
     def test_env_var_config(self, token_keyset_path, monkeypatch):
-        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "payment_methods[*].name, audit")
+        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "beneficiaries[*].name, audit")
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask(
-            {"payment_methods": [{"name": "KNET"}], "profile": {"name": "John"}}
+            {"beneficiaries": [{"name": "KNET"}], "profile": {"name": "John"}}
         )
-        assert out["payment_methods"][0]["name"] == "KNET"
+        assert out["beneficiaries"][0]["name"] == "KNET"
         assert out["profile"]["name"].startswith("ptok:v1:")
 
     def test_explicit_beats_env(self, token_keyset_path, monkeypatch):

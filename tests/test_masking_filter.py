@@ -1201,9 +1201,11 @@ class TestMaskPIIFilterEngine:
         assert out["wrapper"]["service"] == "not really structural"
 
     def test_custom_skip_keys_empty_masks_everything(self):
+        # A person's name under `service`, not the service's own `name` -- since
+        # 0.14.0 a service's name is a thing's name and reads through.
         flt = MaskPIIFilter(skip_keys=())
-        out = flt._mask_value({"service": {"name": "John Doe should be masked"}})
-        assert out["service"]["name"] != "John Doe should be masked"
+        out = flt._mask_value({"service": {"customer_name": "John Doe should be masked"}})
+        assert out["service"]["customer_name"] != "John Doe should be masked"
 
     def test_default_skip_keys_cover_structural_and_correlation_keys(self):
         assert MaskPIIFilter()._skip_keys == DEFAULT_SKIP_KEYS

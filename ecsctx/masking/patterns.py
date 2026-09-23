@@ -53,7 +53,8 @@ SAFE_KEYS = frozenset({
     "username",  # username usually safe/auditable
     "site_name",
     "domain_name",
-    "display_name",
+    # Not `display_name`: under a customer it is the customer's name, and a
+    # safe key escapes its container.
     "event_name",
     "pathname",  # structlog CallsiteParameterAdder's source-file path, not PII
     "customer_id",
@@ -133,7 +134,10 @@ _EMAIL_KEY_WORDS = r"email"
 # "tel" is matched as a word of the key (_is_tel_key), not as a substring:
 # hotel, hostel and intel are not phone numbers.
 _PHONE_KEY_WORDS = r"phone|mobile"
-_ADDRESS_KEY_WORDS = r"address"
+# An address field named on its own -- a street, a numbered line, EMV 3DS's
+# `billAddrCity` -- not only under an `address` key. `line1` only as the whole
+# key or after `addr`/a separator, so `pipeline1` and `timeline_2` are not.
+_ADDRESS_KEY_WORDS = r"address|street|(?:^|addr|_)line_?[1-3]$|^(?:bill|ship)addr"
 _GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
 
 
@@ -1130,6 +1134,51 @@ def _is_name_key(joined: str) -> bool:
     if "name" not in joined:
         return False
     return any(qualifier in joined for qualifier in _PERSON_QUALIFIERS)
+
+
+# A bare `name` is a person's unless its container names a thing: the payment
+# method's `name` is "Visa/Mastercard", MPGS's `interaction.merchant.name` is
+# the merchant's display name. Words, singular or plural, never substrings --
+# `profile` is not `file`, `upgrade` is not `pg` -- and a person word anywhere
+# in the container's name wins (`merchant_owner`, `bank_account`, `card`).
+_THING_WORDS = frozenset({
+    "method", "gateway", "pg", "bank", "brand", "scheme", "network", "product", "item", "merchant",
+    "store", "plugin", "provider", "service", "currency", "country", "interaction", "device", "browser",
+    "acquirer", "issuer", "wallet", "plan", "option", "header", "queue", "task", "event", "file",
+    "category", "template", "theme",
+})
+# These describe fields AND carry submitted ones: `form_fields.name` is the name
+# field's settings, `params.name` is what someone typed. Only a `name` holding a
+# container is a thing here.
+_DEFINITION_WORDS = frozenset({"form", "field", "param", "parameter", "attribute"})
+_PERSON_CONTEXT = frozenset({
+    *_PERSON_QUALIFIERS, *_PERSON_ROLES,
+    "owner", "member", "subscriber", "attendee", "employee", "staff", "director", "representative",
+    "signatory", "profile", "kyc", "driver", "patient",
+})
+
+
+def _singular(word: str) -> str:
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+    if word.endswith("s") and len(word) > 3 and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+@lru_cache(maxsize=1024)
+def name_context(container: str) -> str | None:
+    """What a bare `name` directly under ``container`` names: ``"thing"``,
+    ``"definition"`` (a thing only if it holds a container), or None -- a
+    person, which is also the answer for a container nothing recognises."""
+    words = [_singular(word.lower()) for word in _KEY_SPLIT.split(container) if word]
+    if any(word in _PERSON_CONTEXT for word in words):
+        return None
+    if any(word in _THING_WORDS for word in words):
+        return "thing"
+    if any(word in _DEFINITION_WORDS for word in words):
+        return "definition"
+    return None
 
 
 # A name ending in one of these names the CVV or credential itself, which no
