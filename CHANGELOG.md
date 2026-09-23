@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.14.0 (2026-09-23)
+
+### Features
+- feat(masking): export key_field_type() for values that reach a log outside a mapping (e011a77)
+- feat(masking): a key the service lists keeps its reference number readable (26b5799)
+- feat(masking)!: walk a credential, CVV or SAD container instead of hashing it whole (1e92bda)
+
+### Fixes
+- fix(masking): an upper-case VALUE key is a pair too (43341b6)
+- fix(masking): record timestamps read through a card object (659a2b8)
+- fix(masking): an int that is a card number, and a bytes body, are masked like text (88f7807)
+- fix(masking): skip keys skip the fields ecsctx owns, not whole subtrees (030f3f4)
+- fix(masking): masking never makes a log call raise, nor lets the unmasked record out (1aacff6)
+- fix(masking): mask a dataclass or namedtuple by its fields; never crash on one (469df2c)
+- fix(masking): a {name, value} pair masks the value by the name beside it (cc18026)
+- fix(masking): a bare `name` is a thing's name under a thing; amounts leave Ottu's billing (8fde3ca)
+- fix(masking): never mask a boolean; keep a card list's PAN truncated (888c487)
+- fix(masking): a national identity number is PII by its key, in every service (42c177f)
+- fix(masking): classify the credential key names that reached logs in clear (c387fb7)
+- fix(masking): a CVV key names the value and fails closed; a key about one is readable (2a20463)
+- fix(masking): a tracking id is not track data; cryptograms and 3DS values are SAD (dc98c67)
+
+### Other
+- Merge pull request #62 from ottuco/fix/pairs-containers-false-positives (fb8ccb9)
+- docs: describe the engine as this round leaves it (d4bd055)
+- perf(masking): keep this round's rules off the hot path (c609215)
+
+
 ## Unreleased
 
 From a live log review of ottu_pg and Connect on 0.13.0. Every change below
