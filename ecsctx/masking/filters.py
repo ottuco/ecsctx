@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterable
 from numbers import Number
 from typing import Any, NamedTuple
@@ -127,6 +128,79 @@ _WALKED_TYPES = frozenset({"card", "cvv", "sad", "secret"})
 _FLOOR_TYPES = frozenset({"cvv", "sad"})
 _CONTAINERS = (dict, list, tuple, set)
 _CARD_NUMBER_KEYS = frozenset({"number", "pan", "cardnumber", "maskednumber", "maskedpan"})
+
+
+# A `{name, value}` pair -- Connect's `order_description`, a HAR header list --
+# names its value in a sibling, where the per-key rules never look: they
+# tokenized the field id under `name` and shipped the customer's name under
+# `value`. The identifier keys, in the order they are consulted.
+_PAIR_IDENTIFIERS = (
+    "key", "field", "field_name", "fieldname", "name", "label", "label_en", "title",
+    "verbose_name", "verbose_name_en", "param", "parameter", "attribute", "header",
+)
+# An identifier looks like a field label, not free text: bounded, few words.
+_IDENTIFIER_SHAPE = re.compile(r"[A-Za-z][A-Za-z0-9 _.\-/]{0,63}")
+_IDENTIFIER_MAX_WORDS = 5
+# When identifiers disagree the strictest wins: "customer_code" says generic,
+# a label saying "CVV" must still mean a CVV, never a keyed hash of one.
+_STRICTNESS = (
+    "sad", "cvv", "card", "secret", "pem_key", "jwt", "iban", "ssn", "payment_id",
+    "email", "phone", "address", "name", "generic",
+)
+# A `name` identifier with spaces reads through only when every word is a field
+# word -- "Customer name", "Card Number" -- because "Eric Holder" and "Pan Wei"
+# classify too, and they are people.
+_FIELD_WORDS = frozenset({
+    "card", "number", "no", "holder", "cardholder", "name", "on", "security", "code", "cvv", "cvc",
+    "expiry", "expiration", "date", "month", "year", "email", "mail", "phone", "mobile", "tel",
+    "telephone", "address", "line", "street", "city", "zip", "postal", "postcode", "customer", "first",
+    "last", "middle", "full", "given", "family", "billing", "shipping", "contact", "pin", "account",
+    "iban", "api", "key", "token", "secret", "password", "user", "username", "id", "national",
+    "civil", "passport", "social", "tax", "payer", "beneficiary", "recipient", "sender", "of", "the",
+})
+# A `name` that classifies as nothing reads through only as a field id.
+_SNAKE_CASE_ID = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
+
+
+def _strictness(field_type: str) -> int:
+    return _STRICTNESS.index(field_type) if field_type in _STRICTNESS else len(_STRICTNESS)
+
+
+def _pair(data: dict, ctx: _Pass, inherited: str | None) -> tuple[str | None, frozenset]:
+    """For a `{..., "value": …}` dict: the type its value takes from its
+    identifier siblings (None if none classifies), and which identifier keys
+    are field labels that read through."""
+    if not any(str(key).lower() == "value" for key in data):
+        return None, frozenset()
+    keys = {str(key).lower(): key for key in data}
+    types = []
+    readable = set()
+    for identifier in _PAIR_IDENTIFIERS:
+        original = keys.get(identifier)
+        if original is None:
+            continue
+        text = data[original]
+        if not (
+            isinstance(text, str)
+            and _IDENTIFIER_SHAPE.fullmatch(text)
+            and len(text.split()) <= _IDENTIFIER_MAX_WORDS
+        ):
+            continue
+        # Uncached: identifier text is data, and some of it is people's names.
+        field_type = classify_key.__wrapped__(text, ctx.packs, ctx.safe)
+        if field_type is None:
+            if identifier == "name" and _SNAKE_CASE_ID.fullmatch(text):
+                readable.add(original)
+            continue
+        types.append(field_type)
+        words = [word.lower() for word in re.split(r"[\s_.\-/]+", text) if word]
+        if identifier != "name" or len(words) == 1 or all(word in _FIELD_WORDS for word in words):
+            readable.add(original)
+    if not types:
+        return None, frozenset(readable)
+    if inherited is not None:
+        types.append(inherited)
+    return min(types, key=_strictness), frozenset(readable)
 
 
 def _is_card_object(data: dict) -> bool:
@@ -264,6 +338,8 @@ class MaskPIIFilter(logging.Filter):
         # The key this dict sits under, for a bare `name` (list and JSON-text
         # markers are not keys).
         container = next((step for step in reversed(path) if step not in ("[*]", _JSON_TEXT)), None)
+        # Under a CVV or SAD container the floor already masks every leaf.
+        pair_type, pair_labels = (None, frozenset()) if inherited in _FLOOR_TYPES else _pair(data, ctx, inherited)
         result = {}
         for key, value in data.items():
             if path == () and key in self._skip_keys:
@@ -276,10 +352,16 @@ class MaskPIIFilter(logging.Filter):
                 continue
             lookup_key = str(key)
             child_path = path + (lookup_key,)
+            if key in pair_labels:
+                # A field label, not a person: judged by content alone.
+                result[key] = self._mask_value(value, child_path, ctx)
+                continue
             field_type = classify_key(lookup_key, ctx.packs, ctx.safe)
             lowered = lookup_key.lower()
             joined = _KEY_SEPARATORS.sub("", lowered)
-            if field_type == "name" and joined in ("name", "names") and container is not None:
+            if pair_type is not None and lowered == "value":
+                field_type = pair_type
+            elif field_type == "name" and joined in ("name", "names") and container is not None:
                 context = name_context(container)
                 if context == "thing" or (context == "definition" and isinstance(value, _CONTAINERS)):
                     field_type = None
