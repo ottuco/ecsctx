@@ -204,6 +204,13 @@ def _pair(data: dict, ctx: _Pass, inherited: str | None) -> tuple[str | None, fr
     return min(types, key=_strictness), frozenset(readable)
 
 
+# Deeper than any payload Ottu logs, shallow enough that a cycle or a crafted
+# body (600 levels of JSON is 3.6 KB) stops long before Python's recursion limit.
+_MAX_DEPTH = 64
+# What a record becomes when masking itself fails: never the unmasked text.
+MASKING_FAILED = "[MASKING-FAILED: {}]"
+
+
 def _is_record(value: Any) -> bool:
     """A namedtuple, or a dataclass instance with a generated repr -- an object
     whose fields have names the key rules can judge. Without a generated repr
@@ -483,6 +490,10 @@ class MaskPIIFilter(logging.Filter):
         """
         if value is None:
             return value
+        if len(path) > _MAX_DEPTH:
+            # A cycle, or nesting nothing legitimate reaches (a crafted body):
+            # stop here rather than recurse into the caller's RecursionError.
+            return f"[{make_label('depth')}]"
         ctx = ctx or self._context()
         if _is_record(value):
             # Before the tuple check: a namedtuple is a tuple.
@@ -575,7 +586,15 @@ class MaskPIIFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         ctx = self._context()
         if not is_masked_object(record, ctx.packs):
-            record.msg = self._mask_value(record.msg, (), ctx)
-            record.args = self._mask_args(record.args, ctx)
+            try:
+                record.msg = self._mask_value(record.msg, (), ctx)
+                record.args = self._mask_args(record.args, ctx)
+            except Exception as error:  # noqa: BLE001 -- nothing here may reach the caller
+                # This runs outside emit()'s handleError, so an exception here
+                # became the caller's: a failed log line failed the payment.
+                # The message is replaced whole -- the one outcome that cannot
+                # leak what masking failed to mask.
+                record.msg = MASKING_FAILED.format(type(error).__name__)
+                record.args = ()
             mark_object_as_masked(record, ctx.packs)
         return True

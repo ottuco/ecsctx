@@ -23,7 +23,7 @@ from ecsctx.masking.exemptions import (
     masking_is_configured,
 )
 from ecsctx.masking.tokens import safe_tokenize
-from ecsctx.masking.filters import MaskPIIFilter
+from ecsctx.masking.filters import MASKING_FAILED, MaskPIIFilter
 from ecsctx.masking.patterns import _truncate_pan
 
 
@@ -456,6 +456,28 @@ def mask_sensitive_data(_logger, _method_name, event_dict):
     earlier in the chain — this processor never parses raw bytes itself.
     """
     to_mask = {k: v for k, v in event_dict.items() if k not in _BOUNDED_EVENT_FIELDS}
-    masked = _default_filter._mask_dict(to_mask)
+    try:
+        masked = _default_filter._mask_dict(to_mask)
+    except Exception as error:  # noqa: BLE001 -- nothing here may reach the caller
+        # A processor runs in the caller's thread: an exception here is the
+        # caller's log call raising. Keep only what the rest of the chain
+        # needs to render a line, and replace everything else.
+        return _masking_failed(event_dict, error)
     event_dict.update(masked)
     return event_dict
+
+
+# What survives a masking failure: the renderer's own bookkeeping (structlog's
+# `_record`/`_from_structlog`), the level, logger and time, and the bounded
+# event fields -- nothing a caller put in.
+_KEPT_ON_MASKING_FAILURE = frozenset({"level", "log_level", "logger", "logger_name", "timestamp", "ecs_event"})
+
+
+def _masking_failed(event_dict: dict, error: Exception) -> dict:
+    kept = {
+        key: value
+        for key, value in event_dict.items()
+        if key.startswith("_") or key in _KEPT_ON_MASKING_FAILURE or key in _BOUNDED_EVENT_FIELDS
+    }
+    kept["event"] = MASKING_FAILED.format(type(error).__name__)
+    return kept

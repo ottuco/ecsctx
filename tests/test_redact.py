@@ -5,6 +5,7 @@ import json
 from django.test import override_settings
 
 from ecsctx.contrib.net import (
+    _DEFAULT_BODY_LOG_CAP,
     configure_redaction,
     ecs_http,
     ecs_url,
@@ -253,10 +254,15 @@ class TestLoggableRequestBody:
         logged = loggable_request_body("ivp_method=create&authkey=telr-s3cret", None)
         assert "telr-s3cret" not in logged
 
-    def test_an_unserialisable_body_is_not_logged(self):
+    def test_a_cyclic_body_is_cut_at_the_depth_cap_not_raised(self):
+        # Until 0.14.0 masking recursed into a RecursionError, caught here as
+        # "not serialisable". The walk now stops at its depth cap, so the body
+        # is logged -- bounded, marked, and capped like any other.
         loop = {}
         loop["self"] = loop
-        assert loggable_request_body(None, loop) is None
+        logged = loggable_request_body(None, loop)
+        assert "[DEPTH-MASKED]" in logged
+        assert len(logged) <= _DEFAULT_BODY_LOG_CAP
 
 
 class TestLoggableBodyDenyList:
