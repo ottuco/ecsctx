@@ -367,18 +367,19 @@ def masked_outputs(sample, **kwargs) -> list:
     return [record.get("extra", {}).get("sample") for record in records]
 
 
-def masked_directly(sample):
+def masked_directly(sample, *args):
     """One sample masked by the engine alone, with the project's packs.
 
     No logger, no handler, no formatter: the value goes on a record and
     MaskPIIFilter masks it, so a case is checked against the engine as well as
-    against what the project's handlers write.
+    against what the project's handlers write. With %-style args, the
+    interpolated message comes back, as a handler would write it.
     """
     from ecsctx.masking.filters import MaskPIIFilter
 
-    record = logging.LogRecord(EVENT, logging.WARNING, __file__, 0, sample, None, None)
+    record = logging.LogRecord(EVENT, logging.WARNING, __file__, 0, sample, args or None, None)
     MaskPIIFilter().filter(record)
-    return record.msg
+    return record.getMessage() if args else record.msg
 
 
 def count_maskers(handler: logging.Handler) -> int:
@@ -530,27 +531,73 @@ class MaskingTestsMixin:
 
         packs = get_masking_packs()
 
-        def needed_pack(sample):
-            return None if group is None else samples.case_pack(group, sample)
+        def check(sample):
+            """Skip what this project's configuration puts out of reach."""
+            if group is not None:
+                pack = samples.case_pack(group, sample)
+                if pack not in packs:
+                    self.skipTest(f"needs the {pack!r} masking pack")
 
         for label, sample, expected in cases:
             with self.subTest(check="engine", case=label):
-                pack = needed_pack(sample)
-                if pack is not None and pack not in packs:
-                    self.skipTest(f"needs the {pack!r} masking pack")
+                check(sample)
                 self.assertEqual(*comparable(masked_directly(sample), expected))
 
         for name, level in self.readable_routes():
             for label, sample, expected in cases:
                 with self.subTest(logger=name, case=label):
-                    pack = needed_pack(sample)
-                    if pack is not None and pack not in packs:
-                        self.skipTest(f"needs the {pack!r} masking pack")
+                    check(sample)
                     for actual in masked_outputs(sample, logger_name=name, level=level):
                         self.assertEqual(*comparable(actual, expected))
 
     def assert_samples_unchanged(self, cases):
         self.assert_samples_masked([(label, sample, sample) for label, sample in cases])
+
+    def assert_stdlib_args_masked(self, cases):
+        """Check (label, message, args, expected, pack) cases twice.
+
+        The message is logged through plain stdlib logging, the path a
+        third-party library takes: the handler interpolates the arguments, so
+        only a filter on the handler can mask them.
+        """
+        from ecsctx.masking import get_masking_packs
+
+        packs = get_masking_packs()
+        for label, message, args, expected, pack in cases:
+            with self.subTest(check="engine", case=label):
+                if pack not in packs:
+                    self.skipTest(f"needs the {pack!r} masking pack")
+                self.assertEqual(*comparable(masked_directly(message, *args), expected))
+
+        for name, level in self.readable_routes():
+            for label, message, args, expected, pack in cases:
+                with self.subTest(logger=name, case=label):
+                    if pack not in packs:
+                        self.skipTest(f"needs the {pack!r} masking pack")
+                    for record in capture_stdlib_log(
+                        message, *args, logger_name=name, level=level
+                    ):
+                        self.assertEqual(*comparable(record.get("message"), expected))
+
+    def assert_samples_unchanged_without_pack(self, cases):
+        """Check (label, sample, pack) cases: text the pack would mask, on a
+        project that leaves the pack off, must come through untouched."""
+        from ecsctx.masking import get_masking_packs
+
+        packs = get_masking_packs()
+        for label, sample, pack in cases:
+            with self.subTest(check="engine", case=label):
+                if pack in packs:
+                    self.skipTest(f"the {pack!r} pack is on, so this rule applies")
+                self.assertEqual(masked_directly(sample), sample)
+
+        for name, level in self.readable_routes():
+            for label, sample, pack in cases:
+                with self.subTest(logger=name, case=label):
+                    if pack in packs:
+                        self.skipTest(f"the {pack!r} pack is on, so this rule applies")
+                    for actual in masked_outputs(sample, logger_name=name, level=level):
+                        self.assertEqual(actual, sample)
 
     def test_masks_pem_key_blocks(self):
         self.assert_samples_masked(samples.PEM_MASKED_CASES, group="pem")
@@ -587,6 +634,12 @@ class MaskingTestsMixin:
 
     def test_masks_objects_and_leaves_primitives(self):
         self.assert_samples_masked(samples.OBJECT_AND_PRIMITIVE_CASES, group="object_and_primitive")
+
+    def test_masks_stdlib_args(self):
+        self.assert_stdlib_args_masked(samples.STDLIB_ARGS_CASES)
+
+    def test_opt_in_rules_stay_off_until_enabled(self):
+        self.assert_samples_unchanged_without_pack(samples.WITHOUT_PACK_CASES)
 
     def test_does_not_over_mask(self):
         self.assert_samples_unchanged(samples.NOT_MASKED)

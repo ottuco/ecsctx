@@ -662,6 +662,18 @@ ACCEPTED_LEAK_CASES = [
 ]
 
 
+# Plain stdlib logging, where the handler interpolates the arguments:
+# (label, message, args, expected message, pack the case needs). Only a filter
+# on the handler sees these — a structlog processor runs too late.
+STDLIB_ARGS_CASES: list[tuple[str, str, tuple, str, str]] = []
+
+
+# Text an opt-in pack would mask, listed for the services that leave that pack
+# off: (label, sample, the pack that must be off). Turning the pack on is what
+# masks it, so the case runs only where it is off.
+WITHOUT_PACK_CASES: list[tuple[str, object, str]] = []
+
+
 MASKED_GROUPS = {
     "pem": PEM_MASKED_CASES,
     "credential": CREDENTIAL_MASKED_CASES,
