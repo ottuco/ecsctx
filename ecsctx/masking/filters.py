@@ -30,6 +30,7 @@ from ecsctx.masking.exemptions import (
 )
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import (
+    _MIN_PAN_DIGITS,
     ALL_PACKS,
     SAFE_KEYS,
     classify_key,
@@ -40,7 +41,7 @@ from ecsctx.masking.patterns import (
     rules_for,
     scalar_rules,
 )
-from ecsctx.masking.tokens import mask_by_field_type
+from ecsctx.masking.tokens import make_label, mask_by_field_type
 
 _IS_MASKED_ = "_IS_MASKED_"
 
@@ -139,6 +140,22 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     return mask_by_field_type(text, field_type)
 
 
+def _mask_card_list_element(value: Any) -> Any:
+    """A bare value in a list under a card key -- `card=(pan, month, cvv)`.
+
+    A dict leaf under a card object is judged by its own key; a list element
+    has none, so there is no telling a CVV or a holder's name from a brand.
+    What carries enough digits to be a PAN keeps the truncation PCI DSS allows;
+    anything else stays masked whole.
+    """
+    if value == "":
+        return value
+    text = str(value)
+    if sum(character.isdigit() for character in text) >= _MIN_PAN_DIGITS:
+        return mask_card_value(value)
+    return f"[{make_label('card')}]"
+
+
 class MaskPIIFilter(logging.Filter):
     """Masks PII and PCI-sensitive data in log records before they reach a handler.
 
@@ -205,6 +222,11 @@ class MaskPIIFilter(logging.Filter):
         result = {}
         for key, value in data.items():
             if path == () and key in self._skip_keys:
+                result[key] = value
+                continue
+            if isinstance(value, bool):
+                # One bit: never PII, SAD or a credential, whatever its key or
+                # container. Masking it only destroyed the flag.
                 result[key] = value
                 continue
             lookup_key = str(key)
@@ -283,6 +305,10 @@ class MaskPIIFilter(logging.Filter):
             return self._mask_iterable(value, path, ctx, inherited)
         if isinstance(value, dict):
             return self._mask_dict(value, path, ctx, inherited)
+        if isinstance(value, bool):
+            return value
+        if inherited == "card":
+            return _mask_card_list_element(value)
         if inherited is not None:
             return _mask_pii_leaf(str(value), inherited, ctx)
         if isinstance(value, (bool, int, float)):
