@@ -297,7 +297,9 @@ class TestAPanOutranksEveryOtherClassification:
             "billing_address",
             "udf1",
             "contact",
-            "card_token",
+            # `card_token` was here until 0.14.0. A credential shaped like a PAN
+            # is masked whole now, never truncated: truncation showed ten digits
+            # of a sixteen-digit gateway token (test_masking_credential_containers.py).
         ],
     )
     def test_a_pan_under_a_pii_key_is_truncated_not_tokenized(

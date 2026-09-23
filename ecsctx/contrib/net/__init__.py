@@ -313,7 +313,9 @@ def loggable_request_body(data: Any, json_body: Any) -> str | None:
 
     ``json_body`` wins over form ``data``, as in ``requests``. Never raises:
     logging must not be the thing that breaks a payment, so a body that
-    cannot be serialised is simply not logged.
+    cannot be serialised is simply not logged. A cyclic body no longer lands
+    there: masking cuts it at its depth cap, so it is logged bounded and
+    marked like any other.
     """
     body = json_body if json_body is not None else data
     if body is None:

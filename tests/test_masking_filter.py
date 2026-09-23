@@ -881,9 +881,10 @@ DICT_KEY_VALUE_MASKING_CASES = [
     ("key-mixed-case-cvv", {"Cvv": "123"}, {"Cvv": "[CVV-MASKED]"}),
     ("key-camelcase-security-code-int", {"securityCode": 999}, {"securityCode": "[CVV-MASKED]"}),
     (
-        "key-nested-under-sensitive-key-blanket-masked",
+        # Walked since 0.14.0: the shape stays, every unnamed leaf is the secret.
+        "key-nested-under-sensitive-key-walked-and-masked",
         {"data": {"token": {"nested": "stuff", "more": 1}}},
-        {"data": {"token": "[SECRET-MASKED]"}},
+        {"data": {"token": {"nested": "[SECRET-MASKED]", "more": "[SECRET-MASKED]"}}},
     ),
 ]
 
@@ -1116,15 +1117,16 @@ class TestJsonTextIsMaskedByKey:
         assert body == as_dict["http"]["request"]["body"]["body"]
         # The card object is walked exactly as it is in a dict: the cardholder
         # name is masked, the brand and expiry read through, and the number --
-        # already truncated by the gateway -- is left as it arrived. A token
-        # object is still one unit: `secret` is not walkable.
+        # already truncated by the gateway -- is left as it arrived. Since
+        # 0.14.0 the token object is walked too, as a credential: the name on
+        # the card is masked, the brand and expiry read.
         assert body["pg_response"]["sourceOfFunds"]["provided"]["card"] == {
             "brand": "VISA",
             "expiry": {"month": "1", "year": "28"},
             "nameOnCard": "[NAME-MASKED]",
             "number": "450875xxxxxx1019",
         }
-        assert body["token"] == "[SECRET-MASKED]"
+        assert body["token"] == {"name_on_card": "[NAME-MASKED]", "expiry_month": "01", "brand": "Visa"}
         # What is not sensitive is still there to debug with.
         assert body["operation"] == "purchase"
         assert body["status"] == "error"
@@ -1160,10 +1162,12 @@ class TestJsonTextIsMaskedByKey:
         assert _mask(sample) == sample
 
     def test_content_rules_still_run_on_the_masked_text(self):
-        """A card number logged as a JSON number is caught by the content
-        rules, as it was when the string was only scanned as text."""
+        """A card number logged as a JSON number is caught, as it was when the
+        string was only scanned as text. Since 0.14.0 the key pass truncates
+        the int itself, so it comes back a quoted string -- valid JSON, where
+        the text rescan used to leave `"ref": 411111******1111`."""
         out = _mask('{"nameOnCard": "Jane Payer", "ref": 4111111111111111}')
-        assert out == '{"nameOnCard": "[NAME-MASKED]", "ref": 411111******1111}'
+        assert out == '{"nameOnCard": "[NAME-MASKED]", "ref": "411111******1111"}'
 
     def test_text_that_is_not_json_gets_the_content_rules_only(self):
         assert _mask("{not json} a@b.com") == "{not json} [EMAIL-MASKED]"
@@ -1199,9 +1203,11 @@ class TestMaskPIIFilterEngine:
         assert out["wrapper"]["service"] == "not really structural"
 
     def test_custom_skip_keys_empty_masks_everything(self):
+        # A person's name under `service`, not the service's own `name` -- since
+        # 0.14.0 a service's name is a thing's name and reads through.
         flt = MaskPIIFilter(skip_keys=())
-        out = flt._mask_value({"service": {"name": "John Doe should be masked"}})
-        assert out["service"]["name"] != "John Doe should be masked"
+        out = flt._mask_value({"service": {"customer_name": "John Doe should be masked"}})
+        assert out["service"]["customer_name"] != "John Doe should be masked"
 
     def test_default_skip_keys_cover_structural_and_correlation_keys(self):
         assert MaskPIIFilter()._skip_keys == DEFAULT_SKIP_KEYS

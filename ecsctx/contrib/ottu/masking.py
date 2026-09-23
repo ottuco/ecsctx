@@ -28,9 +28,36 @@ SAFE_KEYS = frozenset({
     "pg_name",
     "cvv_required",
     "cvv_required_for_card_payment",
+    # The saved card's gateway code, read through when the card is walked under
+    # its `token` key in ottu_pg's webhook.
+    "pg_code",
+    # Ottu's `billing` is the fee breakdown shown on the checkout page, not an
+    # address, but `billing` stays a PII container (elsewhere it holds a city
+    # and a postcode). Its own keys are listed instead, so the amounts escape
+    # the container: they went out tokenized on both services.
+    "amount",
+    "sub_total",
+    "fee",
+    "wallet_amount",
+    "pg_amount",
     # MPGS: the acquirer's processing and response codes ("authorization" is a
     # credential word to the key rules).
     "authorizationresponse",
+    # MPGS's CVV-check verdict, `response.cardSecurityCode = {"acquirerCode":
+    # "M", "gatewayCode": "MATCH"}`. Under a CVV key only a listed name reads
+    # through, and these name the result of the check, not the CVV.
+    "acquirercode",
+    "gatewaycode",
+    # MPGS's acquirer references -- what a reconciliation or a chargeback is
+    # fought with. A listed key keeps a reference number of up to 14 digits
+    # readable: the RRN (`receipt`, 12), `posData` (13), the acquirer's
+    # `merchantId` (9, which the SSN rule took for a social security number).
+    "receipt",
+    "rrn",
+    "posdata",
+    "merchantid",
+    "stan",
+    "trackid",
     # Payment-configuration names and statuses, in ecsctx's built-in list until
     # 0.9.0.
     "gateway_name",

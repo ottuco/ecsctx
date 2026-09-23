@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+From a live log review of ottu_pg and Connect on 0.13.0. Every change below
+has a test that fails on 0.13.0.
+
+### Changed (breaking)
+
+- A credential, CVV or SAD key holding a container is walked, not hashed or
+  labelled as one unit: the value in the log is a mapping. A card-shaped
+  object under a credential key (a number plus an expiry — ottu_pg's saved
+  card under `token`) is walked as the card it is.
+- A PAN-shaped value under a credential key (`card_token`, a numeric
+  `api_key`) is `[SECRET-MASKED]`, no longer truncated: truncation showed ten
+  of its digits.
+- A key the service lists (`ECSCTX_MASK_SAFE_KEYS`) keeps a digits-only
+  reference number of up to 14 digits readable; 15–19 digits always truncate.
+- `display_name` left the core safe keys (under a customer it is theirs).
+
+### Added
+
+- `ecsctx.masking.key_field_type(key)` — the type the engine gives a key name,
+  for a value outside a mapping (a URL segment).
+- Key rules: national ids (`civil_id`, `passport`, `qid`, `iqama`, `cpr`, …) →
+  `ssn` in every pack; payment cryptograms and 3DS values (`cryptogram`,
+  `cavv`, `ucaf`) and chip data → `sad`; credential names that reached logs in
+  clear (`HTTP_AUTHORIZATION`, `Cookie`, `passphrase`, `vpc_AccessCode`, …).
+- Ottu preset: MPGS's CVV verdict codes, acquirer references and the fee
+  breakdown keys.
+
+### Fixed
+
+- A customer's name in a `{name, value}` pair (Connect's `order_description`)
+  shipped in clear while the field id was tokenized; a pair's value is now
+  masked by its identifier, whatever the case of its keys (`VALUE` too). The
+  same closed `{"name": "cvv", "value": "123"}`.
+- `track_id` / "Track ID" read as track data; a CVV key missed `security-code`
+  and masked MPGS's CVV verdict; a bare `name` under a thing (payment method,
+  merchant) was a person; booleans were masked; a card list lost its PAN
+  truncation; an int PAN and a bytes body shipped in clear.
+- A dataclass's fields shipped in clear inside its repr (the Trandata leak).
+- Masking could make a log call raise (namedtuple, cyclic or deeply nested
+  input); it now never does, and a failure replaces the message whole.
+- `service`/`log`/`trace` skipped their whole subtrees, so a caller's
+  `service.card_number` shipped in clear.
+
+### Known
+
+- `_mask_json_text` still rescans a whole JSON text as prose, so the
+  reference-number exemption does not reach a body logged as text.
+
 ## v0.13.0 (2026-09-22)
 
 ### Features

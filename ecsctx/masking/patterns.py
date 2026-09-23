@@ -53,7 +53,8 @@ SAFE_KEYS = frozenset({
     "username",  # username usually safe/auditable
     "site_name",
     "domain_name",
-    "display_name",
+    # Not `display_name`: under a customer it is the customer's name, and a
+    # safe key escapes its container.
     "event_name",
     "pathname",  # structlog CallsiteParameterAdder's source-file path, not PII
     "customer_id",
@@ -67,6 +68,25 @@ SAFE_KEYS = frozenset({
     "filename",
     "token_type",
     "sec-ch-ua-mobile",
+    # OAuth token metadata (RFC 6749), like `token_type`: read through when a
+    # token response is walked under its credential key.
+    "expires_in",
+    "expires_at",
+    "refresh_expires_in",
+    "scope",
+    # What a card object says about itself without being the card: the network
+    # and the BIN, which PCI DSS 3.4.1 lets anyone display. Listed so they read
+    # through a credential container too -- the saved card under `token`.
+    "brand",
+    "scheme",
+    "bin",
+    # Record bookkeeping timestamps: never PII or a card, but fourteen digits,
+    # which the card rule refuses under a card key as "not a clean PAN" --
+    # `Card.as_dict()` carries both.
+    "created",
+    "modified",
+    "created_at",
+    "updated_at",
     # Expiry. Cardholder Data rather than Sensitive Authentication Data, so
     # PCI DSS permits storing it and ecsctx no longer classifies it. Listed
     # here as well so it escapes a PII container's sweep: inside a `payer` or
@@ -109,7 +129,7 @@ _CRED_KEYWORD = (
 
 # Card verification code keywords — cvv/cvc/security code are all the same
 # thing under different names depending on card scheme/vendor terminology.
-_CVV_KEYWORD = r"(?:cvv|cvc|security[_\s]?code)"
+_CVV_KEYWORD = r"(?:cvv|cvc|security[-_.\s]?code)"
 
 # Payment/transaction/auth id keywords.
 _PAYMENT_ID_KEYWORD = r"(?:payment|transaction|auth)[_\s-]?id"
@@ -121,7 +141,10 @@ _EMAIL_KEY_WORDS = r"email"
 # "tel" is matched as a word of the key (_is_tel_key), not as a substring:
 # hotel, hostel and intel are not phone numbers.
 _PHONE_KEY_WORDS = r"phone|mobile"
-_ADDRESS_KEY_WORDS = r"address"
+# An address field named on its own -- a street, a numbered line, EMV 3DS's
+# `billAddrCity` -- not only under an `address` key. `line1` only as the whole
+# key or after `addr`/a separator, so `pipeline1` and `timeline_2` are not.
+_ADDRESS_KEY_WORDS = r"address|street|(?:^|addr|_)line_?[1-3]$|^(?:bill|ship)addr"
 _GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
 
 
@@ -219,6 +242,27 @@ _SINGLE_MARKER = re.compile(
     rf"\[[A-Z0-9-]+-MASKED(?::ptok:[\w:.-]+)?\]|{_TRUNCATED_PAN}"
     rf"|\[CARD-MASKED:{_TRUNCATED_PAN}\]|ptok:[\w:.-]+"
 )
+
+
+def _luhn_valid(digits: str) -> bool:
+    total = 0
+    for position, character in enumerate(reversed(digits)):
+        number = int(character)
+        if position % 2:
+            number *= 2
+            if number > 9:
+                number -= 9
+        total += number
+    return total % 10 == 0
+
+
+def int_is_pan(value: int) -> bool:
+    """Whether an int is a card number: 12-19 digits, a payment-network issuer
+    prefix (2-6), and a Luhn pass. Numbers are otherwise never content-scanned,
+    so this is what stops `{"ref": 4111111111111111}` shipping whole -- without
+    reading an epoch-millisecond timestamp (it starts with 1) as a card."""
+    digits = str(abs(value))
+    return _MIN_PAN_DIGITS <= len(digits) <= 19 and digits[0] in "23456" and _luhn_valid(digits)
 
 
 def pan_shaped(text: str) -> bool:
@@ -916,14 +960,14 @@ def mask_by_all_patterns(text: str) -> str:
 # payloads use (phonenumber, cardcvv, nameoncard); its known false positives are
 # SAFE_KEYS.
 #
-# Four types are NOT here, because a substring was the wrong test for them and
+# Five types are NOT here, because a substring was the wrong test for them and
 # each has a named predicate instead (see classify_key, which spells the order
 # out): `card` and `sad`, matched precisely -- "card" alone is in card_id and
-# discard; `secret`, where the credential word must END the key, so
+# discard; `cvv`, which is released when the key is about one
+# (`cvv_required`); `secret`, where the credential word must END the key, so
 # `schemeTokenProvisioningMode` is not a token; and `name`, which needs a person
 # qualifier, so `domainName` is not a person.
 KEYWORD_REGEX_FIELD_TYPE = (
-    (_CVV_KEYWORD, "cvv"),
     (_PAYMENT_ID_KEYWORD, "payment_id"),
     (_EMAIL_KEY_WORDS, "email"),
     (_PHONE_KEY_WORDS, "phone"),
@@ -971,17 +1015,96 @@ def _is_tel_key(words: list[str]) -> bool:
 # leaves are walked since 0.13.0; before that the container collapsed and these
 # never reached a log by name.
 _SAD_KEY_WORDS = frozenset({
-    "track", "track1", "track2", "trackdata", "track1data", "track2data",
-    "magstripe", "magneticstripe", "magnetic",
+    "track1", "track2", "track3", "trackdata", "track1data", "track2data", "track3data",
+    "track2equivalent", "track2equivalentdata",
+    "magstripe", "magstripedata", "magneticstripe", "magneticstripedata",
     "pin", "pinblock", "pincode", "cardpin", "atmpin",
-    "emvrequest", "emvresponse", "emvdata",
+    "emvrequest", "emvresponse", "emvdata", "emvtags", "iccdata", "chipdata", "de55", "field55",
 })
+
+# `track` and `magnetic` on their own are the stripe only as the head of a key
+# that names the data -- `track`, `raw_track`, `trackTwo`. Followed by an id-ish
+# word they name a payment: KNET's `track_id` and the "Track ID" line in every
+# Connect payment's details went out as [SAD-MASKED] in 0.13.0, and SAD can
+# never be listed as safe, so nothing could undo it.
+_TRACK_HEADS = ("track", "magnetic")
+_TRACK_TAILS = frozenset({
+    "", "1", "2", "3", "one", "two", "three", "data", "equivalent", "equivalentdata", "image", "raw", "stripe",
+})
+
+# A wallet's payment cryptogram and a 3DS authentication value: one-time values
+# that authenticate a transaction, which nothing reads in a log. Matched at the
+# END of the key, so a verdict about one (`cavvResponseCode`) is not one.
+_SAD_KEY_ENDING = re.compile(r"(?:cryptogram|cavv|tavv|aav|ucaf(?:authenticationdata)?)(?:value|data)?$")
 
 
 def _is_sad_key(joined: str, words: list[str]) -> bool:
     # Whole words, never substrings: "pin" is inside shipping and mapping,
     # "track" inside backtrack. The glued form is checked too, for track2data.
-    return joined in _SAD_KEY_WORDS or any(word in _SAD_KEY_WORDS for word in words)
+    if joined in _SAD_KEY_WORDS or any(word in _SAD_KEY_WORDS for word in words):
+        return True
+    if _SAD_KEY_ENDING.search(joined):
+        return True
+    for head in _TRACK_HEADS:
+        if head in words:
+            at = len(words) - 1 - words[::-1].index(head)
+            if "".join(words[at + 1 :]) in _TRACK_TAILS:
+                return True
+    return False
+
+
+# A CVV word anywhere in the key names the value -- unless what follows it names
+# something ABOUT one. Fail closed: `cvv_input`, `cvv_hash` and a plural are the
+# value, because a new spelling of a CVV must not read through for want of a
+# list entry; only a recognised "about" tail (`cvv_required`, MPGS's
+# `cardSecurityCodeError`) is released. Matched on the separator-free key: the
+# old substring search ran on the lowercased key, where `-` survives, so
+# `security-code` shipped in clear.
+_CVV_GLUED = re.compile(r"cvv|cvc|securitycode|verificationvalue")
+_CVV_WORDS = frozenset({"csc", "cvd", "cvd2", "cvn", "cvn2", "cav2", "cvnumber", "cardcode"})
+_CVV_WORD_PAIRS = (("card", "code"), ("cv", "number"))
+_CVV_ABOUT = re.compile(
+    r"(?:is|was)?(?:required|requirement|present|presence|provided|indicator|result|response|check|"
+    r"status|match|error|policy|enabled|disabled|mode|supported|length|len|size|format|type|verified|"
+    r"verification|valid|invalid|attempt|allowed|optional|mandatory|label|placeholder|message|hint|"
+    r"description|for|iframe|only)\w*"
+)
+
+
+def _is_cvv_key(joined: str, words: list[str]) -> bool:
+    last = None
+    for last in _CVV_GLUED.finditer(joined):
+        pass
+    if last is not None:
+        tail = joined[last.end() :]
+    else:
+        at = next((i for i, word in enumerate(words) if word in _CVV_WORDS), None)
+        if at is None:
+            at = next(
+                (i + 1 for i in range(len(words) - 1) if (words[i], words[i + 1]) in _CVV_WORD_PAIRS),
+                None,
+            )
+        if at is None:
+            return False
+        tail = "".join(words[at + 1 :])
+    return not (tail and _CVV_ABOUT.fullmatch(tail))
+
+
+# A person's national identity number, named by its key. Words for the short
+# forms (`qid`, `cpr`, `nid` are too short to find inside a longer word),
+# substrings for the glued ones (`customer_civil_id`, `nationalIdNumber`).
+# Kuwait's civil id is 12 digits, which the `pci` card rule truncates only by
+# accident; a service without that pack shipped it whole.
+_NATIONAL_ID_WORDS = frozenset({"ssn", "sin", "tin", "cpr", "nid", "qid", "iqama", "aadhaar", "passport"})
+_NATIONAL_ID_GLUED = re.compile(r"socialsecurity|nationalid|civilid|taxid|emiratesid")
+
+
+def _is_national_id_key(joined: str, words: list[str]) -> bool:
+    return (
+        any(word in _NATIONAL_ID_WORDS for word in words)
+        or _NATIONAL_ID_GLUED.search(joined) is not None
+        or joined == "idnumber"
+    )
 
 
 def _is_holder_key(words: list[str]) -> bool:
@@ -999,14 +1122,19 @@ def _is_holder_key(words: list[str]) -> bool:
 # deliberately keeps readable.
 _CRED_KEY_JOINED = re.compile(
     r"^(?:bearer|basic|digest|credentials?)$"
-    r"|^authori[sz]ation(?:header)?$"
+    # The header under its WSGI (`HTTP_AUTHORIZATION`) and proxy spellings too.
+    r"|^(?:http)?(?:proxy)?authori[sz]ation(?:header)?$"
+    # A cookie carries the session id, which is a credential.
+    r"|^(?:http|set|httpset|session|auth)?cookies?$"
     # The credential word ends the key, or is followed only by a word naming a
     # derivative of it -- `password_hash` is still the password's secret, while
     # `tokenization_status` and `schemeTokenProvisioningMode` are metadata about
     # a token and carry none of it.
-    r"|(?:token|secret|password|passwd)s?(?:hash|digest|value|blob|data)?$"
+    r"|(?:token|secret|password|passwd|passphrase|passcode|pwd)s?(?:hash|digest|value|blob|data)?$"
     r"|(?:secret|private|public|encryption|decryption|signing|"
-    r"access|master|root|session|api)key$"
+    r"access|master|root|session|api|hmac|aes|merchant|shared|client)keys?$"
+    # MIGS's `vpc_AccessCode`: the merchant access code, a gateway credential.
+    r"|accesscode$"
 )
 
 
@@ -1036,6 +1164,51 @@ def _is_name_key(joined: str) -> bool:
     return any(qualifier in joined for qualifier in _PERSON_QUALIFIERS)
 
 
+# A bare `name` is a person's unless its container names a thing: the payment
+# method's `name` is "Visa/Mastercard", MPGS's `interaction.merchant.name` is
+# the merchant's display name. Words, singular or plural, never substrings --
+# `profile` is not `file`, `upgrade` is not `pg` -- and a person word anywhere
+# in the container's name wins (`merchant_owner`, `bank_account`, `card`).
+_THING_WORDS = frozenset({
+    "method", "gateway", "pg", "bank", "brand", "scheme", "network", "product", "item", "merchant",
+    "store", "plugin", "provider", "service", "currency", "country", "interaction", "device", "browser",
+    "acquirer", "issuer", "wallet", "plan", "option", "header", "queue", "task", "event", "file",
+    "category", "template", "theme",
+})
+# These describe fields AND carry submitted ones: `form_fields.name` is the name
+# field's settings, `params.name` is what someone typed. Only a `name` holding a
+# container is a thing here.
+_DEFINITION_WORDS = frozenset({"form", "field", "param", "parameter", "attribute"})
+_PERSON_CONTEXT = frozenset({
+    *_PERSON_QUALIFIERS, *_PERSON_ROLES,
+    "owner", "member", "subscriber", "attendee", "employee", "staff", "director", "representative",
+    "signatory", "profile", "kyc", "driver", "patient",
+})
+
+
+def _singular(word: str) -> str:
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+    if word.endswith("s") and len(word) > 3 and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+@lru_cache(maxsize=1024)
+def name_context(container: str) -> str | None:
+    """What a bare `name` directly under ``container`` names: ``"thing"``,
+    ``"definition"`` (a thing only if it holds a container), or None -- a
+    person, which is also the answer for a container nothing recognises."""
+    words = [_singular(word.lower()) for word in _KEY_SPLIT.split(container) if word]
+    if any(word in _PERSON_CONTEXT for word in words):
+        return None
+    if any(word in _THING_WORDS for word in words):
+        return "thing"
+    if any(word in _DEFINITION_WORDS for word in words):
+        return "definition"
+    return None
+
+
 # A name ending in one of these names the CVV or credential itself, which no
 # service may list as safe; "cvv_required" or "tokenization_status" only
 # describe one. Matched on the lowercased key with separators removed.
@@ -1046,9 +1219,18 @@ _NEVER_SAFE_ENDING = re.compile(
 )
 
 
+# What a service may never list as safe, by the type the classifier gives it.
+_NEVER_SAFE_TYPES = frozenset({"card", "cvv", "sad", "secret"})
+
+
 def never_safe(key: str) -> bool:
-    """Whether no service may list ``key`` as safe: a card key as the classifier
-    finds them, or a name ending in a CVV or credential word.
+    """Whether no service may list ``key`` as safe: anything the classifier
+    calls a card, CVV, SAD or credential, or a name ending in a CVV or
+    credential word.
+
+    It asks the classifier rather than repeating it: the separate suffix list
+    had drifted, and accepted `cvv_number`, `password_hash` and `tokens` --
+    names the classifier masks -- so listing one switched its mask off.
 
     Expiry is not here. It is no longer masked at all, so refusing to let a
     service whitelist a key that nothing masks would say nothing.
@@ -1060,6 +1242,7 @@ def never_safe(key: str) -> bool:
         _is_card_key(lowered, joined, words)
         or _is_sad_key(joined, words)
         or _NEVER_SAFE_ENDING.search(joined) is not None
+        or classify_key(key, ALL_PACKS) in _NEVER_SAFE_TYPES
     )
 
 
@@ -1092,6 +1275,8 @@ def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozens
     # field is still truncated.
     if _is_sad_key(joined, words):
         return "sad"
+    if _is_cvv_key(joined, words):
+        return "cvv"
     for pattern, field_type in KEYWORD_PATTERN_FIELD_TYPE:
         if field_type == "payment_id":
             # The two name-matched types sit here, between CVV and payment_id,
@@ -1100,6 +1285,10 @@ def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozens
                 return "card"
             if _is_cred_key(joined):
                 return "secret"
+            # Before the pack gate and before `generic`: a person's identity
+            # number is PII in every service (`customer_civil_id` too).
+            if _is_national_id_key(joined, words):
+                return "ssn"
             if "financial_ids" not in packs:
                 continue
         if field_type == "phone" and _is_tel_key(words):

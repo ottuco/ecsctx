@@ -136,30 +136,30 @@ class TestMaskingExemptionSetting:
         assert not hasattr(processors_module, "_auto_configure_masking")
         assert not hasattr(processors_module, "_reset_masking_settings_flag")
 
-    @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["payment_methods[*].name"])
+    @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["beneficiaries[*].name"])
     def test_setting_applies_on_the_first_mask(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         # "profile" (not "customer") — "customer" is itself a sensitive
         # keyword (see ecsctx.masking.patterns) and would blanket-mask the
         # whole dict instead of just its nested "name".
         out = _mask(
-            {"payment_methods": [{"name": "KNET"}], "profile": {"name": "John"}}
+            {"beneficiaries": [{"name": "KNET"}], "profile": {"name": "John"}}
         )
-        assert out["payment_methods"][0]["name"] == "KNET"
+        assert out["beneficiaries"][0]["name"] == "KNET"
         assert re.fullmatch(r"ptok:v1:[\w-]+", out["profile"]["name"])
 
-    @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["payment_methods[*].name"])
+    @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["beneficiaries[*].name"])
     def test_a_log_line_through_the_injector_honours_it(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         contextvars_injector(None, None, {"event": "hello"})
-        out = _mask({"payment_methods": [{"name": "KNET"}]})
-        assert out["payment_methods"][0]["name"] == "KNET"
+        out = _mask({"beneficiaries": [{"name": "KNET"}]})
+        assert out["beneficiaries"][0]["name"] == "KNET"
 
     def test_absent_setting_falls_back_to_the_env_var(self, monkeypatch, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "payment_methods[*].name")
-        out = _mask({"payment_methods": [{"name": "KNET"}]})
-        assert out["payment_methods"][0]["name"] == "KNET"
+        monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "beneficiaries[*].name")
+        out = _mask({"beneficiaries": [{"name": "KNET"}]})
+        assert out["beneficiaries"][0]["name"] == "KNET"
 
     @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["profile.name"])
     def test_explicit_configure_beats_setting(self, token_keyset_path):

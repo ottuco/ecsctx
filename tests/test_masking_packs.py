@@ -136,8 +136,9 @@ class TestKeyNames:
             # 0.13.0 the library no longer claims every `*_name` as a person, so
             # there is far less for a service to list.
             "customer_name",
-            "cvv_required",
             "card_token",
+            # `cvv_required` was here until 0.14.0: a key *about* a CVV is no
+            # longer classified at all (test_masking_cvv_keys.py).
         ],
     )
     def test_a_services_own_names_are_masked_until_it_lists_them(self, key):

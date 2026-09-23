@@ -81,12 +81,12 @@ class TestSentryChainKeepsTheException:
 
 class TestExemptionSettingAppliesFirstTime:
     def test_a_record_masked_before_any_structlog_line_honours_the_setting(self, settings):
-        settings.ECSCTX_MASK_EXEMPT_PATHS = ["payment_methods[*].name"]
+        settings.ECSCTX_MASK_EXEMPT_PATHS = ["beneficiaries[*].name"]
         record = logging.LogRecord(
-            "t", logging.INFO, __file__, 0, {"payment_methods": [{"name": "KNET"}]}, None, None
+            "t", logging.INFO, __file__, 0, {"beneficiaries": [{"name": "KNET"}]}, None, None
         )
         MaskPIIFilter().filter(record)
-        assert record.msg == {"payment_methods": [{"name": "KNET"}]}
+        assert record.msg == {"beneficiaries": [{"name": "KNET"}]}
 
 
 class TestPIIContainersKeepTheirShape:
@@ -114,8 +114,10 @@ class TestPIIContainersKeepTheirShape:
         masked = MaskPIIFilter()._mask_dict(
             {"billing": {"line1": "1 Main St", "city": "Kuwait City", "zip": 12345}}
         )
+        # `line1` is an address by its own name since 0.14.0, so it carries the
+        # address label rather than the container's; the rest take `billing`'s.
         assert masked == {
-            "billing": {"line1": "[GENERIC-MASKED]", "city": "[GENERIC-MASKED]", "zip": "[GENERIC-MASKED]"}
+            "billing": {"line1": "[ADDRESS-MASKED]", "city": "[GENERIC-MASKED]", "zip": "[GENERIC-MASKED]"}
         }
 
     def test_a_card_inside_a_customer_keeps_its_shape_too(self):
@@ -133,9 +135,11 @@ class TestPIIContainersKeepTheirShape:
         masked = MaskPIIFilter()._mask_dict({"contacts": [{"name": "Jane", "email": "a@b.co"}]})
         assert masked == {"contacts": [{"name": "[NAME-MASKED]", "email": "[EMAIL-MASKED]"}]}
 
-    def test_a_secret_container_is_still_masked_whole(self):
+    def test_a_secret_container_keeps_its_shape_and_masks_every_leaf(self):
+        # Walked since 0.14.0 (it was one unit): a leaf with no rule of its own
+        # takes the credential's type, so nothing in it reads.
         assert MaskPIIFilter()._mask_dict({"credentials": {"user": "u", "password": "p"}}) == {
-            "credentials": "[SECRET-MASKED]"
+            "credentials": {"user": "[SECRET-MASKED]", "password": "[SECRET-MASKED]"}
         }
 
 
