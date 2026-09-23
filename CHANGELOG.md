@@ -28,12 +28,13 @@
 
 - `url.path` on the same two lines carried a credential in a path segment in
   clear (Connect's `DELETE /pbl/v2/card/<token>`, ottu_pg's
-  `/v1/pbl/card/token/<str:token>/`). Each route parameter whose name the
-  engine classifies is now masked by
-  `mask_by_field_type(value, key_field_type(name))`:
-  `/v1/cards/[SECRET-MASKED]/`, or the bare `ptok:` token where PII
-  tokenization is configured. A parameter it leaves alone (`pk`, `uid`) stays
-  readable, and so does the mount prefix.
+  `/v1/pbl/card/token/<str:token>/`). Each segment a route parameter fills is
+  now masked by `mask_by_field_type(value, key_field_type(name))` when the
+  engine classifies its name: `/v1/cards/[SECRET-MASKED]/`, or the bare
+  `ptok:` token where PII tokenization is configured. A parameter it leaves
+  alone (`pk`, `uid`) stays readable, and so does the mount prefix, unless it
+  has the same text as a masked value. A value that shares its segment (a
+  regex route's `(?P<token>[^/.]+)\.pdf`) is masked wherever it appears.
 
 ### Known
 

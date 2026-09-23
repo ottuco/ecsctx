@@ -501,11 +501,12 @@ A regex route (`re_path()`, DRF's routers) reads as its pattern:
 `/api/payments/(?P<pk>[^/.]+)/$`. A view called without URL resolution
 (`APIRequestFactory` in a test) has no route and names its path.
 
-`url.path` is the path, with each route parameter whose name the masking
-engine classifies masked by `mask_by_field_type(value, key_field_type(name))`:
-`/v1/cards/[SECRET-MASKED]/` above (the bare `ptok:` token where PII
-tokenization is configured). A parameter it leaves alone (`pk`, `uid`) stays
-readable.
+`url.path` is the path, with each segment a route parameter fills masked by
+`mask_by_field_type(value, key_field_type(name))` when the masking engine
+classifies the parameter's name: `/v1/cards/[SECRET-MASKED]/` above (the bare
+`ptok:` token where PII tokenization is configured). A parameter it leaves
+alone (`pk`, `uid`) stays readable. A value that shares its segment with other
+text (a regex route's `(?P<token>[^/.]+)\.pdf`) is masked wherever it appears.
 
 ---
 
