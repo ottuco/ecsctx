@@ -17,6 +17,7 @@ produces the same token.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -201,6 +202,19 @@ def _pair(data: dict, ctx: _Pass, inherited: str | None) -> tuple[str | None, fr
     if inherited is not None:
         types.append(inherited)
     return min(types, key=_strictness), frozenset(readable)
+
+
+def _is_record(value: Any) -> bool:
+    """A namedtuple, or a dataclass instance with a generated repr -- an object
+    whose fields have names the key rules can judge. Without a generated repr
+    the object's text never showed its fields, and still does not."""
+    if isinstance(value, tuple):
+        return hasattr(type(value), "_fields") and hasattr(value, "_asdict")
+    return (
+        dataclasses.is_dataclass(value)
+        and not isinstance(value, type)
+        and value.__dataclass_params__.repr
+    )
 
 
 def _is_card_object(data: dict) -> bool:
@@ -445,7 +459,14 @@ class MaskPIIFilter(logging.Filter):
     ) -> list | tuple | set:
         ctx = ctx or self._context()
         arr_path = path + ("[*]",)
-        return type(data)(self._mask_value(v, arr_path, ctx, inherited=inherited) for v in data)
+        items = [self._mask_value(v, arr_path, ctx, inherited=inherited) for v in data]
+        try:
+            return type(data)(items)
+        except TypeError:
+            # A tuple subclass that cannot be rebuilt from one iterable -- a
+            # struct sequence such as sys.version_info. Its shape is lost, not
+            # the log line.
+            return tuple(items) if isinstance(data, tuple) else items
 
     def _mask_value(
         self, value: Any, path: tuple = (), ctx: _Pass | None = None, inherited: str | None = None
@@ -463,6 +484,13 @@ class MaskPIIFilter(logging.Filter):
         if value is None:
             return value
         ctx = ctx or self._context()
+        if _is_record(value):
+            # Before the tuple check: a namedtuple is a tuple.
+            if inherited == "card":
+                return _mask_card_list_element(value)
+            if inherited is not None:
+                return _mask_pii_leaf(str(value), inherited, ctx)
+            return self._mask_record(value, path, ctx)
         if isinstance(value, (list, tuple, set)):
             return self._mask_iterable(value, path, ctx, inherited)
         if isinstance(value, dict):
@@ -486,6 +514,23 @@ class MaskPIIFilter(logging.Filter):
         # and that can hold what str() hides. Positional args are the
         # exception, see _mask_arg.
         return self._mask_string(str(value), ctx)
+
+    def _mask_record(self, value: Any, path: tuple, ctx: _Pass) -> str:
+        """A dataclass or namedtuple, masked field by field under its own
+        field names, then rendered back to the ``Name(field=...)`` text its
+        repr would have given -- still a string, so an index that mapped the
+        field as text keeps accepting it. Only the fields its repr shows:
+        ``field(repr=False)`` stays out, as it did."""
+        if isinstance(value, tuple):
+            name, fields = type(value).__name__, value._asdict()
+        else:
+            name = type(value).__qualname__
+            fields = {f.name: getattr(value, f.name, None) for f in dataclasses.fields(value) if f.repr}
+        masked = self._mask_dict(dict(fields), path, ctx)
+        rendered = ", ".join(f"{key}={masked[key]!r}" for key in fields)
+        # The content rules still read the result, as they read any object's
+        # text: a PAN in an unnamed field is truncated here.
+        return self._mask_string(f"{name}({rendered})", ctx)
 
     def _mask_json_text(self, text: str, parsed: dict | list, path: tuple, ctx: _Pass) -> str:
         """A JSON object or list logged as text — a PSP callback's raw body —
