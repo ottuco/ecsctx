@@ -67,6 +67,18 @@ SAFE_KEYS = frozenset({
     "filename",
     "token_type",
     "sec-ch-ua-mobile",
+    # OAuth token metadata (RFC 6749), like `token_type`: read through when a
+    # token response is walked under its credential key.
+    "expires_in",
+    "expires_at",
+    "refresh_expires_in",
+    "scope",
+    # What a card object says about itself without being the card: the network
+    # and the BIN, which PCI DSS 3.4.1 lets anyone display. Listed so they read
+    # through a credential container too -- the saved card under `token`.
+    "brand",
+    "scheme",
+    "bin",
     # Expiry. Cardholder Data rather than Sensitive Authentication Data, so
     # PCI DSS permits storing it and ecsctx no longer classifies it. Listed
     # here as well so it escapes a PII container's sweep: inside a `payer` or

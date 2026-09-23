@@ -881,9 +881,10 @@ DICT_KEY_VALUE_MASKING_CASES = [
     ("key-mixed-case-cvv", {"Cvv": "123"}, {"Cvv": "[CVV-MASKED]"}),
     ("key-camelcase-security-code-int", {"securityCode": 999}, {"securityCode": "[CVV-MASKED]"}),
     (
-        "key-nested-under-sensitive-key-blanket-masked",
+        # Walked since 0.14.0: the shape stays, every unnamed leaf is the secret.
+        "key-nested-under-sensitive-key-walked-and-masked",
         {"data": {"token": {"nested": "stuff", "more": 1}}},
-        {"data": {"token": "[SECRET-MASKED]"}},
+        {"data": {"token": {"nested": "[SECRET-MASKED]", "more": "[SECRET-MASKED]"}}},
     ),
 ]
 
@@ -1116,15 +1117,16 @@ class TestJsonTextIsMaskedByKey:
         assert body == as_dict["http"]["request"]["body"]["body"]
         # The card object is walked exactly as it is in a dict: the cardholder
         # name is masked, the brand and expiry read through, and the number --
-        # already truncated by the gateway -- is left as it arrived. A token
-        # object is still one unit: `secret` is not walkable.
+        # already truncated by the gateway -- is left as it arrived. Since
+        # 0.14.0 the token object is walked too, as a credential: the name on
+        # the card is masked, the brand and expiry read.
         assert body["pg_response"]["sourceOfFunds"]["provided"]["card"] == {
             "brand": "VISA",
             "expiry": {"month": "1", "year": "28"},
             "nameOnCard": "[NAME-MASKED]",
             "number": "450875xxxxxx1019",
         }
-        assert body["token"] == "[SECRET-MASKED]"
+        assert body["token"] == {"name_on_card": "[NAME-MASKED]", "expiry_month": "01", "brand": "Visa"}
         # What is not sensitive is still there to debug with.
         assert body["operation"] == "purchase"
         assert body["status"] == "error"

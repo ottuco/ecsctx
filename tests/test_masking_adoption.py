@@ -133,9 +133,11 @@ class TestPIIContainersKeepTheirShape:
         masked = MaskPIIFilter()._mask_dict({"contacts": [{"name": "Jane", "email": "a@b.co"}]})
         assert masked == {"contacts": [{"name": "[NAME-MASKED]", "email": "[EMAIL-MASKED]"}]}
 
-    def test_a_secret_container_is_still_masked_whole(self):
+    def test_a_secret_container_keeps_its_shape_and_masks_every_leaf(self):
+        # Walked since 0.14.0 (it was one unit): a leaf with no rule of its own
+        # takes the credential's type, so nothing in it reads.
         assert MaskPIIFilter()._mask_dict({"credentials": {"user": "u", "password": "p"}}) == {
-            "credentials": "[SECRET-MASKED]"
+            "credentials": {"user": "[SECRET-MASKED]", "password": "[SECRET-MASKED]"}
         }
 
 

@@ -30,9 +30,11 @@ from ecsctx.masking.exemptions import (
 )
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import (
+    _KEY_SEPARATORS,
     _MIN_PAN_DIGITS,
     ALL_PACKS,
     SAFE_KEYS,
+    _joined_names,
     classify_key,
     known_clean,
     mask_by_patterns,
@@ -113,6 +115,35 @@ class _Pass(NamedTuple):
     safe: frozenset[str]  # the service's own safe keys (ECSCTX_MASK_SAFE_KEYS)
 
 
+# Walked though not exemptable: a card object, and a credential, CVV or SAD key
+# holding a container -- which cannot be the value itself. Flattened, the saved
+# card ottu_pg sends under `token` became one hash, and MPGS's CVV *verdict*
+# object became [CVV-MASKED].
+_WALKED_TYPES = frozenset({"card", "cvv", "sad", "secret"})
+# Under these nothing is weaker than the container: a CVV must not leave as a
+# name token or under a core safe key such as `id`.
+_FLOOR_TYPES = frozenset({"cvv", "sad"})
+_CONTAINERS = (dict, list, tuple, set)
+_CARD_NUMBER_KEYS = frozenset({"number", "pan", "cardnumber", "maskednumber", "maskedpan"})
+
+
+def _is_card_object(data: dict) -> bool:
+    """A mapping shaped like a card: a card number and an expiry.
+
+    ottu_pg's webhook sends the saved card under `token`. It is a card object
+    that happens to sit under a credential key, and is walked as one -- its
+    masked number, brand and expiry read, its own `token` is still a secret.
+    """
+    joined = {_KEY_SEPARATORS.sub("", str(key).lower()) for key in data}
+    return bool(joined & _CARD_NUMBER_KEYS) and any(key.startswith("exp") for key in joined)
+
+
+def _listed(key: str, safe: frozenset[str]) -> bool:
+    """Listed by the service (either spelling), as opposed to a core safe key."""
+    lowered = key.lower()
+    return lowered in safe or _KEY_SEPARATORS.sub("", lowered) in _joined_names(safe)
+
+
 def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     """One PII leaf, except that cardholder data outranks the key it arrived
     under.
@@ -130,7 +161,14 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     this value look like a PAN" is a content-shaped test, like every other card
     rule -- a service that never opted in keeps tokenizing a long id in a name
     field, as it does today.
+
+    A credential is the exception: shaped like a PAN it is masked whole, in
+    every pack. Truncation shows ten digits of it -- the saved card's
+    sixteen-digit gateway token, a numeric api key -- and a hash of something
+    that may be a PAN is what FAQ 1117 forbids.
     """
+    if field_type == "secret" and pan_shaped(text):
+        return f"[{make_label('secret')}]"
     if (
         "pci" in ctx.packs
         and get_field_rule(field_type).tokenizable
@@ -219,6 +257,8 @@ class MaskPIIFilter(logging.Filter):
         type wins, a safe key keeps its value, and any other key is masked as
         the container's type."""
         ctx = ctx or self._context()
+        if inherited == "secret" and _is_card_object(data):
+            inherited = "card"
         result = {}
         for key, value in data.items():
             if path == () and key in self._skip_keys:
@@ -232,7 +272,15 @@ class MaskPIIFilter(logging.Filter):
             lookup_key = str(key)
             child_path = path + (lookup_key,)
             field_type = classify_key(lookup_key, ctx.packs, ctx.safe)
-            if field_type is None:
+            if inherited in _FLOOR_TYPES and field_type != "sad":
+                # Only a key the service listed -- a list never_safe() vets --
+                # reads through; anything else is the container's type, however
+                # it classifies on its own.
+                if field_type is None and _listed(lookup_key, ctx.safe):
+                    result[key] = self._mask_value(value, child_path, ctx)
+                    continue
+                field_type = inherited
+            elif field_type is None:
                 lowered = lookup_key.lower()
                 if inherited is None or lowered in SAFE_KEYS or lowered in ctx.safe:
                     result[key] = self._mask_value(value, child_path, ctx)
@@ -242,33 +290,47 @@ class MaskPIIFilter(logging.Filter):
                     result[key] = None
                     continue
                 field_type = inherited
+            elif (
+                inherited == "secret"
+                and field_type == "card"
+                and not isinstance(value, _CONTAINERS)
+                and not pan_shaped(str(value))
+            ):
+                # `{"token": {"card": "tok_live_…"}}`: not a PAN, so the card
+                # rule would show it; under a credential it is the credential.
+                field_type = "secret"
             if value is None:
                 # A null holds nothing to mask; a marker would read as a value.
                 result[key] = None
                 continue
             field_rule = get_field_rule(field_type)
-            if field_rule.exemptable and (
-                child_path in self._name_rule_exempt or _path_is_exempt(child_path, ctx.exempt)
+            if (
+                field_rule.exemptable
+                and inherited not in _WALKED_TYPES
+                and (child_path in self._name_rule_exempt or _path_is_exempt(child_path, ctx.exempt))
             ):
+                # Never below a card, credential, CVV or SAD container: a broad
+                # exempt prefix must not expose `…token.name_on_card`.
                 result[key] = self._mask_value(value, child_path, ctx)
-            elif field_type == "card" and not isinstance(value, (dict, list, tuple, set)):
+            elif field_type == "card" and not isinstance(value, _CONTAINERS):
                 result[key] = mask_card_value(value)
-            elif (field_rule.exemptable or field_type == "card") and isinstance(
-                value, (dict, list, tuple, set)
+            elif (field_rule.exemptable or field_type in _WALKED_TYPES) and isinstance(
+                value, _CONTAINERS
             ):
                 # A PII container keeps its shape: each field is masked on its
                 # own, so the same email or phone yields the same token across
                 # records — what fraud correlation joins on — and an id stays
-                # readable. CVV, secret and the other non-exemptable types stay
-                # masked as one unit.
+                # readable.
                 #
                 # A card object is walked too, though `card` is not exemptable:
                 # collapsing it threw away the PAN's truncation — the one form
                 # PCI DSS 3.5.1 lets us keep — along with expiry and scheme,
-                # which it never asked us to hide. `card` is spelled out rather
-                # than made exemptable because `exemptable` also governs
-                # ECSCTX_MASK_EXEMPT_PATHS (above), and a card path must never
-                # be whitelistable.
+                # which it never asked us to hide. So is a credential, CVV or
+                # SAD key holding a container: it cannot hold the value itself,
+                # and its unnamed leaves still take its type. These are spelled
+                # out rather than made exemptable because `exemptable` also
+                # governs ECSCTX_MASK_EXEMPT_PATHS (above), and none of them may
+                # ever be whitelistable.
                 result[key] = self._mask_value(value, child_path, ctx, inherited=field_type)
             else:
                 result[key] = _mask_pii_leaf(str(value), field_type, ctx)

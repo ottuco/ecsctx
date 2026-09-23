@@ -28,9 +28,17 @@ SAFE_KEYS = frozenset({
     "pg_name",
     "cvv_required",
     "cvv_required_for_card_payment",
+    # The saved card's gateway code, read through when the card is walked under
+    # its `token` key in ottu_pg's webhook.
+    "pg_code",
     # MPGS: the acquirer's processing and response codes ("authorization" is a
     # credential word to the key rules).
     "authorizationresponse",
+    # MPGS's CVV-check verdict, `response.cardSecurityCode = {"acquirerCode":
+    # "M", "gatewayCode": "MATCH"}`. Under a CVV key only a listed name reads
+    # through, and these name the result of the check, not the CVV.
+    "acquirercode",
+    "gatewaycode",
     # Payment-configuration names and statuses, in ecsctx's built-in list until
     # 0.9.0.
     "gateway_name",
