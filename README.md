@@ -481,18 +481,31 @@ MIDDLEWARE = [
 
 ### @api_logging Decorator
 
-For Public DRF/Django views, automatically logs inbound requests and outbound responses:
+For Public DRF/Django views, automatically logs the request received and the response sent:
 
 ```python
 from ecsctx.contrib.django.decorators import api_logging
 
+# path("v1/cards/<str:token>/", CardView.as_view())
 @api_logging
-class PaymentViewSet(ViewSet):
-    # Logs: INBOUND POST /api/v1/payments/ (with headers, body, client IP)
-    # Logs: OUTBOUND POST /api/v1/payments/ (201) (with response body, headers)
+class CardView(APIView):
+    # Logs: api request received: DELETE /v1/cards/<str:token>/ (with headers, body, client IP)
+    # Logs: api response sent: DELETE /v1/cards/<str:token>/ (204) (with response body, headers)
 
     logging_ignore_response_keys = ["sensitive_field"]  # Exclude from response logs
 ```
+
+The message names the route the request matched, not its path, so every
+request to a view groups under one message and none carries what the URL did.
+A regex route (`re_path()`, DRF's routers) reads as its pattern:
+`/api/payments/(?P<pk>[^/.]+)/$`. A view called without URL resolution
+(`APIRequestFactory` in a test) has no route and names its path.
+
+`url.path` is the path, with each route parameter whose name the masking
+engine classifies masked by `mask_by_field_type(value, key_field_type(name))`:
+`/v1/cards/[SECRET-MASKED]/` above (the bare `ptok:` token where PII
+tokenization is configured). A parameter it leaves alone (`pk`, `uid`) stays
+readable.
 
 ---
 
