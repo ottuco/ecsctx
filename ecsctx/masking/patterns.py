@@ -1046,6 +1046,23 @@ def _is_cvv_key(joined: str, words: list[str]) -> bool:
     return not (tail and _CVV_ABOUT.fullmatch(tail))
 
 
+# A person's national identity number, named by its key. Words for the short
+# forms (`qid`, `cpr`, `nid` are too short to find inside a longer word),
+# substrings for the glued ones (`customer_civil_id`, `nationalIdNumber`).
+# Kuwait's civil id is 12 digits, which the `pci` card rule truncates only by
+# accident; a service without that pack shipped it whole.
+_NATIONAL_ID_WORDS = frozenset({"ssn", "sin", "tin", "cpr", "nid", "qid", "iqama", "aadhaar", "passport"})
+_NATIONAL_ID_GLUED = re.compile(r"socialsecurity|nationalid|civilid|taxid|emiratesid")
+
+
+def _is_national_id_key(joined: str, words: list[str]) -> bool:
+    return (
+        any(word in _NATIONAL_ID_WORDS for word in words)
+        or _NATIONAL_ID_GLUED.search(joined) is not None
+        or joined == "idnumber"
+    )
+
+
 def _is_holder_key(words: list[str]) -> bool:
     # The cardholder's name. A word, not a substring: "holder" is inside
     # placeholder. The glued "cardholder" is already a name keyword.
@@ -1179,6 +1196,10 @@ def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozens
                 return "card"
             if _is_cred_key(joined):
                 return "secret"
+            # Before the pack gate and before `generic`: a person's identity
+            # number is PII in every service (`customer_civil_id` too).
+            if _is_national_id_key(joined, words):
+                return "ssn"
             if "financial_ids" not in packs:
                 continue
         if field_type == "phone" and _is_tel_key(words):
