@@ -22,6 +22,7 @@ import json
 import logging
 import re
 from collections.abc import Iterable
+from functools import lru_cache
 from numbers import Number
 from typing import Any, NamedTuple
 
@@ -155,6 +156,7 @@ _PAIR_IDENTIFIERS = (
 # An identifier looks like a field label, not free text: bounded, few words.
 _IDENTIFIER_SHAPE = re.compile(r"[A-Za-z][A-Za-z0-9 _.\-/]{0,63}")
 _IDENTIFIER_MAX_WORDS = 5
+_IDENTIFIER_SPLIT = re.compile(r"[\s_.\-/]+")
 # When identifiers disagree the strictest wins: "customer_code" says generic,
 # a label saying "CVV" must still mean a CVV, never a keyed hash of one.
 _STRICTNESS = (
@@ -180,12 +182,30 @@ def _strictness(field_type: str) -> int:
     return _STRICTNESS.index(field_type) if field_type in _STRICTNESS else len(_STRICTNESS)
 
 
+@lru_cache(maxsize=1024)
+def _classify_label(text: str, packs: frozenset[str], safe: frozenset[str]) -> str | None:
+    """classify_key for identifier text that is plainly a field label -- the
+    same few repeat on every checkout line. Cached apart from classify_key so
+    they never evict a key name, and only for labels: free text, which may be
+    a person's name, is classified uncached and kept out of any cache."""
+    return classify_key.__wrapped__(text, packs, safe)
+
+
+def _classify_identifier(text: str, words: list[str], ctx: _Pass) -> str | None:
+    if _SNAKE_CASE_ID.fullmatch(text) or len(words) == 1 or all(word in _FIELD_WORDS for word in words):
+        return _classify_label(text, ctx.packs, ctx.safe)
+    return classify_key.__wrapped__(text, ctx.packs, ctx.safe)
+
+
+@lru_cache(maxsize=4096)
+def _joined_key(lowered: str) -> str:
+    return _KEY_SEPARATORS.sub("", lowered)
+
+
 def _pair(data: dict, ctx: _Pass, inherited: str | None) -> tuple[str | None, frozenset]:
     """For a `{..., "value": …}` dict: the type its value takes from its
     identifier siblings (None if none classifies), and which identifier keys
     are field labels that read through."""
-    if not any(str(key).lower() == "value" for key in data):
-        return None, frozenset()
     keys = {str(key).lower(): key for key in data}
     types = []
     readable = set()
@@ -200,14 +220,13 @@ def _pair(data: dict, ctx: _Pass, inherited: str | None) -> tuple[str | None, fr
             and len(text.split()) <= _IDENTIFIER_MAX_WORDS
         ):
             continue
-        # Uncached: identifier text is data, and some of it is people's names.
-        field_type = classify_key.__wrapped__(text, ctx.packs, ctx.safe)
+        words = [word.lower() for word in _IDENTIFIER_SPLIT.split(text) if word]
+        field_type = _classify_identifier(text, words, ctx)
         if field_type is None:
             if identifier == "name" and _SNAKE_CASE_ID.fullmatch(text):
                 readable.add(original)
             continue
         types.append(field_type)
-        words = [word.lower() for word in re.split(r"[\s_.\-/]+", text) if word]
         if identifier != "name" or len(words) == 1 or all(word in _FIELD_WORDS for word in words):
             readable.add(original)
     if not types:
@@ -256,6 +275,11 @@ def _is_record(value: Any) -> bool:
     )
 
 
+def _container_of(path: tuple) -> str | None:
+    """The key a dict sits under -- list and JSON-text markers are not keys."""
+    return next((step for step in reversed(path) if step not in ("[*]", _JSON_TEXT)), None)
+
+
 def _is_card_object(data: dict) -> bool:
     """A mapping shaped like a card: a card number and an expiry.
 
@@ -270,7 +294,7 @@ def _is_card_object(data: dict) -> bool:
 def _listed(key: str, safe: frozenset[str]) -> bool:
     """Listed by the service (either spelling), as opposed to a core safe key."""
     lowered = key.lower()
-    return lowered in safe or _KEY_SEPARATORS.sub("", lowered) in _joined_names(safe)
+    return lowered in safe or _joined_key(lowered) in _joined_names(safe)
 
 
 def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
@@ -388,11 +412,13 @@ class MaskPIIFilter(logging.Filter):
         ctx = ctx or self._context()
         if inherited == "secret" and _is_card_object(data):
             inherited = "card"
-        # The key this dict sits under, for a bare `name` (list and JSON-text
-        # markers are not keys).
-        container = next((step for step in reversed(path) if step not in ("[*]", _JSON_TEXT)), None)
-        # Under a CVV or SAD container the floor already masks every leaf.
-        pair_type, pair_labels = (None, frozenset()) if inherited in _FLOOR_TYPES else _pair(data, ctx, inherited)
+        # A pair is judged by its identifiers -- never under a CVV or SAD
+        # container, where the floor already masks every leaf. Nearly every
+        # dict has no `value`, so that check comes first.
+        if ("value" in data or "Value" in data) and inherited not in _FLOOR_TYPES:
+            pair_type, pair_labels = _pair(data, ctx, inherited)
+        else:
+            pair_type, pair_labels = None, frozenset()
         result = {}
         for key, value in data.items():
             if path == () and key in self._skip_keys:
@@ -405,16 +431,18 @@ class MaskPIIFilter(logging.Filter):
                 continue
             lookup_key = str(key)
             child_path = path + (lookup_key,)
-            if key in pair_labels:
+            if pair_labels and key in pair_labels:
                 # A field label, not a person: judged by content alone.
                 result[key] = self._mask_value(value, child_path, ctx)
                 continue
             field_type = classify_key(lookup_key, ctx.packs, ctx.safe)
-            lowered = lookup_key.lower()
-            joined = _KEY_SEPARATORS.sub("", lowered)
-            if pair_type is not None and lowered == "value":
+            if pair_type is not None and lookup_key.lower() == "value":
                 field_type = pair_type
-            elif field_type == "name" and joined in ("name", "names") and container is not None:
+            elif (
+                field_type == "name"
+                and lookup_key.lower() in ("name", "names")
+                and (container := _container_of(path)) is not None
+            ):
                 context = name_context(container)
                 if context == "thing" or (context == "definition" and isinstance(value, _CONTAINERS)):
                     field_type = None
@@ -427,21 +455,25 @@ class MaskPIIFilter(logging.Filter):
                     continue
                 field_type = inherited
             elif field_type is None:
+                lowered = lookup_key.lower()
                 # Both spellings, as classify_key has: `customerId` escapes a
                 # customer container as `customer_id` always did.
                 if (
                     inherited is None
                     or lowered in SAFE_KEYS
                     or lowered in ctx.safe
-                    or joined in _SAFE_KEYS_JOINED
-                    or joined in _joined_names(ctx.safe)
+                    or _joined_key(lowered) in _SAFE_KEYS_JOINED
+                    or _joined_key(lowered) in _joined_names(ctx.safe)
                 ):
                     # A key the service listed also frees a reference number
                     # from the digit rules -- unless the key is PII on its own
                     # (listing `mobile` must not free a phone number) or sits
                     # in a card, credential, CVV or SAD container.
                     verbatim = (
-                        _listed(lookup_key, ctx.safe)
+                        bool(ctx.safe)
+                        and ((type(value) is str and value.isdigit()) or type(value) is int)
+                        and _is_reference_number(value)
+                        and _listed(lookup_key, ctx.safe)
                         and inherited not in _WALKED_TYPES
                         and classify_key(lookup_key, ctx.packs) in (None, "payment_id")
                     )
@@ -548,19 +580,33 @@ class MaskPIIFilter(logging.Filter):
         if verbatim_digits and _is_reference_number(value):
             return value
         ctx = ctx or self._context()
-        if _is_record(value):
-            # Before the tuple check: a namedtuple is a tuple.
+        # The two exact types nearly every value is, first: this runs for
+        # every value of every record.
+        kind = type(value)
+        if kind is str:
             if inherited == "card":
                 return _mask_card_list_element(value)
             if inherited is not None:
-                return _mask_pii_leaf(str(value), inherited, ctx)
-            return self._mask_record(value, path, ctx)
-        if isinstance(value, (list, tuple, set)):
-            return self._mask_iterable(value, path, ctx, inherited)
+                return _mask_pii_leaf(value, inherited, ctx)
+            if (parsed := _json_container(value, ctx.rules)) is not None:
+                return self._mask_json_text(value, parsed, path, ctx)
+            # path == () is the record's own message — prose. Anything deeper
+            # is a field value, and its key has already had its say.
+            return self._mask_string(value, ctx, scalar=path != ())
+        if kind is dict:
+            return self._mask_dict(value, path, ctx, inherited)
         if isinstance(value, dict):
             return self._mask_dict(value, path, ctx, inherited)
+        if isinstance(value, (list, set)):
+            return self._mask_iterable(value, path, ctx, inherited)
         if isinstance(value, bool):
             return value
+        is_record = not isinstance(value, (str, int, float)) and _is_record(value)
+        if is_record and inherited is None:
+            # Before the tuple check below: a namedtuple is a tuple.
+            return self._mask_record(value, path, ctx)
+        if isinstance(value, tuple) and not is_record:
+            return self._mask_iterable(value, path, ctx, inherited)
         if inherited == "card":
             return _mask_card_list_element(value)
         if inherited is not None:
