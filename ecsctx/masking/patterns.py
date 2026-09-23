@@ -109,7 +109,7 @@ _CRED_KEYWORD = (
 
 # Card verification code keywords — cvv/cvc/security code are all the same
 # thing under different names depending on card scheme/vendor terminology.
-_CVV_KEYWORD = r"(?:cvv|cvc|security[_\s]?code)"
+_CVV_KEYWORD = r"(?:cvv|cvc|security[-_.\s]?code)"
 
 # Payment/transaction/auth id keywords.
 _PAYMENT_ID_KEYWORD = r"(?:payment|transaction|auth)[_\s-]?id"
@@ -916,14 +916,14 @@ def mask_by_all_patterns(text: str) -> str:
 # payloads use (phonenumber, cardcvv, nameoncard); its known false positives are
 # SAFE_KEYS.
 #
-# Four types are NOT here, because a substring was the wrong test for them and
+# Five types are NOT here, because a substring was the wrong test for them and
 # each has a named predicate instead (see classify_key, which spells the order
 # out): `card` and `sad`, matched precisely -- "card" alone is in card_id and
-# discard; `secret`, where the credential word must END the key, so
+# discard; `cvv`, which is released when the key is about one
+# (`cvv_required`); `secret`, where the credential word must END the key, so
 # `schemeTokenProvisioningMode` is not a token; and `name`, which needs a person
 # qualifier, so `domainName` is not a person.
 KEYWORD_REGEX_FIELD_TYPE = (
-    (_CVV_KEYWORD, "cvv"),
     (_PAYMENT_ID_KEYWORD, "payment_id"),
     (_EMAIL_KEY_WORDS, "email"),
     (_PHONE_KEY_WORDS, "phone"),
@@ -1009,6 +1009,43 @@ def _is_sad_key(joined: str, words: list[str]) -> bool:
     return False
 
 
+# A CVV word anywhere in the key names the value -- unless what follows it names
+# something ABOUT one. Fail closed: `cvv_input`, `cvv_hash` and a plural are the
+# value, because a new spelling of a CVV must not read through for want of a
+# list entry; only a recognised "about" tail (`cvv_required`, MPGS's
+# `cardSecurityCodeError`) is released. Matched on the separator-free key: the
+# old substring search ran on the lowercased key, where `-` survives, so
+# `security-code` shipped in clear.
+_CVV_GLUED = re.compile(r"cvv|cvc|securitycode|verificationvalue")
+_CVV_WORDS = frozenset({"csc", "cvd", "cvd2", "cvn", "cvn2", "cav2", "cvnumber", "cardcode"})
+_CVV_WORD_PAIRS = (("card", "code"), ("cv", "number"))
+_CVV_ABOUT = re.compile(
+    r"(?:is|was)?(?:required|requirement|present|presence|provided|indicator|result|response|check|"
+    r"status|match|error|policy|enabled|disabled|mode|supported|length|len|size|format|type|verified|"
+    r"verification|valid|invalid|attempt|allowed|optional|mandatory|label|placeholder|message|hint|"
+    r"description|for|iframe|only)\w*"
+)
+
+
+def _is_cvv_key(joined: str, words: list[str]) -> bool:
+    last = None
+    for last in _CVV_GLUED.finditer(joined):
+        pass
+    if last is not None:
+        tail = joined[last.end() :]
+    else:
+        at = next((i for i, word in enumerate(words) if word in _CVV_WORDS), None)
+        if at is None:
+            at = next(
+                (i + 1 for i in range(len(words) - 1) if (words[i], words[i + 1]) in _CVV_WORD_PAIRS),
+                None,
+            )
+        if at is None:
+            return False
+        tail = "".join(words[at + 1 :])
+    return not (tail and _CVV_ABOUT.fullmatch(tail))
+
+
 def _is_holder_key(words: list[str]) -> bool:
     # The cardholder's name. A word, not a substring: "holder" is inside
     # placeholder. The glued "cardholder" is already a name keyword.
@@ -1071,9 +1108,18 @@ _NEVER_SAFE_ENDING = re.compile(
 )
 
 
+# What a service may never list as safe, by the type the classifier gives it.
+_NEVER_SAFE_TYPES = frozenset({"card", "cvv", "sad", "secret"})
+
+
 def never_safe(key: str) -> bool:
-    """Whether no service may list ``key`` as safe: a card key as the classifier
-    finds them, or a name ending in a CVV or credential word.
+    """Whether no service may list ``key`` as safe: anything the classifier
+    calls a card, CVV, SAD or credential, or a name ending in a CVV or
+    credential word.
+
+    It asks the classifier rather than repeating it: the separate suffix list
+    had drifted, and accepted `cvv_number`, `password_hash` and `tokens` --
+    names the classifier masks -- so listing one switched its mask off.
 
     Expiry is not here. It is no longer masked at all, so refusing to let a
     service whitelist a key that nothing masks would say nothing.
@@ -1085,6 +1131,7 @@ def never_safe(key: str) -> bool:
         _is_card_key(lowered, joined, words)
         or _is_sad_key(joined, words)
         or _NEVER_SAFE_ENDING.search(joined) is not None
+        or classify_key(key, ALL_PACKS) in _NEVER_SAFE_TYPES
     )
 
 
@@ -1117,6 +1164,8 @@ def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozens
     # field is still truncated.
     if _is_sad_key(joined, words):
         return "sad"
+    if _is_cvv_key(joined, words):
+        return "cvv"
     for pattern, field_type in KEYWORD_PATTERN_FIELD_TYPE:
         if field_type == "payment_id":
             # The two name-matched types sit here, between CVV and payment_id,
