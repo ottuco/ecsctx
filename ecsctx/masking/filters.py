@@ -80,6 +80,18 @@ DEFAULT_SKIP_KEYS = STRUCTURAL_ECS_KEYS | frozenset(
     {"session_id", "trace", "span", "exc_info", "stack_info"}
 )
 
+# Under a skip key that is a mapping, the fields ecsctx itself writes -- the
+# only ones the skip exists for. Anything else a caller put there (the
+# processor merges a caller's `service=` in) is masked like any other field:
+# `service.card_number` and `trace.headers.Authorization` shipped in clear.
+_OWNED_FIELDS = {
+    "service": frozenset({"name", "version", "environment", "type", "id", "node", "target"}),
+    "project": frozenset({"name"}),
+    "log": frozenset({"level", "logger", "origin"}),
+    "trace": frozenset({"id"}),
+    "span": frozenset({"id"}),
+}
+
 # The longest string parsed as JSON for key masking. Every string of every
 # record reaches that check, so a larger one gets the content rules only, as
 # every string did before.
@@ -364,7 +376,7 @@ class MaskPIIFilter(logging.Filter):
         result = {}
         for key, value in data.items():
             if path == () and key in self._skip_keys:
-                result[key] = value
+                result[key] = self._mask_skipped(key, value, ctx)
                 continue
             if isinstance(value, bool):
                 # One bit: never PII, SAD or a credential, whatever its key or
@@ -525,6 +537,19 @@ class MaskPIIFilter(logging.Filter):
         # and that can hold what str() hides. Positional args are the
         # exception, see _mask_arg.
         return self._mask_string(str(value), ctx)
+
+    def _mask_skipped(self, root: str, value: Any, ctx: _Pass) -> Any:
+        """A skip key's value: its ecsctx-owned fields untouched, the rest
+        masked. A scalar (a session id, an exception) and a skip key the
+        service chose itself pass whole -- the latter is an explicit opt-out."""
+        owned = _OWNED_FIELDS.get(root)
+        if owned is None or not isinstance(value, dict):
+            return value
+        rest = {key: sub for key, sub in value.items() if key not in owned}
+        if not rest:
+            return value
+        masked = self._mask_dict(rest, (root,), ctx)
+        return {key: sub if key in owned else masked[key] for key, sub in value.items()}
 
     def _mask_record(self, value: Any, path: tuple, ctx: _Pass) -> str:
         """A dataclass or namedtuple, masked field by field under its own
