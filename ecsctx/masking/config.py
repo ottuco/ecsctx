@@ -29,7 +29,7 @@ import warnings
 from collections.abc import Iterable
 from functools import lru_cache
 
-from ecsctx.masking.patterns import ALL_PACKS, never_safe
+from ecsctx.masking.patterns import ALL_PACKS, classify_key, never_safe
 
 _ENV_VAR = "ECSCTX_MASKING_PACKS"
 _SAFE_KEYS_VAR = "ECSCTX_MASK_SAFE_KEYS"
@@ -164,9 +164,11 @@ def configure_masking_safe_keys(keys: Iterable[str] | str | None) -> None:
 
     ecsctx's own SAFE_KEYS hold only names that mean the same in every
     service; the rest is the service's to list (``ecsctx.contrib.ottu.masking``
-    has Ottu's). A listed key's value is still content-scanned. Raises on a
-    name that is a card, CVV or credential outright: listing one would
-    switch off a mask PCI requires.
+    has Ottu's). A listed key's value is still content-scanned, except that a
+    digits-only reference number of up to 14 digits is left as it is -- an
+    RRN, an acquirer id -- when the key is not PII on its own; a 15-19 digit
+    value is always truncated. Raises on a name that is a card, CVV or
+    credential outright: listing one would switch off a mask PCI requires.
     """
     global _explicit_safe, _resolved_safe
     if keys is None:
@@ -219,6 +221,19 @@ def get_masking_safe_keys() -> frozenset[str]:
     if settings_ready:
         _resolved_safe = names
     return names
+
+
+def key_field_type(key: str) -> str | None:
+    """The field type the engine gives a key name, under this service's packs
+    and safe keys -- or None for a name it leaves to the content rules.
+
+    For a value that reaches a log outside a mapping, where no key sits next
+    to it: a URL path segment such as the card token in
+    `DELETE /v1/pbl/card/token/<token>/`. Mask it with
+    ``mask_by_field_type(value, key_field_type("token"))`` and it reads as the
+    same field would.
+    """
+    return classify_key(key, get_masking_packs(), get_masking_safe_keys())
 
 
 def _reset_masking_config() -> None:

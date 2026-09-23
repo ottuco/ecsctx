@@ -20,6 +20,7 @@ from ecsctx.masking.config import (
     configure_masking_safe_keys,
     get_masking_packs,
     get_masking_safe_keys,
+    key_field_type,
 )
 from ecsctx.masking.exemptions import (
     configure_masking,
@@ -46,4 +47,5 @@ __all__ = [
     "masking_is_configured",
     "safe_tokenize",
     "mask_by_field_type",
+    "key_field_type",
 ]
