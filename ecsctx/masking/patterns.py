@@ -1061,14 +1061,19 @@ def _is_holder_key(words: list[str]) -> bool:
 # deliberately keeps readable.
 _CRED_KEY_JOINED = re.compile(
     r"^(?:bearer|basic|digest|credentials?)$"
-    r"|^authori[sz]ation(?:header)?$"
+    # The header under its WSGI (`HTTP_AUTHORIZATION`) and proxy spellings too.
+    r"|^(?:http)?(?:proxy)?authori[sz]ation(?:header)?$"
+    # A cookie carries the session id, which is a credential.
+    r"|^(?:http|set|httpset|session|auth)?cookies?$"
     # The credential word ends the key, or is followed only by a word naming a
     # derivative of it -- `password_hash` is still the password's secret, while
     # `tokenization_status` and `schemeTokenProvisioningMode` are metadata about
     # a token and carry none of it.
-    r"|(?:token|secret|password|passwd)s?(?:hash|digest|value|blob|data)?$"
+    r"|(?:token|secret|password|passwd|passphrase|passcode|pwd)s?(?:hash|digest|value|blob|data)?$"
     r"|(?:secret|private|public|encryption|decryption|signing|"
-    r"access|master|root|session|api)key$"
+    r"access|master|root|session|api|hmac|aes|merchant|shared|client)keys?$"
+    # MIGS's `vpc_AccessCode`: the merchant access code, a gateway credential.
+    r"|accesscode$"
 )
 
 
