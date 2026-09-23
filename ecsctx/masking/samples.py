@@ -716,6 +716,11 @@ def case_pack(group: str, sample) -> str:
     """The pack a case needs. Text is caught by its group's content rule; a
     dict by its key names — unless the data sits in an object's repr, which
     only the content rule can read."""
+    if group not in CONTENT_PACK:
+        raise KeyError(
+            f"unknown masking sample group {group!r}: expected one of "
+            f"{', '.join(sorted(CONTENT_PACK))}"
+        )
     if isinstance(sample, str) or _holds_object(sample):
         return CONTENT_PACK[group]
     return KEY_PACK.get(group, "default")
