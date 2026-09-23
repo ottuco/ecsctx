@@ -1187,7 +1187,7 @@ So masking is tested on the full logging flow of your project, and no test value
 
 **Tokens and packs.** With PII tokenization on, your project logs a tokenizable value as a bare `ptok:v1:…` token; the suite counts that as a match for its label (`[EMAIL-MASKED]`, `[NAME-MASKED]`, …), because the token itself depends on your keyset. Card, CVV and expiry are never tokenized, so they always compare exactly (`[CARD-MASKED:411111******1111]`). A sample case that needs an opt-in content pack — `pci` for card numbers and CVVs in text, `financial_ids` for payment ids, IBANs and SSNs — is skipped unless your project turns that pack on (see [Masking packs](#masking-packs--pci-services-must-opt-in)), so a project without them sees those cases reported as skipped, not failed.
 
-You inherit 22 tests covering 327 sample cases:
+You inherit 24 tests covering 327 sample cases:
 
 | Test | What it proves |
 |---|---|
@@ -1200,6 +1200,8 @@ You inherit 22 tests covering 327 sample cases:
 | `test_stdlib_log_with_percent_args_is_masked` | A plain stdlib call with `%s` args — the path a third-party library takes, no structlog involved — comes out masked. Only the handler-level filter can catch this |
 | `test_no_raw_value_reaches_any_handler` | Every handler on every route — email, HTTP, syslog and console included, whatever its format — is read back and searched for the raw test values |
 | `test_masks_*` (12 tests) | Every case in `ecsctx.masking.samples` — PEM keys, credentials, CVV, payment ids, IBANs, phones, emails, JWTs, card numbers, SSNs, sensitive dict keys, objects and primitives — logged through every route of the project and compared exactly |
+| `test_masks_stdlib_args` | The `%`-args cases in `ecsctx.masking.samples`, logged through plain stdlib logging, come out masked |
+| `test_opt_in_rules_stay_off_until_enabled` | Text an opt-in pack would mask is left alone while your project keeps that pack off |
 | `test_does_not_over_mask` | Values that must stay readable (`cache_key=…`, prose like "token expired", non-IBAN refs) come through untouched |
 | `test_accepted_leaks_are_unchanged` | The cases ecsctx knowingly lets through, so a project sees them instead of assuming they're covered |
 
