@@ -1181,6 +1181,7 @@ class TestLogMasking(MaskingTestsMixin, SimpleTestCase):
 - **Every route.** It logs through `root`, every logger in `LOGGING["loggers"]`, and every other logger that has its own handlers (Django's `django` and `django.server`, or a package that added one). Each route logs at a level all of its handlers accept, so an `ERROR`-only handler is tested too.
 - **Nothing is really sent.** While a test logs, every handler writes into memory instead of to its real destination: console and file handlers are pointed at a buffer, and email, HTTP, syslog and queue handlers have their send step swapped out. Their filters and formatter still run. When the log call is done, every handler is put back exactly as it was.
 - **Everything captured is checked.** Handlers that write ecsctx's JSON are compared field by field against the exact masked value (`email == "[EMAIL-MASKED]"`). Every handler, whatever its format and whether or not it ships, is searched for the raw test values — none may appear.
+- **Each sample case is checked twice.** First against the masking engine on its own, with no logger or handler in the way, then through your routes. A case that fails only the second one points at your logging setup — a missing filter, a formatter that reshapes the value — not at a masking rule.
 
 So masking is tested on the full logging flow of your project, and no test value ever leaves the process.
 
@@ -1206,7 +1207,7 @@ The whole suite runs in under a second, and ecsctx runs this same class in its o
 
 **Run them with your production logging.** The suite tests whatever `LOGGING` your test settings load. If production adds a handler your test settings don't have — an Elasticsearch handler configured only in prod, say — that handler is never checked. Point your test settings at the same `LOGGING` as production, or run this class once in CI with production-like settings.
 
-**Writing your own tests.** Add test methods to the same class. `assert_samples_masked()` runs your cases exactly like the shipped ones — through every route, with the same capture and checks — and `assert_samples_unchanged()` checks values that must stay readable. A case is `(label, sample, expected)`: a string sample is logged as the message, a dict is logged as a field, and what your handlers write must equal `expected` exactly. Write the label, e.g. `[EMAIL-MASKED]`; with tokenization on, the bare token your project logs matches it. Your own cases are never skipped, so one that needs an opt-in pack fails unless your project turns that pack on.
+**Writing your own tests.** Add test methods to the same class. `assert_samples_masked()` runs your cases exactly like the shipped ones — against the engine, then through every route, with the same capture and checks — and `assert_samples_unchanged()` checks values that must stay readable. A case is `(label, sample, expected)`: a string sample is logged as the message, a dict is logged as a field, and what your handlers write must equal `expected` exactly. Write the label, e.g. `[EMAIL-MASKED]`; with tokenization on, the bare token your project logs matches it. Your own cases are never skipped, so one that needs an opt-in pack fails unless your project turns that pack on.
 
 ```python
 class TestLogMasking(MaskingTestsMixin, SimpleTestCase):
@@ -1243,8 +1244,9 @@ To change the defaults, set these on the class:
 **Without the class.** For plain pytest functions, the same capture is available as helpers:
 
 ```python
-from ecsctx.contrib.django.testing import capture_handler_texts, capture_log, capture_stdlib_log, masked_outputs
+from ecsctx.contrib.django.testing import capture_handler_texts, capture_log, capture_stdlib_log, masked_directly, masked_outputs
 
+masked_directly("contact bob@example.com")  # 'contact [EMAIL-MASKED]' — the engine alone, no logging
 masked_outputs("contact bob@example.com")   # ['contact [EMAIL-MASKED]']
 masked_outputs({"cvv": "123"})              # [{'cvv': '[CVV-MASKED]'}]
 capture_log(order_id="A-1")                 # the full parsed record each JSON handler wrote

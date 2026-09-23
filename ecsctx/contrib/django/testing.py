@@ -12,9 +12,11 @@ whole suite — no test code to write:
 Every test runs against the project's real, booted logging setup. Nothing is
 reconfigured: each log call goes through structlog into the project's own
 handlers, filters and formatter, and the test reads back what those handlers
-wrote. The sample tables come from ecsctx.masking.samples. A case that needs
-an opt-in masking pack (pci, financial_ids) is skipped unless the project turns
-that pack on.
+wrote. The sample tables come from ecsctx.masking.samples, and each case is
+checked against the engine alone as well, so a failure says whether a masking
+rule or the project's logging setup is at fault. A case that needs an opt-in
+masking pack (pci, financial_ids) is skipped unless the project turns that
+pack on.
 
 The helpers below are usable on their own, for a project that would rather
 write its own assertions than inherit these.
@@ -365,6 +367,20 @@ def masked_outputs(sample, **kwargs) -> list:
     return [record.get("extra", {}).get("sample") for record in records]
 
 
+def masked_directly(sample):
+    """One sample masked by the engine alone, with the project's packs.
+
+    No logger, no handler, no formatter: the value goes on a record and
+    MaskPIIFilter masks it, so a case is checked against the engine as well as
+    against what the project's handlers write.
+    """
+    from ecsctx.masking.filters import MaskPIIFilter
+
+    record = logging.LogRecord(EVENT, logging.WARNING, __file__, 0, sample, None, None)
+    MaskPIIFilter().filter(record)
+    return record.msg
+
+
 def count_maskers(handler: logging.Handler) -> int:
     from ecsctx.masking.filters import MaskPIIFilter
 
@@ -500,7 +516,12 @@ class MaskingTestsMixin:
         self.assertGreater(reached, 0, "No project handler was reached on any route.")
 
     def assert_samples_masked(self, cases, *, group: str | None = None):
-        """Run (label, sample, expected) cases through every readable route.
+        """Check (label, sample, expected) cases twice.
+
+        First against the engine alone (masked_directly), then through every
+        readable route, so a case that only the logging path gets wrong — a
+        missing filter, a formatter that reshapes the value — is told apart
+        from a rule that is wrong in the engine itself.
 
         group names a table in ecsctx.masking.samples; a case needing a pack
         this project doesn't enable is skipped.
@@ -508,13 +529,23 @@ class MaskingTestsMixin:
         from ecsctx.masking import get_masking_packs
 
         packs = get_masking_packs()
+
+        def needed_pack(sample):
+            return None if group is None else samples.case_pack(group, sample)
+
+        for label, sample, expected in cases:
+            with self.subTest(check="engine", case=label):
+                pack = needed_pack(sample)
+                if pack is not None and pack not in packs:
+                    self.skipTest(f"needs the {pack!r} masking pack")
+                self.assertEqual(*comparable(masked_directly(sample), expected))
+
         for name, level in self.readable_routes():
             for label, sample, expected in cases:
                 with self.subTest(logger=name, case=label):
-                    if group is not None:
-                        pack = samples.case_pack(group, sample)
-                        if pack not in packs:
-                            self.skipTest(f"needs the {pack!r} masking pack")
+                    pack = needed_pack(sample)
+                    if pack is not None and pack not in packs:
+                        self.skipTest(f"needs the {pack!r} masking pack")
                     for actual in masked_outputs(sample, logger_name=name, level=level):
                         self.assertEqual(*comparable(actual, expected))
 
