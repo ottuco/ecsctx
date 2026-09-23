@@ -85,6 +85,15 @@ class TestTheLeaksItCloses:
         assert masked[0]["name"] == "Authorization"
         assert masked[1] == headers[1]
 
+    @pytest.mark.parametrize("spelling", ["value", "Value", "VALUE"])
+    def test_an_upper_case_pair_is_a_pair(self, spelling):
+        # The gate into the pair rule matched `value` and `Value` only, while
+        # the rule reads its identifiers in any case: `{"NAME": …, "VALUE": …}`
+        # skipped it and shipped the name.
+        masked = mask({"NAME": "customer_name", spelling: "Jane Payer"})
+        assert "Jane" not in str(masked)
+        assert masked["NAME"] == "customer_name"
+
 
 class TestTheStrictestTypeWins:
     def test_across_identifiers(self):

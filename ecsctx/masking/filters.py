@@ -41,10 +41,10 @@ from ecsctx.masking.patterns import (
     _joined_names,
     classify_key,
     int_is_pan,
-    name_context,
     known_clean,
     mask_by_patterns,
     mask_card_value,
+    name_context,
     pan_shaped,
     rules_for,
     scalar_rules,
@@ -414,8 +414,9 @@ class MaskPIIFilter(logging.Filter):
             inherited = "card"
         # A pair is judged by its identifiers -- never under a CVV or SAD
         # container, where the floor already masks every leaf. Nearly every
-        # dict has no `value`, so that check comes first.
-        if ("value" in data or "Value" in data) and inherited not in _FLOOR_TYPES:
+        # dict has no `value`, so that check comes first: three lookups, not a
+        # scan of every key, and `_pair` reads the identifiers in any case.
+        if ("value" in data or "Value" in data or "VALUE" in data) and inherited not in _FLOOR_TYPES:
             pair_type, pair_labels = _pair(data, ctx, inherited)
         else:
             pair_type, pair_labels = None, frozenset()

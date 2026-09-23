@@ -33,7 +33,8 @@ has a test that fails on 0.13.0.
 
 - A customer's name in a `{name, value}` pair (Connect's `order_description`)
   shipped in clear while the field id was tokenized; a pair's value is now
-  masked by its identifier. The same closed `{"name": "cvv", "value": "123"}`.
+  masked by its identifier, whatever the case of its keys (`VALUE` too). The
+  same closed `{"name": "cvv", "value": "123"}`.
 - `track_id` / "Track ID" read as track data; a CVV key missed `security-code`
   and masked MPGS's CVV verdict; a bare `name` under a thing (payment method,
   merchant) was a person; booleans were masked; a card list lost its PAN
