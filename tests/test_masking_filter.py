@@ -1162,10 +1162,12 @@ class TestJsonTextIsMaskedByKey:
         assert _mask(sample) == sample
 
     def test_content_rules_still_run_on_the_masked_text(self):
-        """A card number logged as a JSON number is caught by the content
-        rules, as it was when the string was only scanned as text."""
+        """A card number logged as a JSON number is caught, as it was when the
+        string was only scanned as text. Since 0.14.0 the key pass truncates
+        the int itself, so it comes back a quoted string -- valid JSON, where
+        the text rescan used to leave `"ref": 411111******1111`."""
         out = _mask('{"nameOnCard": "Jane Payer", "ref": 4111111111111111}')
-        assert out == '{"nameOnCard": "[NAME-MASKED]", "ref": 411111******1111}'
+        assert out == '{"nameOnCard": "[NAME-MASKED]", "ref": "411111******1111"}'
 
     def test_text_that_is_not_json_gets_the_content_rules_only(self):
         assert _mask("{not json} a@b.com") == "{not json} [EMAIL-MASKED]"

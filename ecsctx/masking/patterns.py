@@ -237,6 +237,27 @@ _SINGLE_MARKER = re.compile(
 )
 
 
+def _luhn_valid(digits: str) -> bool:
+    total = 0
+    for position, character in enumerate(reversed(digits)):
+        number = int(character)
+        if position % 2:
+            number *= 2
+            if number > 9:
+                number -= 9
+        total += number
+    return total % 10 == 0
+
+
+def int_is_pan(value: int) -> bool:
+    """Whether an int is a card number: 12-19 digits, a payment-network issuer
+    prefix (2-6), and a Luhn pass. Numbers are otherwise never content-scanned,
+    so this is what stops `{"ref": 4111111111111111}` shipping whole -- without
+    reading an epoch-millisecond timestamp (it starts with 1) as a card."""
+    digits = str(abs(value))
+    return _MIN_PAN_DIGITS <= len(digits) <= 19 and digits[0] in "23456" and _luhn_valid(digits)
+
+
 def pan_shaped(text: str) -> bool:
     """Whether ``text`` is, in its entirety, a PAN.
 

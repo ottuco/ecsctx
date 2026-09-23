@@ -39,6 +39,7 @@ from ecsctx.masking.patterns import (
     SAFE_KEYS,
     _joined_names,
     classify_key,
+    int_is_pan,
     name_context,
     known_clean,
     mask_by_patterns,
@@ -506,6 +507,10 @@ class MaskPIIFilter(logging.Filter):
             # A cycle, or nesting nothing legitimate reaches (a crafted body):
             # stop here rather than recurse into the caller's RecursionError.
             return f"[{make_label('depth')}]"
+        if isinstance(value, (bytes, bytearray)):
+            # A raw body: masked as the text it is, key rules included. Its
+            # repr would get only the content rules, and a name has no shape.
+            value = bytes(value).decode("utf-8", errors="replace")
         ctx = ctx or self._context()
         if _is_record(value):
             # Before the tuple check: a namedtuple is a tuple.
@@ -525,7 +530,12 @@ class MaskPIIFilter(logging.Filter):
         if inherited is not None:
             return _mask_pii_leaf(str(value), inherited, ctx)
         if isinstance(value, (bool, int, float)):
-            return value  # see scalar= below: the same reasoning, for strings
+            # See scalar= below: the same reasoning, for strings -- except an
+            # int that is a card number, which the card rule would have
+            # truncated had it arrived as text.
+            if isinstance(value, int) and not isinstance(value, bool) and "pci" in ctx.packs and int_is_pan(value):
+                return mask_card_value(value)
+            return value
         if isinstance(value, str):
             if (parsed := _json_container(value, ctx.rules)) is not None:
                 return self._mask_json_text(value, parsed, path, ctx)
