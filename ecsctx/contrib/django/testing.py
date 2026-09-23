@@ -522,43 +522,43 @@ class MaskingTestsMixin:
         self.assert_samples_masked([(label, sample, sample) for label, sample in cases])
 
     def test_masks_pem_key_blocks(self):
-        self.assert_samples_masked(samples.PEM_CASES, group="pem")
+        self.assert_samples_masked(samples.PEM_MASKED_CASES, group="pem")
 
     def test_masks_credential_keywords(self):
-        self.assert_samples_masked(samples.CREDENTIAL_CASES, group="credential")
+        self.assert_samples_masked(samples.CREDENTIAL_MASKED_CASES, group="credential")
 
     def test_masks_cvv(self):
-        self.assert_samples_masked(samples.CVV_CASES, group="cvv")
+        self.assert_samples_masked(samples.CVV_KEYWORD_CASES, group="cvv")
 
     def test_masks_payment_ids(self):
-        self.assert_samples_masked(samples.PAYMENT_ID_CASES, group="payment_id")
+        self.assert_samples_masked(samples.PAYMENT_ID_QUOTE_CASES, group="payment_id")
 
     def test_masks_ibans(self):
-        self.assert_samples_masked(samples.IBAN_CASES, group="iban")
+        self.assert_samples_masked(samples.IBAN_MASKED_CASES, group="iban")
 
     def test_masks_phone_numbers(self):
-        self.assert_samples_masked(samples.PHONE_CASES, group="phone")
+        self.assert_samples_masked(samples.PHONE_MASKED_CASES, group="phone")
 
     def test_masks_emails(self):
-        self.assert_samples_masked(samples.EMAIL_CASES, group="email")
+        self.assert_samples_masked(samples.EMAIL_MASKED_CASES, group="email")
 
     def test_masks_jwts(self):
-        self.assert_samples_masked(samples.JWT_CASES, group="jwt")
+        self.assert_samples_masked(samples.JWT_MASKED_CASES, group="jwt")
 
     def test_masks_card_numbers(self):
-        self.assert_samples_masked(samples.CARD_CASES, group="card")
+        self.assert_samples_masked(samples.CARD_NUMBER_CASES, group="card")
 
     def test_masks_ssns(self):
-        self.assert_samples_masked(samples.SSN_CASES, group="ssn")
+        self.assert_samples_masked(samples.SSN_MASKED_CASES, group="ssn")
 
     def test_masks_sensitive_dict_keys(self):
-        self.assert_samples_masked(samples.DICT_KEY_CASES, group="dict_key")
+        self.assert_samples_masked(samples.DICT_KEY_VALUE_MASKING_CASES, group="dict_key")
 
     def test_masks_objects_and_leaves_primitives(self):
         self.assert_samples_masked(samples.OBJECT_AND_PRIMITIVE_CASES, group="object_and_primitive")
 
     def test_does_not_over_mask(self):
-        self.assert_samples_unchanged(samples.NOT_MASKED_CASES)
+        self.assert_samples_unchanged(samples.NOT_MASKED)
 
     def test_accepted_leaks_are_unchanged(self):
         self.assert_samples_unchanged(samples.ACCEPTED_LEAK_CASES)

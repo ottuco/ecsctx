@@ -457,7 +457,7 @@ class TestCredentialScanMatchesFullScan:
                 )
 
     def test_matches_on_the_ported_samples(self):
-        from tests.test_masking_filter import CREDENTIAL_MASKED_CASES, NOT_MASKED
+        from ecsctx.masking.samples import CREDENTIAL_MASKED_CASES, NOT_MASKED
 
         samples = [sample for _label, sample, _expected in CREDENTIAL_MASKED_CASES if isinstance(sample, str)]
         samples += [sample for _label, sample in NOT_MASKED if isinstance(sample, str)]

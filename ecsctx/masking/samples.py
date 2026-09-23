@@ -1,10 +1,9 @@
 """Masking sample tables, shipped so a project can run them against its own logging.
 
 Each case is (label, sample, expected). A string sample is logged as the event
-message; a dict sample is logged as one field. These are ecsctx's own
-filter-test tables: tests/test_masking_filter.py runs them against the engine
-with every pack on, and MaskingTestsMixin runs them through a project's real
-handlers.
+message; a dict sample is logged as one field. MaskingTestsMixin runs them
+through a project's real handlers, and ecsctx's own suite runs that mixin with
+every pack on, so these tables are ecsctx's filter tests too.
 
 Expected values are the [LABEL] form a project without PII tokenization emits.
 Where tokenization is configured, a tokenizable value is logged as a bare
@@ -16,32 +15,49 @@ a case needs, so a project is only held to the packs it has turned on.
 """
 
 
-class SampleCard:
+class _FakeCard:
     """Stand-in for a model whose ``__repr__`` embeds sensitive data (PAN/token)."""
 
     def __repr__(self) -> str:
         return "<Card(VISA, 512345******0008, 9584184138614802)>"
 
 
-def pem(kind: str, body: str) -> str:
+def _pem(kind: str, body: str) -> str:
     """Build a PEM block of the given kind, e.g. 'RSA PRIVATE KEY'."""
     return f"-----BEGIN {kind}-----\n{body}\n-----END {kind}-----"
 
 
-JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.abc123def456ghi"
-HEX = "1a2b3c4d5e6f7a8b9c0d1e2f"
+_JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.abc123def456ghi"
+_HEX = "1a2b3c4d5e6f7a8b9c0d1e2f"
 
 
-PEM_CASES = [
-    ("pem-private-key", pem("PRIVATE KEY", "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"), "[PEM-KEY-MASKED]"),
-    ("pem-rsa-private-key", pem("RSA PRIVATE KEY", "MIIEpAIBAAKCAQEA0abcDEF"), "[PEM-KEY-MASKED]"),
-    ("pem-ec-private-key", pem("EC PRIVATE KEY", "MHcCAQEEIABxYZec012private"), "[PEM-KEY-MASKED]"),
-    ("pem-public-key", pem("PUBLIC KEY", "MIIBIjANBgkqhkiG9w0pubKEY"), "[PEM-KEY-MASKED]"),
-    ("pem-rsa-public-key", pem("RSA PUBLIC KEY", "MEgCQQCrsaPUBLICkeyXYZ"), "[PEM-KEY-MASKED]"),
+# ---------------------------------------------------------------------------
+# PEM key blocks. Mask ANY type (PRIVATE / RSA PRIVATE / EC PRIVATE /
+# PUBLIC / ...) — enumerating variants is a losing game, so the filter
+# matches the whole "-----BEGIN ... KEY----- ... -----END ... KEY-----"
+# envelope. Public keys aren't secret, but masking them too is the safe
+# direction and future-proofs new key types.
+# ---------------------------------------------------------------------------
+PEM_MASKED_CASES = [
+    ("pem-private-key", _pem("PRIVATE KEY", "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"), "[PEM-KEY-MASKED]"),
+    ("pem-rsa-private-key", _pem("RSA PRIVATE KEY", "MIIEpAIBAAKCAQEA0abcDEF"), "[PEM-KEY-MASKED]"),
+    ("pem-ec-private-key", _pem("EC PRIVATE KEY", "MHcCAQEEIABxYZec012private"), "[PEM-KEY-MASKED]"),
+    ("pem-public-key", _pem("PUBLIC KEY", "MIIBIjANBgkqhkiG9w0pubKEY"), "[PEM-KEY-MASKED]"),
+    ("pem-rsa-public-key", _pem("RSA PUBLIC KEY", "MEgCQQCrsaPUBLICkeyXYZ"), "[PEM-KEY-MASKED]"),
 ]
 
 
-CREDENTIAL_CASES = [
+# ---------------------------------------------------------------------------
+# Credential keywords (_CRED_KEYWORD): bearer/basic/api_key/token/secret/
+# password/*_key compounds/credentials, across all three separator forms
+# (quoted key, ":"/"=", bare space) and every realistic shape a header/token
+# lands in — bare value, full "Authorization:" line, lowercase scheme,
+# interpolated into a message, nested inside a logged `headers` dict, and
+# short/single-char/single-digit values. Exact match, not "secret not in
+# output" — that weaker check can't tell "masked correctly" from "masked
+# into garbage".
+# ---------------------------------------------------------------------------
+CREDENTIAL_MASKED_CASES = [
     # quotes
     ("cred-single-quoted-colon", "'token': 'abcd1234'", "'token': '[SECRET-MASKED]'"),
     ("cred-single-quoted-colon-tight", "'token':'abcd1234'", "'token':'[SECRET-MASKED]'"),
@@ -59,13 +75,13 @@ CREDENTIAL_CASES = [
     ("cred-colon-single-digit", "token: 1", "token: [SECRET-MASKED]"),
     ("cred-colon-single-char", "token: a", "token: [SECRET-MASKED]"),
     # HEX & JWT values
-    ("cred-colon-hex", f"token:{HEX}", "token:[SECRET-MASKED]"),
-    ("cred-equals-hex", f"token={HEX}", "token=[SECRET-MASKED]"),
-    ("cred-colon-jwt", f"token:{JWT}", "token:[SECRET-MASKED]"),
-    ("cred-equals-jwt", f"token={JWT}", "token=[SECRET-MASKED]"),
+    ("cred-colon-hex", f"token:{_HEX}", "token:[SECRET-MASKED]"),
+    ("cred-equals-hex", f"token={_HEX}", "token=[SECRET-MASKED]"),
+    ("cred-colon-jwt", f"token:{_JWT}", "token:[SECRET-MASKED]"),
+    ("cred-equals-jwt", f"token={_JWT}", "token=[SECRET-MASKED]"),
     # bare space (no colon, no equals, no quotes)
-    ("cred-space-hex", f"token {HEX}", "token [SECRET-MASKED]"),
-    ("cred-space-jwt", f"token {JWT}", "token [SECRET-MASKED]"),
+    ("cred-space-hex", f"token {_HEX}", "token [SECRET-MASKED]"),
+    ("cred-space-jwt", f"token {_JWT}", "token [SECRET-MASKED]"),
     ("cred-space-8chars-4digits", "token abcd1234", "token [SECRET-MASKED]"),
     # in a sentence
     ("cred-short-token-equals-in-sentence", "message token=1", "message token=[SECRET-MASKED]"),
@@ -115,24 +131,24 @@ CREDENTIAL_CASES = [
     # the credential rule must claim it before the card rule sees it.
     ("cred-numeric-secret-in-card-digit-range", "secret_key=1234567890123456", "secret_key=[SECRET-MASKED]"),
     # Authorization header, every realistic shape
-    ("auth-header-line-single-quotes", f"'Authorization': 'Bearer {JWT}'", "'Authorization': '[SECRET-MASKED]'"),
-    ("auth-header-line-double-quotes", f'"Authorization": "Bearer {JWT}"', '"Authorization": "[SECRET-MASKED]"'),
-    ("auth-header-line-colon", f"Authorization: Bearer {JWT}", "Authorization: [SECRET-MASKED] [JWT-MASKED]"),
-    ("auth-header-line-equal", f"Authorization= Bearer {JWT}", "Authorization= [SECRET-MASKED] [JWT-MASKED]"),
-    ("auth-header-line-space", f"Authorization Bearer {JWT}", "Authorization Bearer [SECRET-MASKED]"),
-    ("auth-header-quoted-kv", f'{{"Authorization": "{HEX}"}}', '{"Authorization": "[SECRET-MASKED]"}'),
-    ("auth-header-quoted-kv-in-sentence", f'Here is {{"Authorization": "{HEX}"}}', 'Here is {"Authorization": "[SECRET-MASKED]"}'),
-    ("auth-dict-value-with-spaces", f'{{"Authorization": "Bearer {HEX} more"}}', '{"Authorization": "[SECRET-MASKED]"}'),
-    ("authorization-raw-colon", f"Authorization: {HEX}abcd", "Authorization: [SECRET-MASKED]"),
-    ("authorisation-raw-dict", f'{{"Authorisation": "{HEX}abcd"}}', '{"Authorisation": "[SECRET-MASKED]"}'),
+    ("auth-header-line-single-quotes", f"'Authorization': 'Bearer {_JWT}'", "'Authorization': '[SECRET-MASKED]'"),
+    ("auth-header-line-double-quotes", f'"Authorization": "Bearer {_JWT}"', '"Authorization": "[SECRET-MASKED]"'),
+    ("auth-header-line-colon", f"Authorization: Bearer {_JWT}", "Authorization: [SECRET-MASKED] [JWT-MASKED]"),
+    ("auth-header-line-equal", f"Authorization= Bearer {_JWT}", "Authorization= [SECRET-MASKED] [JWT-MASKED]"),
+    ("auth-header-line-space", f"Authorization Bearer {_JWT}", "Authorization Bearer [SECRET-MASKED]"),
+    ("auth-header-quoted-kv", f'{{"Authorization": "{_HEX}"}}', '{"Authorization": "[SECRET-MASKED]"}'),
+    ("auth-header-quoted-kv-in-sentence", f'Here is {{"Authorization": "{_HEX}"}}', 'Here is {"Authorization": "[SECRET-MASKED]"}'),
+    ("auth-dict-value-with-spaces", f'{{"Authorization": "Bearer {_HEX} more"}}', '{"Authorization": "[SECRET-MASKED]"}'),
+    ("authorization-raw-colon", f"Authorization: {_HEX}abcd", "Authorization: [SECRET-MASKED]"),
+    ("authorisation-raw-dict", f'{{"Authorisation": "{_HEX}abcd"}}', '{"Authorisation": "[SECRET-MASKED]"}'),
     (
         "auth-inside-headers-dict-apikey",
-        {"headers": {"Authorization": f"API-Key {HEX}"}},
+        {"headers": {"Authorization": f"API-Key {_HEX}"}},
         {"headers": {"Authorization": "[SECRET-MASKED]"}},
     ),
     (
         "auth-inside-headers-dict-bearer",
-        {"headers": {"Authorization": f"Bearer {JWT}"}},
+        {"headers": {"Authorization": f"Bearer {_JWT}"}},
         {"headers": {"Authorization": "[SECRET-MASKED]"}},
     ),
     (
@@ -142,7 +158,7 @@ CREDENTIAL_CASES = [
     ),
     (
         "auth-interpolated-in-message",
-        f"Authentication failed with key 'API-Key {HEX}'",
+        f"Authentication failed with key 'API-Key {_HEX}'",
         "Authentication failed with key 'API-Key [SECRET-MASKED]'",
     ),
     # common OAuth/API field names
@@ -151,8 +167,8 @@ CREDENTIAL_CASES = [
     ("client_secret-kv", "client_secret=sk_live_abcd1234ef", "client_secret=[SECRET-MASKED]"),
     ("private_key-kv", "private_key=abcd1234efgh5678", "private_key=[SECRET-MASKED]"),
     ("secret_key-kv", "secret_key=abcd1234efgh5678", "secret_key=[SECRET-MASKED]"),
-    ("auth-basic-equals", f"basic= {HEX}", "basic= [SECRET-MASKED]"),
-    ("auth-api-key-value", f"API-Key {HEX}", "API-Key [SECRET-MASKED]"),
+    ("auth-basic-equals", f"basic= {_HEX}", "basic= [SECRET-MASKED]"),
+    ("auth-api-key-value", f"API-Key {_HEX}", "API-Key [SECRET-MASKED]"),
     ("auth-basic-value", "Basic dXNlcjpwYXNzd29yZA==", "Basic [SECRET-MASKED]"),
     # A quoted key whose value is a bare literal: text that is JSON (or a
     # Python repr) must stay parseable, and a null/boolean holds no secret.
@@ -172,7 +188,12 @@ CREDENTIAL_CASES = [
 ]
 
 
-CVV_CASES = [
+# ---------------------------------------------------------------------------
+# CVV/CVC/security-code rules (_CVV_KEYWORD): quoted key, ":"/"=", and mixed
+# casing, same 3-rule shape as the credential rules above. Never tokenized —
+# PCI forbids storing a CVV in any form, so [CVV-MASKED] is always final.
+# ---------------------------------------------------------------------------
+CVV_KEYWORD_CASES = [
     ("cvv-single-quoted-colon", "'cvv': '123'", "'cvv': '[CVV-MASKED]'"),
     ("cvv-single-quoted-colon-tight-mixed-case", "'Cvv':'123'", "'Cvv':'[CVV-MASKED]'"),
     ("cvv-double-quoted-colon-mixed-case", '"cVv": "123"', '"cVv": "[CVV-MASKED]"'),
@@ -204,7 +225,10 @@ CVV_CASES = [
 ]
 
 
-PAYMENT_ID_CASES = [
+# ---------------------------------------------------------------------------
+# Payment/transaction/auth id — bare, quoted-key, and dict forms.
+# ---------------------------------------------------------------------------
+PAYMENT_ID_QUOTE_CASES = [
     ("payment_id-bare-colon", "payment_id: abc12345", "payment_id: [PAYMENT-ID-MASKED]"),
     ("payment_id-bare-equals", "payment_id= abc12345", "payment_id= [PAYMENT-ID-MASKED]"),
     ("payment_id-bare-space", "payment_id abc12345", "payment_id [PAYMENT-ID-MASKED]"),
@@ -245,7 +269,13 @@ PAYMENT_ID_CASES = [
 ]
 
 
-IBAN_CASES = [
+# ---------------------------------------------------------------------------
+# IBAN (bank account numbers). Must be masked before the card-number rules
+# run: several real IBAN formats have a long, letter-free digit run (check
+# digits + BBAN) that falls inside the card rules' 12-19-digit body and
+# would otherwise get caught as if it were a PAN.
+# ---------------------------------------------------------------------------
+IBAN_MASKED_CASES = [
     ("iban", "account GB33BUKB20201555555555 credited", "account [IBAN-MASKED] credited"),
     # BE/FR: not Gulf-region at all; BH/QA: Gulf-region codes that still
     # collide despite embedded letters elsewhere in the BBAN.
@@ -263,7 +293,11 @@ IBAN_CASES = [
 ]
 
 
-PHONE_CASES = [
+# ---------------------------------------------------------------------------
+# Phone numbers. Runs before the card rules: a purely numeric value in the
+# card rules' 12-19-digit range would otherwise be claimed as a PAN.
+# ---------------------------------------------------------------------------
+PHONE_MASKED_CASES = [
     # bare local number, no country code, fixed 3-3-4 grouping.
     ("phone-local-space-separators", "091 234 5678", "[PHONE-MASKED]"),
     ("phone-local-dash-space-mixed", "091-234 5678", "[PHONE-MASKED]"),
@@ -278,7 +312,12 @@ PHONE_CASES = [
 ]
 
 
-EMAIL_CASES = [
+# ---------------------------------------------------------------------------
+# Email addresses. No keyword needed — matched purely by shape
+# (local@domain.tld), so it works the same whether it's a bare string, a
+# real dict value, or nested inside a quoted/JSON-shaped key:value pair.
+# ---------------------------------------------------------------------------
+EMAIL_MASKED_CASES = [
     ("email-plain", "user@example.com", "[EMAIL-MASKED]"),
     ("email-in-sentence", "contact john.doe@example.com now", "contact [EMAIL-MASKED] now"),
     ("email-mixed-case", "User.Name+tag@Example.CO.UK", "[EMAIL-MASKED]"),
@@ -302,26 +341,38 @@ EMAIL_CASES = [
 ]
 
 
-JWT_CASES = [
-    ("jwt-standalone", JWT, "[JWT-MASKED]"),
-    ("jwt-in-sentence-space-bounded", f"Here it's {JWT} failed!", "Here it's [JWT-MASKED] failed!"),
-    ("jwt-in-sentence-parens-wrapped", f"Here it's ({JWT}) failed!", "Here it's ([JWT-MASKED]) failed!"),
-    ("jwt-in-sentence-colon-prefixed", f"Here it's: {JWT} failed!", "Here it's: [JWT-MASKED] failed!"),
+# ---------------------------------------------------------------------------
+# Bare JWT — standalone secret with no keyword/scheme in front (the
+# keyworded forms, e.g. "token:<jwt>" / "Bearer <jwt>", are covered by the
+# credential rules above).
+# ---------------------------------------------------------------------------
+JWT_MASKED_CASES = [
+    ("jwt-standalone", _JWT, "[JWT-MASKED]"),
+    ("jwt-in-sentence-space-bounded", f"Here it's {_JWT} failed!", "Here it's [JWT-MASKED] failed!"),
+    ("jwt-in-sentence-parens-wrapped", f"Here it's ({_JWT}) failed!", "Here it's ([JWT-MASKED]) failed!"),
+    ("jwt-in-sentence-colon-prefixed", f"Here it's: {_JWT} failed!", "Here it's: [JWT-MASKED] failed!"),
     # leading "\b" only blocks a letter/digit/underscore glued directly in
     # front — hyphen and dot aren't word characters, so they still match.
-    ("jwt-hyphen-prefixed", f"-{JWT}", "-[JWT-MASKED]"),
-    ("jwt-dot-prefixed", f".{JWT}", ".[JWT-MASKED]"),
+    ("jwt-hyphen-prefixed", f"-{_JWT}", "-[JWT-MASKED]"),
+    ("jwt-dot-prefixed", f".{_JWT}", ".[JWT-MASKED]"),
     # no boundary check at the end at all — any letter/digit/underscore/
     # hyphen glued directly after gets silently swallowed into the match.
-    ("jwt-suffix-letter-swallowed", f"{JWT}abc", "[JWT-MASKED]"),
-    ("jwt-suffix-digit-swallowed", f"{JWT}123", "[JWT-MASKED]"),
-    ("jwt-suffix-underscore-swallowed", f"{JWT}_more", "[JWT-MASKED]"),
-    ("jwt-suffix-hyphen-swallowed", f"{JWT}-more", "[JWT-MASKED]"),
-    ("jwt-suffix-swallowed-in-sentence", f"token was {JWT}extra and more", "token was [JWT-MASKED] and more"),
+    ("jwt-suffix-letter-swallowed", f"{_JWT}abc", "[JWT-MASKED]"),
+    ("jwt-suffix-digit-swallowed", f"{_JWT}123", "[JWT-MASKED]"),
+    ("jwt-suffix-underscore-swallowed", f"{_JWT}_more", "[JWT-MASKED]"),
+    ("jwt-suffix-hyphen-swallowed", f"{_JWT}-more", "[JWT-MASKED]"),
+    ("jwt-suffix-swallowed-in-sentence", f"token was {_JWT}extra and more", "token was [JWT-MASKED] and more"),
 ]
 
 
-CARD_CASES = [
+# ---------------------------------------------------------------------------
+# Card numbers (PAN), 12-19 digits, dash/space separators. ecsctx truncates
+# to first 6 + last 4 (#159795, PCI DSS 3.4.1) — the leading digit no longer
+# changes the outcome, and every row below carries its own truncated core
+# inside [CARD-MASKED:...]. Separators are stripped, so grouped input comes
+# back contiguous.
+# ---------------------------------------------------------------------------
+CARD_NUMBER_CASES = [
     # continuous, leading 9
     ("card-12d-9-continuous", "912345678912", "[CARD-MASKED:********8912]"),
     ("card-13d-9-continuous", "9123456789123", "[CARD-MASKED:*********9123]"),
@@ -418,7 +469,13 @@ CARD_CASES = [
 ]
 
 
-SSN_CASES = [
+# ---------------------------------------------------------------------------
+# SSN. Runs before standalone-CVV (the loosest rule of all — any bare 3-4
+# digit group): a space-separated SSN's outer groups ("123" and "6789") are
+# each individually CVV-standalone-shaped, so without this order it would
+# fragment instead of masking as one SSN.
+# ---------------------------------------------------------------------------
+SSN_MASKED_CASES = [
     ("ssn-space-glued-no-separators", "ssn 123456789 on file", "ssn [SSN-MASKED] on file"),
     ("ssn-space-then-glued-tail", "ssn 123 456789 on file", "ssn [SSN-MASKED] on file"),
     ("ssn-glued-head-then-space", "ssn 12345 6789 on file", "ssn [SSN-MASKED] on file"),
@@ -441,7 +498,13 @@ SSN_CASES = [
 ]
 
 
-DICT_KEY_CASES = [
+# ---------------------------------------------------------------------------
+# _mask_dict's key-name check: a dict key that is itself a sensitive keyword
+# masks its whole value outright, regardless of type/content — this is what
+# makes a bare structlog kwarg (log.info(..., token="abcd1234")) get masked,
+# since the content rules never see key and value joined into one string.
+# ---------------------------------------------------------------------------
+DICT_KEY_VALUE_MASKING_CASES = [
     (
         "key-token-string-value",
         {"event": "create payment", "token": "abcd1234"},
@@ -467,16 +530,19 @@ DICT_KEY_CASES = [
 ]
 
 
-# TestObjectAndPrimitiveHandling in tests/test_masking_filter.py, as cases.
+# Structured logging passes objects as kwargs; their repr must not leak. The
+# filter stringifies a non-primitive before masking, or the embedded PAN would
+# render unmasked downstream. Numbers, bools and None must survive intact — a
+# 3-digit status code or count must not be caught by the CVV pattern.
 OBJECT_AND_PRIMITIVE_CASES = [
     (
         "object-repr-pan-masked",
-        {"event": "decrypted payment data", "source": SampleCard()},
+        {"event": "decrypted payment data", "source": _FakeCard()},
         {"event": "decrypted payment data", "source": "<Card(VISA, 512345******0008, [CARD-MASKED:958418******4802])>"},
     ),
     (
         "object-nested-in-list-and-dict",
-        {"data": {"cards": [{"instrument": SampleCard()}]}},
+        {"data": {"cards": [{"instrument": _FakeCard()}]}},
         {"data": {"cards": [{"instrument": "<Card(VISA, 512345******0008, [CARD-MASKED:958418******4802])>"}]}},
     ),
     ("cvv-string-field", {"processed_data": {"cvv": "100"}}, {"processed_data": {"cvv": "[CVV-MASKED]"}}),
@@ -488,8 +554,13 @@ OBJECT_AND_PRIMITIVE_CASES = [
     ("plain-string-message-with-pan", "card 5123 4500 0000 0008", "card [CARD-MASKED:512345******0008]"),
 ]
 
-# Values that must come through untouched — guards against over-masking.
-NOT_MASKED_CASES = [
+# ---------------------------------------------------------------------------
+# Non-sensitive fields and prose that must NOT be masked — guards the rules
+# against over-masking. "key" is only sensitive as a *_key compound, so
+# cache_key/sort_key/primary_key are spared; and the space rule's digit
+# guard leaves prose like "Basic authentication" untouched.
+# ---------------------------------------------------------------------------
+NOT_MASKED = [
     ("cache-key", "cache_key=user_profile_v2"),
     ("sort-key", "sort_key=created_at_desc"),
     ("primary-key", "primary_key=customer_00042"),
@@ -533,9 +604,35 @@ NOT_MASKED_CASES = [
 ]
 
 
-# Sensitive-looking values a guard deliberately lets through. Settled
-# decisions, not bugs — listed so a project sees them rather than assuming
-# they are covered.
+# ---------------------------------------------------------------------------
+# Space-cascade bug (open): the standalone-CVV rule — the loosest rule in the
+# file, any bare 3-4 digit group — claims the 4-digit groups of a
+# space-separated digit run that the card rules correctly ignored for being
+# outside the 12-19 range. Each case is (label, sample): the intended output
+# is the sample untouched, which is not what ships today. Only
+# tests/test_masking_filter.py runs these, as strict xfail, so fixing the
+# cascade turns them into XPASS failures and forces promotion into
+# NOT_MASKED. The shipped suite leaves them out: a project cannot fix
+# them.
+#
+# The in-range 4-4-4-4 rows this list carried in the ported source are no
+# longer affected — truncated-PAN masking claims the whole run before the
+# CVV rule can see the groups — and now live in CARD_NUMBER_CASES.
+# ---------------------------------------------------------------------------
+OVER_MASKED_BECAUSE_OF_CVV = [
+    ("card-11d-9-space", "9123 4567 891"),
+    ("card-20d-9-space", "9123 4567 8912 34567891"),
+    ("card-11d-other-space", "1123 4567 891"),
+    ("card-20d-other-space", "1123 4567 8912 34567891"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Accepted leaks: unlike NOT_MASKED above (values that aren't sensitive, or
+# don't match a rule's shape at all), every case here is genuinely
+# sensitive-looking data (a real PAN, a real token) that a guard deliberately
+# lets through unmasked. Each is a settled decision, not an open bug.
+# ---------------------------------------------------------------------------
 ACCEPTED_LEAK_CASES = [
     # The bare-space credential rule requires a digit in the value, so it can
     # tell a real token from prose — an all-letter value is left unmasked.
@@ -556,9 +653,9 @@ ACCEPTED_LEAK_CASES = [
     ("card-19d-other-preceded-by-digit-space-unaffected", "point 1 1234567891234567891"),
     # The JWT rule's leading "\b" blocks a match when "eyJ" is glued directly
     # to a word character.
-    ("jwt-glued-to-letter-prefix-unmasked", f"abc{JWT}"),
-    ("jwt-glued-to-digit-prefix-unmasked", f"123{JWT}"),
-    ("jwt-glued-to-underscore-prefix-unmasked", f"_{JWT}"),
+    ("jwt-glued-to-letter-prefix-unmasked", f"abc{_JWT}"),
+    ("jwt-glued-to-digit-prefix-unmasked", f"123{_JWT}"),
+    ("jwt-glued-to-underscore-prefix-unmasked", f"_{_JWT}"),
     # Phone shares the card lead guard — "+" glued to a preceding letter
     # doesn't match.
     ("phone-glued-plus-to-letter-unmasked", "call+963912345678"),
@@ -566,22 +663,22 @@ ACCEPTED_LEAK_CASES = [
 
 
 MASKED_GROUPS = {
-    "pem": PEM_CASES,
-    "credential": CREDENTIAL_CASES,
-    "cvv": CVV_CASES,
-    "payment_id": PAYMENT_ID_CASES,
-    "iban": IBAN_CASES,
-    "phone": PHONE_CASES,
-    "email": EMAIL_CASES,
-    "jwt": JWT_CASES,
-    "card": CARD_CASES,
-    "ssn": SSN_CASES,
-    "dict_key": DICT_KEY_CASES,
+    "pem": PEM_MASKED_CASES,
+    "credential": CREDENTIAL_MASKED_CASES,
+    "cvv": CVV_KEYWORD_CASES,
+    "payment_id": PAYMENT_ID_QUOTE_CASES,
+    "iban": IBAN_MASKED_CASES,
+    "phone": PHONE_MASKED_CASES,
+    "email": EMAIL_MASKED_CASES,
+    "jwt": JWT_MASKED_CASES,
+    "card": CARD_NUMBER_CASES,
+    "ssn": SSN_MASKED_CASES,
+    "dict_key": DICT_KEY_VALUE_MASKING_CASES,
     "object_and_primitive": OBJECT_AND_PRIMITIVE_CASES,
 }
 
 UNCHANGED_GROUPS = {
-    "not_masked": NOT_MASKED_CASES,
+    "not_masked": NOT_MASKED,
     "accepted_leaks": ACCEPTED_LEAK_CASES,
 }
 
@@ -607,7 +704,7 @@ def _holds_object(value) -> bool:
         return any(_holds_object(v) for v in value.values())
     if isinstance(value, list):
         return any(_holds_object(v) for v in value)
-    return isinstance(value, SampleCard)
+    return isinstance(value, _FakeCard)
 
 
 # Key names are matched in every service, except payment-id names, which
