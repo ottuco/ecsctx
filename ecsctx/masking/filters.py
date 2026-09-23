@@ -224,6 +224,25 @@ _MAX_DEPTH = 64
 MASKING_FAILED = "[MASKING-FAILED: {}]"
 
 
+# A reference number a service may keep readable under a key it lists: digits
+# only, and short enough that it cannot be a full-length PAN (15-19 digits are
+# truncated wherever they are). An RRN is 12, POS data 13, an acquirer id 9.
+_REFERENCE_MAX_DIGITS = 14
+
+
+def _is_reference_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return len(str(abs(value))) <= _REFERENCE_MAX_DIGITS
+    return (
+        isinstance(value, str)
+        and value.isascii()
+        and value.isdigit()
+        and len(value) <= _REFERENCE_MAX_DIGITS
+    )
+
+
 def _is_record(value: Any) -> bool:
     """A namedtuple, or a dataclass instance with a generated repr -- an object
     whose fields have names the key rules can judge. Without a generated repr
@@ -417,7 +436,16 @@ class MaskPIIFilter(logging.Filter):
                     or joined in _SAFE_KEYS_JOINED
                     or joined in _joined_names(ctx.safe)
                 ):
-                    result[key] = self._mask_value(value, child_path, ctx)
+                    # A key the service listed also frees a reference number
+                    # from the digit rules -- unless the key is PII on its own
+                    # (listing `mobile` must not free a phone number) or sits
+                    # in a card, credential, CVV or SAD container.
+                    verbatim = (
+                        _listed(lookup_key, ctx.safe)
+                        and inherited not in _WALKED_TYPES
+                        and classify_key(lookup_key, ctx.packs) in (None, "payment_id")
+                    )
+                    result[key] = self._mask_value(value, child_path, ctx, verbatim_digits=verbatim)
                     continue
                 if value is None:
                     # An empty field of a container carries nothing to mask.
@@ -489,7 +517,13 @@ class MaskPIIFilter(logging.Filter):
             return tuple(items) if isinstance(data, tuple) else items
 
     def _mask_value(
-        self, value: Any, path: tuple = (), ctx: _Pass | None = None, inherited: str | None = None
+        self,
+        value: Any,
+        path: tuple = (),
+        ctx: _Pass | None = None,
+        inherited: str | None = None,
+        *,
+        verbatim_digits: bool = False,
     ) -> Any:
         """Apply appropriate masking based on value type.
 
@@ -511,6 +545,8 @@ class MaskPIIFilter(logging.Filter):
             # A raw body: masked as the text it is, key rules included. Its
             # repr would get only the content rules, and a name has no shape.
             value = bytes(value).decode("utf-8", errors="replace")
+        if verbatim_digits and _is_reference_number(value):
+            return value
         ctx = ctx or self._context()
         if _is_record(value):
             # Before the tuple check: a namedtuple is a tuple.

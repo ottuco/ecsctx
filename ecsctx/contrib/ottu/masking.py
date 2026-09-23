@@ -48,6 +48,16 @@ SAFE_KEYS = frozenset({
     # through, and these name the result of the check, not the CVV.
     "acquirercode",
     "gatewaycode",
+    # MPGS's acquirer references -- what a reconciliation or a chargeback is
+    # fought with. A listed key keeps a reference number of up to 14 digits
+    # readable: the RRN (`receipt`, 12), `posData` (13), the acquirer's
+    # `merchantId` (9, which the SSN rule took for a social security number).
+    "receipt",
+    "rrn",
+    "posdata",
+    "merchantid",
+    "stan",
+    "trackid",
     # Payment-configuration names and statuses, in ecsctx's built-in list until
     # 0.9.0.
     "gateway_name",
