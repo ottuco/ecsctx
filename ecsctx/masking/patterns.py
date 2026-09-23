@@ -971,17 +971,42 @@ def _is_tel_key(words: list[str]) -> bool:
 # leaves are walked since 0.13.0; before that the container collapsed and these
 # never reached a log by name.
 _SAD_KEY_WORDS = frozenset({
-    "track", "track1", "track2", "trackdata", "track1data", "track2data",
-    "magstripe", "magneticstripe", "magnetic",
+    "track1", "track2", "track3", "trackdata", "track1data", "track2data", "track3data",
+    "track2equivalent", "track2equivalentdata",
+    "magstripe", "magstripedata", "magneticstripe", "magneticstripedata",
     "pin", "pinblock", "pincode", "cardpin", "atmpin",
-    "emvrequest", "emvresponse", "emvdata",
+    "emvrequest", "emvresponse", "emvdata", "emvtags", "iccdata", "chipdata", "de55", "field55",
 })
+
+# `track` and `magnetic` on their own are the stripe only as the head of a key
+# that names the data -- `track`, `raw_track`, `trackTwo`. Followed by an id-ish
+# word they name a payment: KNET's `track_id` and the "Track ID" line in every
+# Connect payment's details went out as [SAD-MASKED] in 0.13.0, and SAD can
+# never be listed as safe, so nothing could undo it.
+_TRACK_HEADS = ("track", "magnetic")
+_TRACK_TAILS = frozenset({
+    "", "1", "2", "3", "one", "two", "three", "data", "equivalent", "equivalentdata", "image", "raw", "stripe",
+})
+
+# A wallet's payment cryptogram and a 3DS authentication value: one-time values
+# that authenticate a transaction, which nothing reads in a log. Matched at the
+# END of the key, so a verdict about one (`cavvResponseCode`) is not one.
+_SAD_KEY_ENDING = re.compile(r"(?:cryptogram|cavv|tavv|aav|ucaf(?:authenticationdata)?)(?:value|data)?$")
 
 
 def _is_sad_key(joined: str, words: list[str]) -> bool:
     # Whole words, never substrings: "pin" is inside shipping and mapping,
     # "track" inside backtrack. The glued form is checked too, for track2data.
-    return joined in _SAD_KEY_WORDS or any(word in _SAD_KEY_WORDS for word in words)
+    if joined in _SAD_KEY_WORDS or any(word in _SAD_KEY_WORDS for word in words):
+        return True
+    if _SAD_KEY_ENDING.search(joined):
+        return True
+    for head in _TRACK_HEADS:
+        if head in words:
+            at = len(words) - 1 - words[::-1].index(head)
+            if "".join(words[at + 1 :]) in _TRACK_TAILS:
+                return True
+    return False
 
 
 def _is_holder_key(words: list[str]) -> bool:
