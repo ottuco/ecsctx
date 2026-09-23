@@ -955,11 +955,13 @@ Card and expiry keys are matched precisely.
 
 | Type | Key names | Content rule (pack) | Output |
 |------|-----------|---------------------|--------|
-| **Secrets** | containing `token`, `secret`, `password`, `passwd`, `authorization`, `bearer`, `basic`, `digest`, `credential`, or an `api`/`access`/`secret`/`private`/… `_key` | credential forms (`default`) | `[SECRET-MASKED…]` |
+| **Secrets** | ending in `token`, `secret`, `password`, `passwd`, `passphrase`, `passcode`, `pwd`; `authorization` (also `HTTP_AUTHORIZATION`, `Proxy-Authorization`), `cookie`, `bearer`, `basic`, `digest`, `credential(s)`, an `api`/`access`/`secret`/`private`/`hmac`/`merchant`/… `_key(s)`, `access_code` | credential forms (`default`) | `[SECRET-MASKED…]`; a PAN-shaped credential is always the label, never truncated |
 | **Emails / phones** | containing `email`; `phone`, `mobile`, `tel` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]` |
 | **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
 | **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no` | 12–19 digit runs (`pci`) | `411111******1111` |
-| **CVV** | containing `cvv`, `cvc`, `security code` | keyed and bare CVV (`pci`) | `[CVV-MASKED]` |
+| **CVV** | containing `cvv`, `cvc`, `security code`, `verification value`, or the words `csc`, `cvd`, `cvn`, `card code` — unless what follows names something *about* one (`cvv_required`, `cvvResult`, `cardSecurityCodeError`) | keyed and bare CVV (`pci`) | `[CVV-MASKED]` |
+| **SAD** | track data (`track2`, `trackData`, `raw_track`; not `track_id`), `pin`/`pinBlock`, EMV/chip data, and ending in `cryptogram`, `cavv`, `tavv`, `aav`, `ucaf` | — | `[SAD-MASKED]` |
+| **National ids** | `civil_id`, `national_id`, `passport`, `iqama`, `qid`, `cpr`, `nid`, `emirates_id`, `ssn`, `tin`, `tax_id`, `aadhaar`, `id_number` | — | `[SSN-MASKED…]` |
 | **IBAN / SSN / payment ids** | `payment_id`, `transaction_id`, `auth_id` (`financial_ids`) | `financial_ids` | `[IBAN-MASKED…]`, … |
 
 A PII container — a dict or list under a key such as `customer`, `billing` or
@@ -969,7 +971,20 @@ such as `id` stays readable, and any other field is tokenized as the container's
 type. A **card** container keeps its shape too: the PAN truncates to first six
 and last four, expiry and scheme read through, and the CVV, track data and PIN
 are destroyed — collapsing it threw away the one form PCI DSS 3.5.1 permits us
-to keep. CVV and secret containers are still masked as one unit.
+to keep.
+
+Since 0.14.0 a **credential, CVV or SAD** key holding a container is walked as
+well, because it cannot be holding the value itself: a leaf with no rule of its
+own still takes the container's type, and under a CVV or SAD key only a key the
+service lists reads through. A card-shaped object under a credential key (a
+number plus an expiry — a saved card under `token`) is walked as the card it is.
+
+A **`{name, value}` pair** — `{"name": "customer_name", "value": "…"}`, a HAR
+header list — masks its value as the type its identifier names, and the
+identifier (a field label) reads through. A bare `name` is a thing's name, not
+a person's, under a container named by a thing (`payment_method.name`,
+`merchant.name`, `items[].name`). Booleans are never masked. A dataclass or
+namedtuple is masked by its field names and rendered back to its repr text.
 
 A digit run that touches a letter is never a phone number — it is part of an
 id. The card rule still matches a PAN followed by a letter, because Track 2
@@ -977,9 +992,11 @@ data puts a `D` separator right after it.
 
 ### Structural fields (never scanned)
 
-ecsctx's own metadata (`service`, `project`, `log`) and the correlation ids
-services generate (`session_id`, `trace`, `span`) are left alone: masking them
-breaks the joins logs exist for. `user.name` is exempt from the name rule — it
+ecsctx's own metadata (`service.name`/`version`, `project.name`,
+`log.level`/`logger`/`origin`) and the correlation ids services generate
+(`session_id`, `trace.id`, `span.id`) are left alone: masking them breaks the
+joins logs exist for. Anything else a caller puts under those keys is masked
+like any other field. `user.name` is exempt from the name rule — it
 is a login that audit trails need — but its content is still scanned, so an
 email login is masked.
 
@@ -991,8 +1008,9 @@ They mean the same in every service:
 ```
 module_name, func_name, task_name, service_name, app_name, project_name,
 class_name, method_name, view_name, username, site_name, domain_name,
-display_name, event_name, pathname, customer_id, id, pk, namespace,
-hostname, filename, token_type, sec-ch-ua-mobile
+event_name, pathname, customer_id, id, pk, namespace, hostname, filename,
+token_type, sec-ch-ua-mobile, expires_in, expires_at, refresh_expires_in,
+scope, brand, scheme, bin, and the expiry spellings
 ```
 
 ### Safe keys (a service's own names)
@@ -1000,7 +1018,9 @@ hostname, filename, token_type, sec-ch-ua-mobile
 A service's payloads have their own names that a key rule would mask for
 nothing: a gateway's short name in `pg_name`, a boolean in `cvv_required`. The
 service lists them; the list extends the whitelist above and cannot shrink it.
-A listed key's value is still content-scanned.
+A listed key's value is still content-scanned — except that a digits-only
+reference number of up to 14 digits (an RRN, an acquirer id) is left as it is
+when the key is not PII on its own. A 15–19 digit value is always truncated.
 
 ```python
 # 1. Django settings.py
