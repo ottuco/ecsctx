@@ -1010,7 +1010,8 @@ module_name, func_name, task_name, service_name, app_name, project_name,
 class_name, method_name, view_name, username, site_name, domain_name,
 event_name, pathname, customer_id, id, pk, namespace, hostname, filename,
 token_type, sec-ch-ua-mobile, expires_in, expires_at, refresh_expires_in,
-scope, brand, scheme, bin, and the expiry spellings
+scope, brand, scheme, bin, created, modified, created_at, updated_at,
+and the expiry spellings
 ```
 
 ### Safe keys (a service's own names)

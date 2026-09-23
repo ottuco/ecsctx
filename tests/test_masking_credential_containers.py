@@ -80,6 +80,14 @@ class TestTheSavedCardInTheWebhook:
         ):
             assert token[key] == SAVED_CARD[key], key
 
+    def test_its_bookkeeping_timestamps_read_through(self, mask):
+        # `Card.as_dict()` carries `created`/`modified`: fourteen digits each,
+        # which the card rule refuses as "not a clean PAN" under a card key.
+        card = dict(SAVED_CARD, created="2026-09-23 11:30:00", modified="2026-09-23 11:30:05")
+        token = mask({"token": card})["token"]
+        assert token["created"] == "2026-09-23 11:30:00"
+        assert token["modified"] == "2026-09-23 11:30:05"
+
     def test_the_holder_and_the_gateway_token_are_not(self, mask):
         token = mask({"token": dict(SAVED_CARD)})["token"]
         assert "Jane" not in str(token)

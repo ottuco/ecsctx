@@ -80,6 +80,13 @@ SAFE_KEYS = frozenset({
     "brand",
     "scheme",
     "bin",
+    # Record bookkeeping timestamps: never PII or a card, but fourteen digits,
+    # which the card rule refuses under a card key as "not a clean PAN" --
+    # `Card.as_dict()` carries both.
+    "created",
+    "modified",
+    "created_at",
+    "updated_at",
     # Expiry. Cardholder Data rather than Sensitive Authentication Data, so
     # PCI DSS permits storing it and ecsctx no longer classifies it. Listed
     # here as well so it escapes a PII container's sweep: inside a `payer` or
