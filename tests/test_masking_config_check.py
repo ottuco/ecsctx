@@ -383,7 +383,7 @@ def only_the_dict_half(monkeypatch):
     to take the live half out of the picture to say anything precise."""
     monkeypatch.setattr(
         "ecsctx.contrib.django.checks.find_unmasked_live_handlers",
-        lambda logging_config: [],
+        lambda logging_config, **kwargs: [],
     )
 
 

@@ -234,14 +234,11 @@ def find_masking_errors(
     """
     from ecsctx.masking.config import masking_pack_errors, masking_safe_key_errors
 
-    live = (
-        find_unmasked_live_handlers(logging_config, ignore_pytest_handlers=True)
-        if ignore_pytest_handlers
-        else find_unmasked_live_handlers(logging_config)
-    )
     return (
         find_masking_config_errors(logging_config)
-        + live
+        + find_unmasked_live_handlers(
+            logging_config, ignore_pytest_handlers=ignore_pytest_handlers
+        )
         + masking_pack_errors()
         + masking_safe_key_errors()
     )
