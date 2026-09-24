@@ -1187,7 +1187,7 @@ So masking is tested on the full logging flow of your project, and no test value
 
 **Tokens and packs.** With PII tokenization on, your project logs a tokenizable value as a bare `ptok:v1:…` token; the suite counts that as a match for its label (`[EMAIL-MASKED]`, `[NAME-MASKED]`, …), because the token itself depends on your keyset. Card, CVV and expiry are never tokenized, so they always compare exactly (`[CARD-MASKED:411111******1111]`). A sample case that needs an opt-in content pack — `pci` for card numbers and CVVs in text, `financial_ids` for payment ids, IBANs and SSNs — is skipped unless your project turns that pack on (see [Masking packs](#masking-packs--pci-services-must-opt-in)), so a project without them sees those cases reported as skipped, not failed.
 
-You inherit 24 tests covering 327 sample cases:
+You inherit 24 tests covering 365 sample cases:
 
 | Test | What it proves |
 |---|---|
