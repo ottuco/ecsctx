@@ -507,6 +507,9 @@ classifies the parameter's name: `/v1/cards/[SECRET-MASKED]/` above (the bare
 `ptok:` token where PII tokenization is configured). A parameter it leaves
 alone (`pk`, `uid`) stays readable. A value that shares its segment with other
 text (a regex route's `(?P<token>[^/.]+)\.pdf`) is masked wherever it appears.
+`LoggingContextMiddleware`'s `unhandled_exception` line masks its `url.path`
+the same way. Django's own `django.request` lines ("Internal Server Error:
+<path>") are not ecsctx's, and still carry the path.
 
 ---
 

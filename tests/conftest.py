@@ -137,6 +137,30 @@ def isolated_logging_tree(logging_state):
     yield
 
 
+@pytest.fixture
+def rendered(capsys, logging_state):
+    """What a call logs, as the console handler writes it: through the real
+    get_logging_config() and setup_logging(), masking included."""
+    import logging.config
+
+    import structlog
+
+    from ecsctx.contrib.django import get_logging_config, setup_logging
+
+    def run(call):
+        cfg = get_logging_config(use_cid_filter=False)
+        cfg["loggers"] = {}
+        logging.config.dictConfig(cfg)
+        setup_logging(capture_warnings=False)
+        try:
+            call()
+        finally:
+            structlog.reset_defaults()
+        return capsys.readouterr().err
+
+    return run
+
+
 @pytest.fixture(autouse=True)
 def _reset_redaction_module():
     """Reset redaction config between tests."""

@@ -16,6 +16,7 @@ from django.utils.deprecation import MiddlewareMixin
 from ipware import get_client_ip
 
 from ecsctx import bind_logging_context, get_trace_id, reset_logging_context
+from ecsctx.contrib.django.routes import loggable_path
 
 logger = structlog.get_logger(__name__)
 
@@ -89,7 +90,7 @@ class LoggingContextMiddleware(MiddlewareMixin):
                 "request": {"method": request.method},
                 "response": {"status_code": 500},
             },
-            url={"path": request.path},
+            url={"path": loggable_path(request)},
             exc_info=exception,
         )
 

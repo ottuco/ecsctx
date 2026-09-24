@@ -35,12 +35,14 @@
   alone (`pk`, `uid`) stays readable, and so does the mount prefix, unless it
   has the same text as a masked value. A value that shares its segment (a
   regex route's `(?P<token>[^/.]+)\.pdf`) is masked wherever it appears.
+- `LoggingContextMiddleware`'s `unhandled_exception` line masks its
+  `url.path` the same way. A view on a card route that raised logged the card
+  token there in clear.
 
 ### Known
 
-- Two other lines still write the raw path: the middleware's
-  `unhandled_exception` (in `url.path`) and Django's own `django.request`
-  ("Not Found: …", "Internal Server Error: …").
+- Django's own `django.request` lines still write the raw path in their
+  message ("Not Found: …", "Internal Server Error: …").
 
 ## v0.14.0 (2026-09-23)
 

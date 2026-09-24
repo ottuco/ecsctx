@@ -7,6 +7,7 @@ Django middleware and processors; the `contextvars_injector` lazily imports the 
 - `processors.py` - Django-aware `contextvars_injector`
 - `logging.py` - `get_logging_config()`, `setup_logging()`, presets (`RQ_LOGGERS`, `CELERY_LOGGERS`)
 - `checks.py` - masking boot check, auto-registered as a Django system check on import
+- `routes.py` - `loggable_path()`: `url.path` with credential route parameters masked, for `api_logging` and the middleware's `unhandled_exception`
 
 ## Critical Context
 - `LogContextBinder` NOT in `__all__` - must import explicitly to avoid circular imports during Django setup
