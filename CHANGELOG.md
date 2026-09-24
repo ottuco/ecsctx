@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.15.0 (2026-09-24)
+
+### Fixes
+- fix(django): unhandled_exception masks the route's credentials in url.path (a4331e5)
+- fix(django): mask the segments a route parameter fills, not every match (a61a49d)
+- fix(django)!: api_logging names the route, not the path (d9d4234)
+
+### Other
+- Merge pull request #63 from ottuco/fix/api-logging-route-not-path (645c5a2)
+- Merge pull request #64 from ottuco/fix/unhandled-exception-url-path (343df7a)
+
+
 ## Unreleased
 
 ### Changed (behaviour)
