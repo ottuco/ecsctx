@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### Changed (behaviour)
+
+- `@api_logging`'s two messages name the route the request matched, not its
+  path: `api request received: DELETE /v1/cards/<str:token>/`, where it was
+  `… DELETE /v1/cards/9584184138614802/`. A path carries ids and credentials,
+  and made every message unique, so the lines never grouped in Kibana. **The
+  message text changes, so a Kibana saved search, alert or visualization on
+  the old paths needs updating**: to the route, or to `url.path` for one
+  specific path. The messages that change:
+  - every route with a parameter;
+  - every regex route (`re_path()`, DRF's routers), which reads as its
+    pattern, parameters or not: `/api/payments/$`,
+    `/api/payments/(?P<pk>[^/.]+)/$`;
+  - every message of a service mounted under a prefix: the route leaves
+    `FORCE_SCRIPT_NAME` out. Connect has both of the last two: `POST
+    /b/pbl/v2/sign/` reads `POST /pbl/v2/sign/?$`, and its card deletion
+    `DELETE /pbl/v2/card/(?P<token>[^/.]+)/?$`.
+
+  A `path()` route without parameters, in a service with no mount prefix,
+  reads as before. A view called without URL resolution (`APIRequestFactory`
+  in a test) still names its path.
+
+### Fixed
+
+- `url.path` on the same two lines carried a credential in a path segment in
+  clear (Connect's `DELETE /pbl/v2/card/<token>`, ottu_pg's
+  `/v1/pbl/card/token/<str:token>/`). Each segment a route parameter fills is
+  now masked by `mask_by_field_type(value, key_field_type(name))` when the
+  engine classifies its name: `/v1/cards/[SECRET-MASKED]/`, or the bare
+  `ptok:` token where PII tokenization is configured. A parameter it leaves
+  alone (`pk`, `uid`) stays readable, and so does the mount prefix, unless it
+  has the same text as a masked value. A value that shares its segment (a
+  regex route's `(?P<token>[^/.]+)\.pdf`) is masked wherever it appears.
+- `LoggingContextMiddleware`'s `unhandled_exception` line masks its
+  `url.path` the same way. A view on a card route that raised logged the card
+  token there in clear.
+
+### Known
+
+- Django's own `django.request` lines still write the raw path in their
+  message ("Not Found: …", "Internal Server Error: …").
+
 ## v0.14.0 (2026-09-23)
 
 ### Features

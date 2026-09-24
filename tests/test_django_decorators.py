@@ -1,11 +1,14 @@
 """Tests for ecsctx.contrib.django.decorators.api_logging."""
 
+import json
 from unittest.mock import patch
 
+import pytest
 from django.contrib.auth.models import AnonymousUser
+from django.urls import path, re_path
 from rest_framework.exceptions import Throttled, ValidationError
 from rest_framework.response import Response
-from rest_framework.test import APIRequestFactory, force_authenticate
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 from rest_framework.views import APIView
 
 from ecsctx.contrib.django.decorators import _log_user, api_logging
@@ -225,6 +228,112 @@ class TestErrorTypeOnRejections:
                 pass
         closing = [k for _n, _a, k in mock_logger.method_calls if "ecs_event" in k][-1]
         assert closing["error"] == {"type": "RuntimeError"}
+
+
+@api_logging
+class _CardView(APIView):
+    permission_classes = []
+
+    def delete(self, request, **kwargs):
+        return Response(status=204)
+
+
+# The urlconf the routed tests below run under (pytest.mark.urls). A saved
+# card's delete route carries the card token as a path segment, as ottu_pg's
+# `/v1/pbl/card/token/<str:token>/` and Connect's `/pbl/v2/card/<token>` do.
+urlpatterns = [
+    path("v1/cards/<str:token>/", _CardView.as_view()),
+    path("v1/payments/<uuid:uid>/", _CardView.as_view()),
+    path("v1/accounts/<str:acct>/tokens/<str:token>/", _CardView.as_view()),
+    path("v1/keys/<str:api_key>/tokens/<str:token>/", _CardView.as_view()),
+    re_path(r"^v1/receipts/(?P<token>[^/.]+)\.pdf$", _CardView.as_view()),
+]
+
+# An MPGS token is sixteen digits; a CyberSource instrument id is hex that no
+# content rule recognises.
+CARD_TOKENS = pytest.mark.parametrize(
+    "token", ["9584184138614802", "E4B1C1F4F2B35BD6E05341588E0A4F4F"], ids=["mpgs", "cybersource"]
+)
+
+
+def _api_lines(output):
+    docs = [json.loads(line) for line in output.splitlines() if line.strip()]
+    return [doc for doc in docs if doc.get("event", {}).get("action", "").startswith("api.")]
+
+
+@pytest.mark.urls(__name__)
+class TestRouteNotPath:
+    """Both lines name the route the request matched, not its path. The path
+    put whatever the URL carries into the message -- a card token, a payment
+    id -- so no two lines grouped, and a token is a credential."""
+
+    @CARD_TOKENS
+    def test_both_messages_name_the_route(self, rendered, token):
+        output = rendered(lambda: APIClient().delete(f"/v1/cards/{token}/"))
+        assert [line["message"] for line in _api_lines(output)] == [
+            "api request received: DELETE /v1/cards/<str:token>/",
+            "api response sent: DELETE /v1/cards/<str:token>/ (204)",
+        ]
+
+    @CARD_TOKENS
+    def test_the_token_is_nowhere_in_the_rendered_lines(self, rendered, token):
+        output = rendered(lambda: APIClient().delete(f"/v1/cards/{token}/"))
+        assert token not in output
+        # url.path keeps the path, the segment masked as a `token` body field is.
+        assert [line["url"]["path"] for line in _api_lines(output)] == [
+            "/v1/cards/[SECRET-MASKED]/",
+            "/v1/cards/[SECRET-MASKED]/",
+        ]
+
+    def test_a_parameter_the_engine_leaves_alone_stays_in_the_path(self, rendered):
+        uid = "4e540889-d724-49d3-8edc-b8bf2a212b42"
+        output = rendered(lambda: APIClient().delete(f"/v1/payments/{uid}/"))
+        lines = _api_lines(output)
+        assert [line["message"] for line in lines] == [
+            "api request received: DELETE /v1/payments/<uuid:uid>/",
+            "api response sent: DELETE /v1/payments/<uuid:uid>/ (204)",
+        ]
+        assert [line["url"]["path"] for line in lines] == [
+            f"/v1/payments/{uid}/",
+            f"/v1/payments/{uid}/",
+        ]
+
+    def test_a_view_called_without_url_resolution_names_its_path(self, rendered):
+        request = APIRequestFactory().get("/ping/")
+        output = rendered(lambda: _PingView.as_view()(request))
+        assert [line["message"] for line in _api_lines(output)] == [
+            "api request received: GET /ping/",
+            "api response sent: GET /ping/ (200)",
+        ]
+
+
+@pytest.mark.urls(__name__)
+class TestMaskedSegments:
+    """url.path masks the segments a classified parameter fills. Replacing its
+    value anywhere in the path also hit segments that merely contain it."""
+
+    def test_a_segment_that_contains_the_token_stays_readable(self, rendered):
+        output = rendered(lambda: APIClient().delete("/v1/accounts/1234/tokens/23/"))
+        assert [line["url"]["path"] for line in _api_lines(output)] == [
+            "/v1/accounts/1234/tokens/[SECRET-MASKED]/",
+            "/v1/accounts/1234/tokens/[SECRET-MASKED]/",
+        ]
+
+    def test_a_token_that_starts_with_another_credential_is_masked_whole(self, rendered):
+        output = rendered(lambda: APIClient().delete("/v1/keys/7c1e/tokens/7c1e9a0b/"))
+        assert [line["url"]["path"] for line in _api_lines(output)] == [
+            "/v1/keys/[SECRET-MASKED]/tokens/[SECRET-MASKED]/",
+            "/v1/keys/[SECRET-MASKED]/tokens/[SECRET-MASKED]/",
+        ]
+
+    def test_a_token_that_shares_its_segment_is_still_masked(self, rendered):
+        token = "E4B1C1F4F2B35BD6E05341588E0A4F4F"
+        output = rendered(lambda: APIClient().delete(f"/v1/receipts/{token}.pdf"))
+        assert token not in output
+        assert [line["url"]["path"] for line in _api_lines(output)] == [
+            "/v1/receipts/[SECRET-MASKED].pdf",
+            "/v1/receipts/[SECRET-MASKED].pdf",
+        ]
 
 
 class TestRegistration:

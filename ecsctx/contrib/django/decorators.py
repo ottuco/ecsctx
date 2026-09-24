@@ -3,6 +3,7 @@ from ipware import get_client_ip
 from rest_framework.exceptions import Throttled, ValidationError
 from rest_framework.response import Response
 
+from ecsctx.contrib.django.routes import loggable_path
 from ecsctx.events.http import (
     API_REQUEST_RECEIVED,
     API_REQUEST_REJECTED,
@@ -34,6 +35,20 @@ def _log_user(user):
     return fields
 
 
+def _route(request):
+    """The URL pattern the request matched, e.g. ``/v1/cards/<str:token>/``.
+
+    The path put whatever the URL carries into the message -- a card token, a
+    payment id -- so no two lines grouped, and a token is a credential. Every
+    request to a view matches the same route. A view called without URL
+    resolution (``APIRequestFactory`` in a test) has no match, and names its
+    path.
+    """
+    if (match := request.resolver_match) is None:
+        return request.path
+    return f"/{match.route}"
+
+
 def api_logging(view_cls):
     """
     Log the request this service received and the response it sent, for DRF views.
@@ -41,6 +56,8 @@ def api_logging(view_cls):
     - request received: logged in initial() with request headers, body, client IP,
       user agent
     - response sent: logged in dispatch() with response status, headers, body
+    - Both messages name the route, not the path (_route); url.path is the path
+      with its classified route parameters masked (loggable_path)
     - Masking/tokenization handled by mask_sensitive_data processor
     - Field explosion prevented by ES flattened type mapping
 
@@ -128,7 +145,7 @@ def api_logging(view_cls):
                         "body": request.data if request.data else None,
                     }
                 },
-                "url": {"path": request.path},
+                "url": {"path": loggable_path(request)},
             }
             if client_ip:
                 log_kwargs["client"] = {"ip": str(client_ip)}
@@ -148,7 +165,7 @@ def api_logging(view_cls):
             logger.info(
                 "api request received: %s %s",
                 request.method,
-                request.path,
+                _route(request),
                 **log_kwargs,
             )
             return super().initial(request, *args, **kwargs)
@@ -229,7 +246,7 @@ def api_logging(view_cls):
                         "body": response_body,
                     },
                 },
-                "url": {"path": request.path},
+                "url": {"path": loggable_path(request)},
             }
 
             if exception_type:
@@ -249,7 +266,7 @@ def api_logging(view_cls):
             log_level(
                 "api response sent: %s %s (%s)",
                 request.method,
-                request.path,
+                _route(request),
                 status_code,
                 **log_payload,
             )
