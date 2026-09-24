@@ -25,6 +25,7 @@ from ecsctx.masking.patterns import (
     mask_card_value,
     rules_for,
 )
+from tests.conftest import skip_if_safe
 
 
 def _filter(msg, args=None, packs=None):
@@ -298,6 +299,7 @@ class TestFixedPoint:
 
 class TestGatewayBodiesAreNotLogRecords:
     def test_a_name_in_a_gateway_body_is_masked(self):
+        skip_if_safe("name")
         # user.name is exempt from the name rule in a log record (a login, for
         # audit trails); a gateway body's "user.name" is a person's name.
         from ecsctx.contrib.net import loggable_request_body

@@ -46,6 +46,7 @@ from ecsctx.masking.tokens import (
     safe_tokenize,
 )
 from ecsctx.pii import configure_pii
+from tests.conftest import skip_if_safe
 
 
 def _mask(msg):
@@ -417,6 +418,7 @@ class TestMaskPIIFilterEngine:
         assert out["wrapper"]["service"] == "not really structural"
 
     def test_custom_skip_keys_empty_masks_everything(self):
+        skip_if_safe("name")
         flt = MaskPIIFilter(skip_keys=())
         out = flt._mask_value({"service": {"name": "John Doe should be masked"}})
         assert out["service"]["name"] != "John Doe should be masked"

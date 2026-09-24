@@ -24,6 +24,7 @@ from ecsctx.processors import (
     reshape_log_event,
     root_fields_are_configured,
 )
+from tests.conftest import skip_if_safe
 
 User = get_user_model()
 _mask = MaskPIIFilter()._mask_value
@@ -138,6 +139,7 @@ class TestMaskingExemptionSetting:
 
     @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["payment_methods[*].name"])
     def test_setting_applies_on_the_first_mask(self, token_keyset_path):
+        skip_if_safe("name")
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         # "profile" (not "customer") — "customer" is itself a sensitive
         # keyword (see ecsctx.masking.patterns) and would blanket-mask the
@@ -163,6 +165,7 @@ class TestMaskingExemptionSetting:
 
     @override_settings(ECSCTX_MASK_EXEMPT_PATHS=["profile.name"])
     def test_explicit_configure_beats_setting(self, token_keyset_path):
+        skip_if_safe("name")
         from ecsctx.processors import configure_masking
 
         configure_pii(token_keyset_path=token_keyset_path, env="test")

@@ -516,6 +516,25 @@ class MaskingTestsMixin:
                     )
         self.assertGreater(reached, 0, "No project handler was reached on any route.")
 
+    def skip_if_safe_key(self, keys):
+        """Skip a case that needs key names this project listed as safe.
+
+        One listed key is enough: its field then comes through unmasked, so
+        the expected value cannot match. A case masked by a content rule names
+        no key — a safe key's value is still scanned.
+        """
+        if not keys:
+            return
+        from ecsctx.masking.config import get_masking_safe_keys
+
+        safe = get_masking_safe_keys()
+        listed = [key for key in keys if str(key).lower() in safe]
+        if listed:
+            self.skipTest(
+                f"the project lists {', '.join(repr(key) for key in listed)} "
+                "in ECSCTX_MASK_SAFE_KEYS"
+            )
+
     def assert_samples_masked(self, cases, *, group: str | None = None):
         """Check (label, sample, expected) cases twice.
 
@@ -525,28 +544,33 @@ class MaskingTestsMixin:
         from a rule that is wrong in the engine itself.
 
         group names a table in ecsctx.masking.samples; a case needing a pack
-        this project doesn't enable is skipped.
+        this project doesn't enable is skipped. A case may carry a fourth
+        item, the key names it needs masked by name; it is skipped where the
+        project lists one of them as a safe key.
         """
         from ecsctx.masking import get_masking_packs
 
         packs = get_masking_packs()
 
-        def check(sample):
+        def check(sample, keys=()):
             """Skip what this project's configuration puts out of reach."""
             if group is not None:
                 pack = samples.case_pack(group, sample)
                 if pack not in packs:
                     self.skipTest(f"needs the {pack!r} masking pack")
+            self.skip_if_safe_key(keys)
 
-        for label, sample, expected in cases:
+        for case in cases:
+            label, sample, expected = case[:3]
             with self.subTest(check="engine", case=label):
-                check(sample)
+                check(sample, case[3] if len(case) > 3 else ())
                 self.assertEqual(*comparable(masked_directly(sample), expected))
 
         for name, level in self.readable_routes():
-            for label, sample, expected in cases:
+            for case in cases:
+                label, sample, expected = case[:3]
                 with self.subTest(logger=name, case=label):
-                    check(sample)
+                    check(sample, case[3] if len(case) > 3 else ())
                     for actual in masked_outputs(sample, logger_name=name, level=level):
                         self.assertEqual(*comparable(actual, expected))
 
@@ -558,22 +582,29 @@ class MaskingTestsMixin:
 
         The message is logged through plain stdlib logging, the path a
         third-party library takes: the handler interpolates the arguments, so
-        only a filter on the handler can mask them.
+        only a filter on the handler can mask them. A sixth item names the
+        keys the case needs masked by name, as above.
         """
         from ecsctx.masking import get_masking_packs
 
         packs = get_masking_packs()
-        for label, message, args, expected, pack in cases:
+
+        def check(pack, keys=()):
+            if pack not in packs:
+                self.skipTest(f"needs the {pack!r} masking pack")
+            self.skip_if_safe_key(keys)
+
+        for case in cases:
+            label, message, args, expected, pack = case[:5]
             with self.subTest(check="engine", case=label):
-                if pack not in packs:
-                    self.skipTest(f"needs the {pack!r} masking pack")
+                check(pack, case[5] if len(case) > 5 else ())
                 self.assertEqual(*comparable(masked_directly(message, *args), expected))
 
         for name, level in self.readable_routes():
-            for label, message, args, expected, pack in cases:
+            for case in cases:
+                label, message, args, expected, pack = case[:5]
                 with self.subTest(logger=name, case=label):
-                    if pack not in packs:
-                        self.skipTest(f"needs the {pack!r} masking pack")
+                    check(pack, case[5] if len(case) > 5 else ())
                     for record in capture_stdlib_log(
                         message, *args, logger_name=name, level=level
                     ):

@@ -83,6 +83,20 @@ def _reset_masking_module():
     _reset_masking_config()
 
 
+def skip_if_safe(*keys):
+    """Skip a test whose expectation needs these key names masked by name.
+
+    ECSCTX_MASK_SAFE_KEYS may list one of them, and then that key keeps its
+    value — the project's own decision, not a masking bug.
+    """
+    from ecsctx.masking.config import get_masking_safe_keys
+
+    safe = get_masking_safe_keys()
+    listed = [key for key in keys if key.lower() in safe]
+    if listed:
+        pytest.skip(f"the project lists {', '.join(listed)} in ECSCTX_MASK_SAFE_KEYS")
+
+
 @pytest.fixture(autouse=True)
 def _reset_root_fields_module():
     """Reset configurable root-fields state between tests."""

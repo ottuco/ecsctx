@@ -5,6 +5,10 @@ message; a dict sample is logged as one field. MaskingTestsMixin runs them
 through a project's real handlers, and ecsctx's own suite runs that mixin with
 every pack on, so these tables are ecsctx's filter tests too.
 
+A case masked by key name may add a fourth item, the key names it needs. A
+project that lists one of them in ECSCTX_MASK_SAFE_KEYS skips the case, since
+that key then keeps its value there.
+
 Expected values are the [LABEL] form a project without PII tokenization emits.
 Where tokenization is configured, a tokenizable value is logged as a bare
 ptok:v1:… token instead; the test helper treats the two as equal.
@@ -145,16 +149,19 @@ CREDENTIAL_MASKED_CASES = [
         "auth-inside-headers-dict-apikey",
         {"headers": {"Authorization": f"API-Key {_HEX}"}},
         {"headers": {"Authorization": "[SECRET-MASKED]"}},
+        ("Authorization",),
     ),
     (
         "auth-inside-headers-dict-bearer",
         {"headers": {"Authorization": f"Bearer {_JWT}"}},
         {"headers": {"Authorization": "[SECRET-MASKED]"}},
+        ("Authorization",),
     ),
     (
         "auth-inside-headers-dict-token",
         {"headers": {"Authorization": "token abcd 1234 anything"}},
         {"headers": {"Authorization": "[SECRET-MASKED]"}},
+        ("Authorization",),
     ),
     (
         "auth-interpolated-in-message",
@@ -185,6 +192,15 @@ CREDENTIAL_MASKED_CASES = [
         "body {'api_key': 12345}",
         "body {'api_key': '[SECRET-MASKED]'}",
     ),
+    # one case per key name of this type, masked by the name alone
+    ("key-name-bearer", {"bearer": "value1"}, {"bearer": "[SECRET-MASKED]"}, ("bearer",)),
+    ("key-name-basic", {"basic": "value1"}, {"basic": "[SECRET-MASKED]"}, ("basic",)),
+    ("key-name-digest", {"digest": "value1"}, {"digest": "[SECRET-MASKED]"}, ("digest",)),
+    ("key-name-credentials", {"credentials": "value1"}, {"credentials": "[SECRET-MASKED]"}, ("credentials",)),
+    ("key-name-authorization", {"authorization": "value1"}, {"authorization": "[SECRET-MASKED]"}, ("authorization",)),
+    ("key-name-api-key", {"api_key": "value1"}, {"api_key": "[SECRET-MASKED]"}, ("api_key",)),
+    ("key-name-access-token", {"access_token": "value1"}, {"access_token": "[SECRET-MASKED]"}, ("access_token",)),
+    ("key-name-password", {"password": "value1"}, {"password": "[SECRET-MASKED]"}, ("password",)),
 ]
 
 
@@ -206,11 +222,17 @@ CVV_KEYWORD_CASES = [
     ("cvc-single-quoted-colon", "'cvc': '123'", "'cvc': '[CVV-MASKED]'"),
     ("cvc-single-quoted-colon-uppercase", "'CVC': '1234'", "'CVC': '[CVV-MASKED]'"),
     # real dicts, cvv key nested one level deep — not just a string sample.
-    ("cvv-dict-obj", {"processed_data": {"cvv": "100"}}, {"processed_data": {"cvv": "[CVV-MASKED]"}}),
+    (
+        "cvv-dict-obj",
+        {"processed_data": {"cvv": "100"}},
+        {"processed_data": {"cvv": "[CVV-MASKED]"}},
+        ("cvv",),
+    ),
     (
         "cvv-dict-obj-long",
         {"processed_data": {"cvv": "not a cvv shape 123456789"}},
         {"processed_data": {"cvv": "[CVV-MASKED]"}},
+        ("cvv",),
     ),
     # same shape, but as a JSON string, not a real dict — the quoted-key rule
     # must still find it nested inside the braces.
@@ -222,6 +244,10 @@ CVV_KEYWORD_CASES = [
     # A quoted key with a numeric value: the marker is quoted so JSON text
     # stays parseable.
     ("cvv-quoted-key-number-stays-quoted", 'data {"cvv": 123}', 'data {"cvv": "[CVV-MASKED]"}'),
+    # one case per key name of this type, masked by the name alone
+    ("key-name-cvv", {"cvv": "value1"}, {"cvv": "[CVV-MASKED]"}, ("cvv",)),
+    ("key-name-cvc", {"cvc": "value1"}, {"cvc": "[CVV-MASKED]"}, ("cvc",)),
+    ("key-name-security-code", {"security_code": "value1"}, {"security_code": "[CVV-MASKED]"}, ("security_code",)),
 ]
 
 
@@ -255,12 +281,17 @@ PAYMENT_ID_QUOTE_CASES = [
         "payment-id-dict-obj",
         {"processed_data": {"payment_id": "abc12345"}},
         {"processed_data": {"payment_id": "[PAYMENT-ID-MASKED]"}},
+        ("payment_id",),
     ),
     (
         "payment-id-dict-obj-long",
         {"processed_data": {"payment_id": "not a cvv shape abc12345"}},
         {"processed_data": {"payment_id": "[PAYMENT-ID-MASKED]"}},
+        ("payment_id",),
     ),
+    ("key-name-payment-id", {"payment_id": "value1"}, {"payment_id": "[PAYMENT-ID-MASKED]"}, ("payment_id",)),
+    ("key-name-transaction-id", {"transaction_id": "value1"}, {"transaction_id": "[PAYMENT-ID-MASKED]"}, ("transaction_id",)),
+    ("key-name-auth-id", {"auth_id": "value1"}, {"auth_id": "[PAYMENT-ID-MASKED]"}, ("auth_id",)),
     (
         "payment-id-quoted-inside-json-string",
         '{"processed_data": {"payment_id": "abc12345"}}',
@@ -309,6 +340,10 @@ PHONE_MASKED_CASES = [
     ("phone-intl-plus-dash-after-code", "+963-912345678", "[PHONE-MASKED]"),
     ("phone-intl-country-code-in-card-digit-range", "call +44-555-123-4567 now", "call [PHONE-MASKED] now"),
     ("phone-intl-3digit-country-code-in-card-digit-range", "call +971-555-123-4567 now", "call [PHONE-MASKED] now"),
+    # one case per key name of this type, masked by the name alone
+    ("key-name-phone", {"phone": "value1"}, {"phone": "[PHONE-MASKED]"}, ("phone",)),
+    ("key-name-mobile", {"mobile": "value1"}, {"mobile": "[PHONE-MASKED]"}, ("mobile",)),
+    ("key-name-tel", {"tel": "value1"}, {"tel": "[PHONE-MASKED]"}, ("tel",)),
 ]
 
 
@@ -338,6 +373,8 @@ EMAIL_MASKED_CASES = [
         '{"contact": {"email": "user@example.com"}}',
         '{"contact": {"email": "[EMAIL-MASKED]"}}',
     ),
+    # one case per key name of this type, masked by the name alone
+    ("key-name-email", {"email": "value1"}, {"email": "[EMAIL-MASKED]"}, ("email",)),
 ]
 
 
@@ -466,6 +503,11 @@ CARD_NUMBER_CASES = [
     ("card-16d-other-space-4x4", "1123 4567 8912 3456", "[CARD-MASKED:112345******3456]"),
     ("card-17d-other-space-4x4", "1123 4567 8912 34567", "[CARD-MASKED:112345*******4567]"),
     ("card-19d-other-space-4x4", "1123 4567 8912 3456789", "[CARD-MASKED:112345*********6789]"),
+    # one case per key name of this type, masked by the name alone
+    ("key-name-card", {"card": "value1"}, {"card": "[CARD-MASKED]"}, ("card",)),
+    ("key-name-pan", {"pan": "value1"}, {"pan": "[CARD-MASKED]"}, ("pan",)),
+    ("key-name-card-number", {"card_number": "value1"}, {"card_number": "[CARD-MASKED]"}, ("card_number",)),
+    ("key-name-cardno", {"cardno": "value1"}, {"cardno": "[CARD-MASKED]"}, ("cardno",)),
 ]
 
 
@@ -509,10 +551,11 @@ DICT_KEY_VALUE_MASKING_CASES = [
         "key-token-string-value",
         {"event": "create payment", "token": "abcd1234"},
         {"event": "create payment", "token": "[SECRET-MASKED]"},
+        ("token",),
     ),
-    ("key-cvv-int-value", {"cvv": 123}, {"cvv": "[CVV-MASKED]"}),
-    ("key-cvv-string-value", {"cvv": "123"}, {"cvv": "[CVV-MASKED]"}),
-    ("key-session-key-int-value", {"session_key": 12345}, {"session_key": "[SECRET-MASKED]"}),
+    ("key-cvv-int-value", {"cvv": 123}, {"cvv": "[CVV-MASKED]"}, ("cvv",)),
+    ("key-cvv-string-value", {"cvv": "123"}, {"cvv": "[CVV-MASKED]"}, ("cvv",)),
+    ("key-session-key-int-value", {"session_key": 12345}, {"session_key": "[SECRET-MASKED]"}, ("session_key",)),
     # A null holds nothing to mask: a marker there would read as a value.
     ("key-access-token-none-value", {"access_token": None}, {"access_token": None}),
     (
@@ -520,13 +563,36 @@ DICT_KEY_VALUE_MASKING_CASES = [
         {"public_key": None, "customer_name": None, "card": None, "expiry": None, "cvv": None},
         {"public_key": None, "customer_name": None, "card": None, "expiry": None, "cvv": None},
     ),
-    ("key-mixed-case-cvv", {"Cvv": "123"}, {"Cvv": "[CVV-MASKED]"}),
-    ("key-camelcase-security-code-int", {"securityCode": 999}, {"securityCode": "[CVV-MASKED]"}),
+    ("key-mixed-case-cvv", {"Cvv": "123"}, {"Cvv": "[CVV-MASKED]"}, ("Cvv",)),
+    (
+        "key-camelcase-security-code-int",
+        {"securityCode": 999},
+        {"securityCode": "[CVV-MASKED]"},
+        ("securityCode",),
+    ),
     (
         "key-nested-under-sensitive-key-blanket-masked",
         {"data": {"token": {"nested": "stuff", "more": 1}}},
         {"data": {"token": "[SECRET-MASKED]"}},
+        ("token",),
     ),
+    # one case per key name of this type, masked by the name alone
+    ("key-name-expiry", {"expiry": "value1"}, {"expiry": "[EXPIRY-MASKED]"}, ("expiry",)),
+    ("key-name-expiration", {"expiration": "value1"}, {"expiration": "[EXPIRY-MASKED]"}, ("expiration",)),
+    ("key-name-exp-month", {"exp_month": "value1"}, {"exp_month": "[EXPIRY-MASKED]"}, ("exp_month",)),
+    ("key-name-exp-year", {"exp_year": "value1"}, {"exp_year": "[EXPIRY-MASKED]"}, ("exp_year",)),
+    ("key-name-exp-date", {"exp_date": "value1"}, {"exp_date": "[EXPIRY-MASKED]"}, ("exp_date",)),
+    ("key-name-address", {"address": "value1"}, {"address": "[ADDRESS-MASKED]"}, ("address",)),
+    ("key-name-name", {"name": "value1"}, {"name": "[NAME-MASKED]"}, ("name",)),
+    ("key-name-cardholder", {"cardholder": "value1"}, {"cardholder": "[NAME-MASKED]"}, ("cardholder",)),
+    ("key-name-beneficiary", {"beneficiary": "value1"}, {"beneficiary": "[NAME-MASKED]"}, ("beneficiary",)),
+    ("key-name-recipient", {"recipient": "value1"}, {"recipient": "[NAME-MASKED]"}, ("recipient",)),
+    ("key-name-payer", {"payer": "value1"}, {"payer": "[NAME-MASKED]"}, ("payer",)),
+    ("key-name-billing", {"billing": "value1"}, {"billing": "[GENERIC-MASKED]"}, ("billing",)),
+    ("key-name-shipping", {"shipping": "value1"}, {"shipping": "[GENERIC-MASKED]"}, ("shipping",)),
+    ("key-name-customer", {"customer": "value1"}, {"customer": "[GENERIC-MASKED]"}, ("customer",)),
+    ("key-name-contact", {"contact": "value1"}, {"contact": "[GENERIC-MASKED]"}, ("contact",)),
+    ("key-name-udf", {"udf": "value1"}, {"udf": "[GENERIC-MASKED]"}, ("udf",)),
 ]
 
 
@@ -545,7 +611,12 @@ OBJECT_AND_PRIMITIVE_CASES = [
         {"data": {"cards": [{"instrument": _FakeCard()}]}},
         {"data": {"cards": [{"instrument": "<Card(VISA, 512345******0008, [CARD-MASKED:958418******4802])>"}]}},
     ),
-    ("cvv-string-field", {"processed_data": {"cvv": "100"}}, {"processed_data": {"cvv": "[CVV-MASKED]"}}),
+    (
+        "cvv-string-field",
+        {"processed_data": {"cvv": "100"}},
+        {"processed_data": {"cvv": "[CVV-MASKED]"}},
+        ("cvv",),
+    ),
     (
         "numeric-primitives-not-mangled",
         {"status_code": 200, "count": 100, "ok": True, "nothing": None},
@@ -717,6 +788,32 @@ def _holds_object(value) -> bool:
     if isinstance(value, list):
         return any(_holds_object(v) for v in value)
     return isinstance(value, _FakeCard)
+
+
+# The key names in these tables a service may list in ECSCTX_MASK_SAFE_KEYS.
+# The rest name a card, CVV, expiry or credential, which
+# ecsctx.masking.patterns.never_safe() refuses. Set them all to see every
+# safe-key skip fire at once.
+SAFE_LISTABLE_KEYS = (
+    "payment_id",
+    "transaction_id",
+    "auth_id",
+    "email",
+    "phone",
+    "mobile",
+    "tel",
+    "address",
+    "name",
+    "cardholder",
+    "beneficiary",
+    "recipient",
+    "payer",
+    "billing",
+    "shipping",
+    "customer",
+    "contact",
+    "udf",
+)
 
 
 # Key names are matched in every service, except payment-id names, which

@@ -26,6 +26,7 @@ from ecsctx.masking.exemptions import configure_masking
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, RULES, classify_key
 from ecsctx.processors import mask_pan
+from tests.conftest import skip_if_safe
 
 
 @pytest.fixture(autouse=True)
@@ -373,6 +374,7 @@ class TestStructuralFields:
 
 class TestExemptionPaths:
     def test_a_container_relative_exemption_applies_anywhere_below(self):
+        skip_if_safe("name")
         configure_masking(exempt_paths=["payment_methods[*].name"])
         masked = MaskPIIFilter()._mask_dict(
             {"payload": {"payment_methods": [{"name": "KNET"}]}, "profile": {"name": "John"}}
@@ -459,8 +461,8 @@ class TestCredentialScanMatchesFullScan:
     def test_matches_on_the_ported_samples(self):
         from ecsctx.masking.samples import CREDENTIAL_MASKED_CASES, NOT_MASKED
 
-        samples = [sample for _label, sample, _expected in CREDENTIAL_MASKED_CASES if isinstance(sample, str)]
-        samples += [sample for _label, sample in NOT_MASKED if isinstance(sample, str)]
+        samples = [case[1] for case in CREDENTIAL_MASKED_CASES if isinstance(case[1], str)]
+        samples += [case[1] for case in NOT_MASKED if isinstance(case[1], str)]
         for sample in samples:
             for rule in self._credential_rules():
                 assert rule.scan(rule.pattern, rule.repl, sample) == rule.pattern.sub(rule.repl, sample)

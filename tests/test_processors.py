@@ -23,6 +23,7 @@ from ecsctx.processors import (
     root_fields_are_configured,
     safe_tokenize,
 )
+from tests.conftest import skip_if_safe
 
 # MaskPIIFilter._mask_value is the direct engine entry point the old
 # ecsctx.processors._safe_dump_and_mask used to wrap — mask_sensitive_data
@@ -268,6 +269,7 @@ class TestMaskWalker:
         assert out["payment_methods"][0]["name"] == "VISA-John"
 
     def test_same_key_non_exempt_tokenized(self, token_keyset_path):
+        skip_if_safe("name")
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=["payment_methods[*].name"])
         out = _mask({"profile": {"name": "John Doe"}})
@@ -365,6 +367,7 @@ class TestMaskTopLevel:
 
 class TestMaskConfigEnv:
     def test_env_var_config(self, token_keyset_path, monkeypatch):
+        skip_if_safe("name")
         monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "payment_methods[*].name, audit")
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask(
@@ -374,6 +377,7 @@ class TestMaskConfigEnv:
         assert out["profile"]["name"].startswith("ptok:v1:")
 
     def test_explicit_beats_env(self, token_keyset_path, monkeypatch):
+        skip_if_safe("name")
         monkeypatch.setenv("PII_MASK_EXEMPT_PATHS", "profile.name")
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         configure_masking(exempt_paths=[])
@@ -381,6 +385,7 @@ class TestMaskConfigEnv:
         assert out["profile"]["name"].startswith("ptok:v1:")
 
     def test_empty_default_still_configured(self, token_keyset_path):
+        skip_if_safe("name")
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = _mask({"profile": {"name": "John"}})
         assert out["profile"]["name"].startswith("ptok:v1:")
