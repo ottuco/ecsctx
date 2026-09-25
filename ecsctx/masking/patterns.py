@@ -128,8 +128,10 @@ _CRED_KEYWORD = (
     # `hmac_sha256_key`) or written out in an encoding (`privateKeyPem`), so a
     # body cut short by a size cap -- no longer JSON -- still has it masked.
     # Each contains "key", which the near-word scan below looks for; the HSM
-    # key names do not, and are left to the key-name rules.
-    r"|(?:aes|3?des|triple[_-]?des|hmac|rsa)(?:[_-]?(?:\d+|gcm|cbc|sha\d*))*[_-]?key(?:[_-]?(?:pem|der|hex|base64|b64))?"
+    # key names do not, and are left to the key-name rules. At most one size
+    # and one mode: a repeated group holding `\d+` backtracks exponentially on a
+    # digit run that never reaches `key`.
+    r"|(?:aes|3?des|triple[_-]?des|hmac|rsa)(?:[_-]?\d+)?(?:[_-]?(?:gcm|cbc|sha\d*))?[_-]?key(?:[_-]?(?:pem|der|hex|base64|b64))?"
     r"|(?:secret|private|public)[_-]?key[_-]?(?:pem|der|hex|base64|b64)"
     r")"
 )
