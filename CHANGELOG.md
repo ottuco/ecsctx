@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.15.1 (2026-09-25)
+
+### Fixes
+- Merge pull request #65 from ottuco/fix/crypto-key-names (b253e24)
+- fix(masking): the key-algorithm text rule matches in linear time (ca06fdc)
+- fix(masking): a key name that says it holds key material is a credential (8c6c40b)
+
+### Other
+- chore: shorter, generic comments for the key-material rules (2cdba49)
+
+
 ## Unreleased
 
 ### Fixed
