@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A key name that says it holds key material is a credential, and its value
+  is masked. The rule wanted a known stem right before `key` (`aes_key`,
+  `hmac_key`), so a size, mode or algorithm in between let the value through.
+  **MPGS's per-session `aes256Key`, which decrypts the 3DS callback's
+  `encryptedData`, reached Connect's and ottu_pg's logs in clear** on the
+  create-session reply. Now masked:
+  - a size, mode or algorithm before `key`: `aes256Key`, `aes_256_key`,
+    `aesGcmKey`, `hmacSha256Key`, `3desKey`, `tripleDesKey`, `rsaKey`,
+    `macKey`, `encryptedKey`;
+  - the key written out in an encoding: `privateKeyPem`, `aesKeyBase64`;
+  - `symmetricKey`, `cipherKey`, `cryptoKey`, `wrappedKey`, `rawKey`,
+    `keyMaterial`;
+  - the payment-HSM and key-wrapping keys as the last word: `zpk`, `zmk`,
+    `tmk`, `tpk`, `bdk`, `ipek`, `kek`, `dek` (`terminal_tmk`).
+
+  A name that only refers to a key still reads: `sessionKeyId`, `keyAlias`,
+  `keyVersion`, `kid`, `tmkCheckValue`, `dekVersion`, `cache_key`,
+  `idempotencyKey`. The short stems are matched as words, so `codes_key` and
+  `trackid` are untouched.
+- The same algorithm- and encoding-named keys in text: a gateway body cut short
+  by a size cap is no longer JSON, so only the text rules see it, and
+  `"aes256Key": "…"` read through there too.
+
 ## v0.15.0 (2026-09-24)
 
 ### Fixes

@@ -454,6 +454,18 @@ CREDENTIAL_MASKED_CASES = [
         "body {'api_key': 12345}",
         "body {'api_key': '[SECRET-MASKED]'}",
     ),
+    # MPGS's session key in a body cut short by a size cap: no longer JSON, so
+    # only these text rules see it.
+    (
+        "mpgs-session-key-in-a-truncated-body",
+        '{"result": "SUCCESS", "session": {"aes256Key": "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo=", "id": "SESS',
+        '{"result": "SUCCESS", "session": {"aes256Key": "[SECRET-MASKED]", "id": "SESS',
+    ),
+    ("aes256Key-kv", "aes256Key=Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo=", "aes256Key=[SECRET-MASKED]"),
+    ("hmacSha256Key-kv", "hmacSha256Key=abcd1234efgh5678", "hmacSha256Key=[SECRET-MASKED]"),
+    ("privateKeyPem-kv", "privateKeyPem=abcd1234efgh5678", "privateKeyPem=[SECRET-MASKED]"),
+    # `des` inside a word is not a key algorithm.
+    ("codes_key-kv-is-not-a-key", "codes_key=abcd1234efgh5678", "codes_key=abcd1234efgh5678"),
 ]
 
 
@@ -1146,6 +1158,27 @@ class TestJsonTextIsMaskedByKey:
     def test_keys_inside_a_json_string_are_masked(self, key, value, expected):
         out = _mask({"payload": json.dumps({"payer_details": {key: value}, "status": "ok"})})
         assert json.loads(out["payload"]) == {"payer_details": {key: expected}, "status": "ok"}
+
+    def test_the_mpgs_session_key_in_a_create_session_body_is_masked(self):
+        """MPGS's create-session reply carries a per-session AES key that
+        decrypts the 3DS callback's encryptedData. Connect logs the reply as
+        JSON text; on 0.15.0 `aes256Key` did not classify and read through."""
+        reply = {
+            "merchant": "TEST121234345656",
+            "result": "SUCCESS",
+            "session": {
+                "aes256Key": "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo=",
+                "authenticationLimit": 5,
+                "id": "SESSION0002023967670L2594349G54",
+                "updateStatus": "NO_UPDATE",
+                "version": "95003e8901",
+            },
+        }
+        out = _mask({"http": {"response": {"body": {"content": json.dumps(reply)}}}})
+        assert json.loads(out["http"]["response"]["body"]["content"]) == {
+            **reply,
+            "session": {**reply["session"], "aes256Key": "[SECRET-MASKED]"},
+        }
 
     def test_a_json_message_is_masked_by_key(self):
         out = _mask('{"customer": {"nameOnCard": "Jane Payer"}}')

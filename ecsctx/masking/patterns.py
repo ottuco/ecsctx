@@ -124,6 +124,13 @@ _CRED_KEYWORD = (
     r"|(?:[\w-]{0,128}[_-])?(?:token|secret|password|passwd)"  # *_token / *_secret / *_password
     r"|(?:secret|private|public|encryption|decryption|signing|"  # sensitive *_key compounds only
     r"access|master|root|session|api)[_-]?key"
+    # Key material named for its algorithm, size or mode (MPGS's `aes256Key`,
+    # `hmac_sha256_key`) or written out in an encoding (`privateKeyPem`), so a
+    # body cut short by a size cap -- no longer JSON -- still has it masked.
+    # Each contains "key", which the near-word scan below looks for; the HSM
+    # key names do not, and are left to the key-name rules.
+    r"|(?:aes|3?des|triple[_-]?des|hmac|rsa)(?:[_-]?(?:\d+|gcm|cbc|sha\d*))*[_-]?key(?:[_-]?(?:pem|der|hex|base64|b64))?"
+    r"|(?:secret|private|public)[_-]?key[_-]?(?:pem|der|hex|base64|b64)"
     r")"
 )
 
@@ -1132,7 +1139,10 @@ _CRED_KEY_JOINED = re.compile(
     # a token and carry none of it.
     r"|(?:token|secret|password|passwd|passphrase|passcode|pwd)s?(?:hash|digest|value|blob|data)?$"
     r"|(?:secret|private|public|encryption|decryption|signing|"
-    r"access|master|root|session|api|hmac|aes|merchant|shared|client)keys?$"
+    r"access|master|root|session|api|hmac|aes|merchant|shared|client)keys?"
+    # ...also when written out in an encoding (`privateKeyPem`).
+    r"(?:pem|der|hex|base64|b64)?$"
+    r"|keymaterial$"
     # MIGS's `vpc_AccessCode`: the merchant access code, a gateway credential.
     r"|accesscode$"
 )
@@ -1140,6 +1150,36 @@ _CRED_KEY_JOINED = re.compile(
 
 def _is_cred_key(joined: str) -> bool:
     return _CRED_KEY_JOINED.search(joined) is not None
+
+
+# Key material named for what it is rather than by a stem above: a size, mode or
+# algorithm before `key` -- MPGS's per-session `aes256Key`, which decrypts the
+# 3DS callback's encryptedData, `hmacSha256Key`, `3desKey` -- and the
+# payment-HSM keys (zone PIN and master keys, terminal master keys, base
+# derivation keys, key- and data-encryption keys). Matched on words, not on the
+# joined key: `des` and `mac` are too short to look for inside `codes_key`, and
+# an id, alias, version or check value (`sessionKeyId`, `tmkCheckValue`) names
+# a key without carrying it.
+_KEY_ALGORITHM_WORD = re.compile(
+    r"(?:aes|des|3des|tripledes|hmac|rsa|ecdsa|mac|gcm|cbc|sha|"
+    r"symmetric|cipher|crypto|wrapped|encrypted|raw)\d*"
+)
+_KEY_ENCODING_WORDS = frozenset({"pem", "der", "hex", "base64", "b64"})
+_HSM_KEY_WORDS = frozenset({"zpk", "zmk", "tmk", "tpk", "bdk", "ipek", "kek", "dek"})
+
+
+def _is_key_material(words: list[str]) -> bool:
+    if len(words) > 1 and words[-1] in _KEY_ENCODING_WORDS:
+        words = words[:-1]
+    if not words:
+        return False
+    if words[-1] in _HSM_KEY_WORDS:
+        return True
+    if words[-1] not in ("key", "keys") or len(words) < 2:
+        return False
+    # `aes_256_key`: a bare size sits between the algorithm and `key`.
+    before = words[-3] if words[-2].isdigit() and len(words) > 2 else words[-2]
+    return _KEY_ALGORITHM_WORD.fullmatch(before) is not None
 
 
 # A `*name` key names a PERSON only when something else in the name says which
@@ -1283,7 +1323,7 @@ def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozens
             # which is where their regexes used to sit in the table.
             if _is_card_key(lowered, joined, words):
                 return "card"
-            if _is_cred_key(joined):
+            if _is_cred_key(joined) or _is_key_material(words):
                 return "secret"
             # Before the pack gate and before `generic`: a person's identity
             # number is PII in every service (`customer_civil_id` too).
