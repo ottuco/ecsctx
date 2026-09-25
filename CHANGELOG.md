@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Key names that carry key material are credentials. A size, mode or
+  algorithm between the stem and `key` let the value through (`aes256Key`).
+  Now masked:
+  - an algorithm, size or mode before `key`: `aes256Key`, `aesGcmKey`,
+    `hmacSha256Key`, `3desKey`, `rsaKey`;
+  - an encoding after it: `privateKeyPem`, `aesKeyBase64`;
+  - `symmetricKey`, `cipherKey`, `cryptoKey`, `wrappedKey`, `rawKey`,
+    `keyMaterial`;
+  - payment-HSM keys as the last word: `zpk`, `zmk`, `tmk`, `bdk`, `ipek`,
+    `kek`, `dek`.
+
+  Names that only refer to a key stay readable (`sessionKeyId`, `keyAlias`,
+  `tmkCheckValue`).
+- The text rules mask the same algorithm- and encoding-named keys, for text
+  that is not valid JSON.
+
 ## v0.15.0 (2026-09-24)
 
 ### Fixes

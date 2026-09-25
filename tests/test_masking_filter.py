@@ -454,6 +454,17 @@ CREDENTIAL_MASKED_CASES = [
         "body {'api_key': 12345}",
         "body {'api_key': '[SECRET-MASKED]'}",
     ),
+    # A body cut short by a size cap is no longer JSON: only these rules see it.
+    (
+        "session-key-in-a-truncated-body",
+        '{"result": "SUCCESS", "session": {"aes256Key": "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo=", "id": "SESS',
+        '{"result": "SUCCESS", "session": {"aes256Key": "[SECRET-MASKED]", "id": "SESS',
+    ),
+    ("aes256Key-kv", "aes256Key=Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo=", "aes256Key=[SECRET-MASKED]"),
+    ("hmacSha256Key-kv", "hmacSha256Key=abcd1234efgh5678", "hmacSha256Key=[SECRET-MASKED]"),
+    ("privateKeyPem-kv", "privateKeyPem=abcd1234efgh5678", "privateKeyPem=[SECRET-MASKED]"),
+    # `des` inside a word is not a key algorithm.
+    ("codes_key-kv-is-not-a-key", "codes_key=abcd1234efgh5678", "codes_key=abcd1234efgh5678"),
 ]
 
 
@@ -1146,6 +1157,22 @@ class TestJsonTextIsMaskedByKey:
     def test_keys_inside_a_json_string_are_masked(self, key, value, expected):
         out = _mask({"payload": json.dumps({"payer_details": {key: value}, "status": "ok"})})
         assert json.loads(out["payload"]) == {"payer_details": {key: expected}, "status": "ok"}
+
+    def test_a_session_key_in_a_json_body_is_masked(self):
+        """A key name carrying its size (`aes256Key`) read through before."""
+        reply = {
+            "result": "SUCCESS",
+            "session": {
+                "aes256Key": "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo=",
+                "id": "SESSION0001",
+                "version": "95003e8901",
+            },
+        }
+        out = _mask({"http": {"response": {"body": {"content": json.dumps(reply)}}}})
+        assert json.loads(out["http"]["response"]["body"]["content"]) == {
+            **reply,
+            "session": {**reply["session"], "aes256Key": "[SECRET-MASKED]"},
+        }
 
     def test_a_json_message_is_masked_by_key(self):
         out = _mask('{"customer": {"nameOnCard": "Jane Payer"}}')
