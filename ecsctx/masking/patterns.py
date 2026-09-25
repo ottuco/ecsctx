@@ -124,13 +124,10 @@ _CRED_KEYWORD = (
     r"|(?:[\w-]{0,128}[_-])?(?:token|secret|password|passwd)"  # *_token / *_secret / *_password
     r"|(?:secret|private|public|encryption|decryption|signing|"  # sensitive *_key compounds only
     r"access|master|root|session|api)[_-]?key"
-    # Key material named for its algorithm, size or mode (MPGS's `aes256Key`,
-    # `hmac_sha256_key`) or written out in an encoding (`privateKeyPem`), so a
-    # body cut short by a size cap -- no longer JSON -- still has it masked.
-    # Each contains "key", which the near-word scan below looks for; the HSM
-    # key names do not, and are left to the key-name rules. At most one size
-    # and one mode: a repeated group holding `\d+` backtracks exponentially on a
-    # digit run that never reaches `key`.
+    # Key material named for its algorithm, size or mode (`aes256_key`), or
+    # written out in an encoding (`private_key_pem`), for text that is not valid
+    # JSON. One size and one mode at most: a repeated `\d+` group backtracks
+    # exponentially.
     r"|(?:aes|3?des|triple[_-]?des|hmac|rsa)(?:[_-]?\d+)?(?:[_-]?(?:gcm|cbc|sha\d*))?[_-]?key(?:[_-]?(?:pem|der|hex|base64|b64))?"
     r"|(?:secret|private|public)[_-]?key[_-]?(?:pem|der|hex|base64|b64)"
     r")"
@@ -1154,14 +1151,10 @@ def _is_cred_key(joined: str) -> bool:
     return _CRED_KEY_JOINED.search(joined) is not None
 
 
-# Key material named for what it is rather than by a stem above: a size, mode or
-# algorithm before `key` -- MPGS's per-session `aes256Key`, which decrypts the
-# 3DS callback's encryptedData, `hmacSha256Key`, `3desKey` -- and the
-# payment-HSM keys (zone PIN and master keys, terminal master keys, base
-# derivation keys, key- and data-encryption keys). Matched on words, not on the
-# joined key: `des` and `mac` are too short to look for inside `codes_key`, and
-# an id, alias, version or check value (`sessionKeyId`, `tmkCheckValue`) names
-# a key without carrying it.
+# Key material named for what it is: an algorithm, size or mode before `key`
+# (`aes256Key`, `hmacSha256Key`, `3desKey`), or a payment-HSM key as the last
+# word. Matched on words, so `codes_key` is not a DES key, and an id, alias or
+# check value (`sessionKeyId`, `tmkCheckValue`) stays readable.
 _KEY_ALGORITHM_WORD = re.compile(
     r"(?:aes|des|3des|tripledes|hmac|rsa|ecdsa|mac|gcm|cbc|sha|"
     r"symmetric|cipher|crypto|wrapped|encrypted|raw)\d*"

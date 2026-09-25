@@ -215,9 +215,7 @@ class TestLinearTime:
             "key" * 1666,
             "token" * 4000,
             "a-" * 10000 + "token=x",
-            # A digit run after a key algorithm, in the same word as `key`: a
-            # repeated size group backtracked exponentially here (seconds at
-            # 26 digits, minutes past 30).
+            # A digit run after a key algorithm, in the same word as `key`.
             "aes" + "1" * 26 + "xkey",
         ],
         ids=["key_x1666", "token_x4000", "dash_run_then_token", "key_algorithm_then_digit_run"],

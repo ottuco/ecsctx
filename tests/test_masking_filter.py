@@ -454,10 +454,9 @@ CREDENTIAL_MASKED_CASES = [
         "body {'api_key': 12345}",
         "body {'api_key': '[SECRET-MASKED]'}",
     ),
-    # MPGS's session key in a body cut short by a size cap: no longer JSON, so
-    # only these text rules see it.
+    # A body cut short by a size cap is no longer JSON: only these rules see it.
     (
-        "mpgs-session-key-in-a-truncated-body",
+        "session-key-in-a-truncated-body",
         '{"result": "SUCCESS", "session": {"aes256Key": "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo=", "id": "SESS',
         '{"result": "SUCCESS", "session": {"aes256Key": "[SECRET-MASKED]", "id": "SESS',
     ),
@@ -1159,18 +1158,13 @@ class TestJsonTextIsMaskedByKey:
         out = _mask({"payload": json.dumps({"payer_details": {key: value}, "status": "ok"})})
         assert json.loads(out["payload"]) == {"payer_details": {key: expected}, "status": "ok"}
 
-    def test_the_mpgs_session_key_in_a_create_session_body_is_masked(self):
-        """MPGS's create-session reply carries a per-session AES key that
-        decrypts the 3DS callback's encryptedData. Connect logs the reply as
-        JSON text; on 0.15.0 `aes256Key` did not classify and read through."""
+    def test_a_session_key_in_a_json_body_is_masked(self):
+        """A key name carrying its size (`aes256Key`) read through before."""
         reply = {
-            "merchant": "TEST121234345656",
             "result": "SUCCESS",
             "session": {
                 "aes256Key": "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo=",
-                "authenticationLimit": 5,
-                "id": "SESSION0002023967670L2594349G54",
-                "updateStatus": "NO_UPDATE",
+                "id": "SESSION0001",
                 "version": "95003e8901",
             },
         }

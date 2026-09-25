@@ -57,9 +57,7 @@ def test_a_name_about_one_is_not(key):
 @pytest.mark.parametrize(
     "key",
     [
-        # A key size, mode or algorithm between the stem and `key`. MPGS's
-        # per-session `aes256Key` -- it decrypts the 3DS callback's
-        # encryptedData -- reached Connect's and ottu_pg's logs in clear on 0.15.0.
+        # A size, mode or algorithm between the stem and `key`.
         "aes256Key",
         "AES256_KEY",
         "aes_256_key",
@@ -86,8 +84,7 @@ def test_a_name_about_one_is_not(key):
         "wrappedKey",
         "rawKey",
         "keyMaterial",
-        # Payment-HSM and key-wrapping keys: zone PIN/master, terminal master,
-        # base derivation, initial PIN encryption, key/data encryption keys.
+        # Payment-HSM and key-wrapping keys.
         "zpk",
         "ZMK",
         "terminal_tmk",
