@@ -286,6 +286,25 @@ class TestGroupedRunsOverNineteenDigits:
         assert time.perf_counter() - started < 0.5
 
 
+class TestALongRunOfStars:
+    """A truncation's stars and last four were looked for from every star of a
+    run, each attempt reading to the end of it: seconds for 32,000 stars."""
+
+    _STARS = "*" * 32000
+
+    def test_a_card_key(self):
+        value = "4111111111111111 " + self._STARS
+        started = time.perf_counter()
+        assert _card(value) == "411111******1111 " + self._STARS
+        assert time.perf_counter() - started < 0.5
+
+    def test_prose(self):
+        text = "code 123 " + self._STARS
+        started = time.perf_counter()
+        assert MaskPIIFilter(packs=PCI)._mask_string(text) == text
+        assert time.perf_counter() - started < 0.5
+
+
 class TestInvisibleSeparators:
     """A copy or an editor leaves invisible characters between the groups."""
 

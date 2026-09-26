@@ -57,6 +57,9 @@
   shape the rule leaves went out beside the truncation
   (`REF5123450000000008 5123450000000008`), and a card number inside the exact
   token shape (`ptok:v1:4111111111111111AAA…`) passed as a token.
+- A log message holding a long run of `*` is masked in linear time. The check
+  for a truncated card number beside a possible CVV tried its stars from each
+  one of them: about a second for 16,000 stars, and sixteen for 64,000.
 - A value passes as already tokenized only in the exact shape ecsctx emits
   (`ptok:v1:` and 43 base64url characters): in `safe_tokenize`,
   `already_masked`, under a card key and in the credential text rules.

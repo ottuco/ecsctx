@@ -253,8 +253,10 @@ def _truncate_pan(digits: str) -> str:
 
 _DIGIT_GROUP = re.compile(r"\d+")
 _NOT_DIGIT = re.compile(r"\D")
-# A truncation's stars and last four, which its first six run into.
-_MASKED_REST = re.compile(r"\*{4,}\d{4}")
+# A truncation's stars and last four, which its first six run into. Matched
+# from the first star only: tried from every star of a long run, each attempt
+# read to the end of it.
+_MASKED_REST = re.compile(r"(?<!\*)\*{4,}\d{4}")
 _DASH_CHARS = "-" + _UNICODE_DASHES
 # An ASCII digit's value, and the value Luhn doubles it to (its digits summed).
 _DIGIT_VALUE = bytes.maketrans(b"0123456789", bytes(range(10)))

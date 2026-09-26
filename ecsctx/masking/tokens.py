@@ -26,7 +26,9 @@ _REDACTED = "[PII_REDACTED]"
 # gone, THIS SHAPE IS THE MARKER -- it is the only thing saying "a PAN already
 # passed through here", so it has to be recognisable on its own. Five stars is
 # the fewest _truncate_pan ever emits (a 15-digit PAN); {4,} leaves a margin.
-_TRUNCATED_PAN = r"(?:\d{6})?\*{4,}\d{4}"
+# The stars match from the first one only: a search tried from every star of a
+# long run reads to the end of it each time, which is quadratic.
+_TRUNCATED_PAN = r"(?:\d{6})?(?<!\*)\*{4,}\d{4}"
 
 # A whole value that masking itself produced: a bare label, a bare token, a
 # truncated PAN, or the pre-0.11 bracketed card form, which still arrives from
