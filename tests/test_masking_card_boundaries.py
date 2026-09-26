@@ -44,6 +44,11 @@ def _card(value: str) -> str:
     return MaskPIIFilter(packs=PCI)._mask_value({"card_number": value})["card_number"]
 
 
+def _first_six_last_four(card: str) -> set[int]:
+    digits = sum(c.isdigit() for c in card)
+    return set(range(6)) | set(range(digits - 4, digits))
+
+
 def _visible(value: str, out: str, card_start: int, card_end: int) -> list[int]:
     """Positions within the card number at value[card_start:card_end] whose
     digit survives in ``out``. Truncation keeps one output character per digit
@@ -196,6 +201,27 @@ class TestACardNumberGluedToAWordOrToStars:
         assert mask(value) == expected
         assert _card(value) == expected
         assert MaskPIIFilter(packs=PCI)._mask_string(value) == (in_prose or expected)
+
+    @pytest.mark.parametrize(
+        ("value", "card", "in_prose"),
+        [
+            ("REF4488\u200b5555 6008 6267 02 1234", "5555 6008 6267 02", "REF448855********6702 [CVV-MASKED]"),
+            ("REF5740-9011 3592 9707 3940 59D", "9011 3592 9707 3940 59", "REF574090************4059D"),
+            (
+                "REF9672-3726 6235 0249 0838 67 01/39",
+                "3726 6235 0249 0838 67",
+                "REF967237************3867 01/39",
+            ),
+        ],
+    )
+    def test_a_card_number_starting_in_the_words_digits_is_not_shown(self, mask, value, card, in_prose):
+        """"4488 5555 6008" is a card number of its own in card-style groups, so
+        the word's digits are a card's: every stretch starting in them is read.
+        Truncating only that one showed its last four, the middle of the card
+        number starting in the word's second group."""
+        start = value.index(card)
+        assert set(_visible(value, mask(value), start, start + len(card))) <= _first_six_last_four(card)
+        assert MaskPIIFilter(packs=PCI)._mask_string(value) == in_prose
 
     def test_the_residual_a_card_glued_to_a_word_in_other_groups(self, mask):
         """Accepted, like ACCEPTED_LEAK_CASES in test_masking_filter: in

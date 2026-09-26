@@ -495,9 +495,9 @@ class _CardRun:
         own ("REF4111...", "INV-2026", a UUID's "a456-4266..."); a
         truncation's last four; a phone number's after "+", on their own; and
         across a range's dash (``cuts``). Digits glued to a letter or to a
-        truncation's stars still start the stretch of their own card number,
-        when it is written in card-style groups ("Payer5123 4500 0000 0008 12
-        25")."""
+        truncation's stars that start a Luhn-valid card number of their own, in
+        card-style groups ("Payer5123 4500 0000 0008 12 25"), are a card's, not
+        the word's or the truncation's: stretches start in them as anywhere."""
         free = max(self.lo, self.iban_groups)  # where a stretch may start
         if free == 0 and (
             self.before.isalpha()
@@ -508,13 +508,16 @@ class _CardRun:
             while free + 1 < self.hi and not self.seps[free].isspace():
                 free += 1
             free += 1
-        glued = free > 0 and not self.iban_groups and (self.lo == 1 or self.before.isalpha())
+        bounds = [0, *(cut for cut in cuts if 0 < cut < self.hi), self.hi]
+        glued = self.lo == 1 or self.before.isalpha()
+        if free and glued and not self.iban_groups and self._starts_a_card(bounds[1]):
+            free = 0
         phone = self.before == "+" and self.sizes[0] <= _PHONE_MAX_DIGITS
         found: list[tuple[int, int]] = []
-        for first, last in pairwise([0, *(cut for cut in cuts if 0 < cut < self.hi), self.hi]):
+        for first, last in pairwise(bounds):
             if self.offsets[last] - self.offsets[first] < _MIN_PAN_DIGITS:
                 continue  # one side of a range, too short for a card number
-            for widest, stop in self._widest(first, last, max(first, free), glued=glued and first == 0):
+            for widest, stop in self._widest(first, last, max(first, free)):
                 if widest == stop == 0 and phone:
                     continue
                 # Merged as they come: ends only grow, so a stretch reaching
@@ -523,6 +526,16 @@ class _CardRun:
                     widest = min(widest, found.pop()[0])
                 found.append((widest, stop))
         return found
+
+    def _starts_a_card(self, last: int) -> bool:
+        """Whether the run's first groups, before ``last``, are a Luhn-valid
+        card number in card-style groups: 4-4-x, 4-4-4-x, 4-4-4-4-x or 4-6-5."""
+        return any(
+            _card_style(self.sizes[: stop + 1])
+            and _MIN_PAN_DIGITS <= self.offsets[stop + 1] <= _MAX_PAN_DIGITS
+            and self.luhn(0, stop)
+            for stop in range(2, min(last, 5))
+        )
 
     def overexposed(self, shown: list[bool]) -> bool:
         """Whether a Luhn-valid stretch of whole groups, 12-19 digits long,
@@ -534,13 +547,12 @@ class _CardRun:
         ends = self.offsets
         return any(
             count[ends[stop + 1] - 4] > count[ends[widest] + 6]
-            for widest, stop in self._widest(0, len(self.sizes), 0, glued=False)
+            for widest, stop in self._widest(0, len(self.sizes), 0)
         )
 
-    def _widest(self, first: int, last: int, free: int, *, glued: bool) -> Iterator[tuple[int, int]]:
+    def _widest(self, first: int, last: int, free: int) -> Iterator[tuple[int, int]]:
         """For each group first..last-1 that ends a stretch passing Luhn, the
-        widest such stretch: starting at ``free`` or later, or at ``first`` when
-        ``glued`` and the stretch is in card-style groups."""
+        widest such stretch starting at ``free`` or later."""
         ends, odd, even = self.offsets, self.odd, self.even
         # A stretch passes Luhn when its prefix sums at both ends agree, mod
         # 10, in the array that doubles the positions its end leaves doubled.
@@ -548,14 +560,9 @@ class _CardRun:
         # their residue, one per array, and the first one waiting that is not
         # yet too far back is the widest stretch ending there.
         waiting = ([deque() for _ in range(10)], [deque() for _ in range(10)])
-        pending = glued  # the glued group, the lowest start, waits first
         begin = free
         for stop in range(first, last):
             end = ends[stop + 1]
-            if pending and end - ends[first] >= _MIN_PAN_DIGITS:
-                waiting[0][odd[ends[first]] % 10].append(first)
-                waiting[1][even[ends[first]] % 10].append(first)
-                pending = False
             while begin <= stop and end - ends[begin] >= _MIN_PAN_DIGITS:
                 waiting[0][odd[ends[begin]] % 10].append(begin)
                 waiting[1][even[ends[begin]] % 10].append(begin)
@@ -564,11 +571,8 @@ class _CardRun:
             queue = waiting[0 if doubled_odd else 1][(odd if doubled_odd else even)[end] % 10]
             while queue and end - ends[queue[0]] > _MAX_PAN_DIGITS:
                 queue.popleft()
-            widest = queue[0] if queue else None
-            if glued and widest == first and not _card_style(self.sizes[first : stop + 1]):
-                widest = queue[1] if len(queue) > 1 else None
-            if widest is not None:
-                yield widest, stop
+            if queue:
+                yield queue[0], stop
 
 
 def _mask_card_run(match: re.Match) -> str:
