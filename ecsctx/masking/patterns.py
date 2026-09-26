@@ -283,22 +283,28 @@ def pan_shaped(text: str) -> bool:
 # A run of digits joined by single separators, as _PAN_VALUE reads a PAN, with
 # the "+" an international phone number starts with.
 _DIGIT_RUN = re.compile(r"\+?\d(?:[-\s]?\d)*")
+# E.164: a phone number has at most 15 digits, country code included.
+_PHONE_MAX_DIGITS = 15
 
 
-def holds_pan_run(text: str) -> bool:
+def holds_pan_run(text: str, *, phone: bool = False) -> bool:
     """Whether ``text`` holds, anywhere in it, a run of digits long enough to
     be a PAN.
 
     Looser than the card rule on purpose: the rule must find where a PAN ends
-    to truncate it, and cannot when more digits follow. A run written after
-    "+" is a phone number, as the content rules read it: their phone rule runs
-    before the card rule.
+    to truncate it, and cannot when more digits follow. In a phone field
+    (``phone``) a run written after "+" is the phone number, unless it is
+    longer than E.164 allows -- a PAN, or a phone number with a PAN after it.
+    Anywhere else "+" changes nothing: in an email address it is
+    plus-addressing.
     """
-    return any(
-        not run.startswith("+")
-        and sum(character.isdigit() for character in run) >= _MIN_PAN_DIGITS
-        for run in _DIGIT_RUN.findall(text)
-    )
+    for run in _DIGIT_RUN.findall(text):
+        digits = sum(character.isdigit() for character in run)
+        if phone and run.startswith("+") and digits <= _PHONE_MAX_DIGITS:
+            continue
+        if digits >= _MIN_PAN_DIGITS:
+            return True
+    return False
 
 
 def mask_card_value(value) -> str:

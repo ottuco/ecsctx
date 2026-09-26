@@ -12,13 +12,16 @@
   masked as a name. It is one string of brand, holder's name, masked number and
   expiry, and nothing classified it, so the holder's name shipped in clear. A
   longer key (`card_details_url`) reads as before.
-- With the `pci` pack, a PII value that holds a card number among other text is
-  its label (`[NAME-MASKED]`), not a token. A card number typed beside a name
+- With the `pci` pack, a value that a PII, secret, national-id or payment-id
+  key would tokenize is its label (`[NAME-MASKED]`), not a token, when it holds
+  a card number among other text. A card number typed beside a name
   (`customer_name: "Jane 4111…"`), or a full number in a card summary, was
   hashed with the rest of the value, beside the same PAN's truncation: the
-  pairing PCI DSS FAQ 1117 forbids. Any run of 12 or more digits counts, so a
-  value holding a long reference number gets the label too; a run written
-  after `+` is a phone number and keeps its token.
+  pairing PCI DSS FAQ 1117 forbids. The check fails closed: any run of 12 or
+  more digits counts, so such a value holding a long reference number, a UUID
+  or hex id with a long digit run, or (with `financial_ids`) a payment id gets
+  the label too. In a phone field, a number written after `+` with at most 15
+  digits (E.164) is the phone number and keeps its token.
 
 ## v0.15.1 (2026-09-25)
 

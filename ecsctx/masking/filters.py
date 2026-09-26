@@ -333,7 +333,7 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     if "pci" in ctx.packs and get_field_rule(field_type).tokenizable:
         if pan_shaped(text):
             return mask_card_value(text)
-        if holds_pan_run(text):
+        if holds_pan_run(text, phone=field_type == "phone"):
             return f"[{make_label(field_type)}]"
     return mask_by_field_type(text, field_type)
 

@@ -343,11 +343,52 @@ class TestAPanOutranksEveryOtherClassification:
         out = mask_with_tokens({"customer_name": f"ptok:{PAN}"})
         assert out == {"customer_name": "[NAME-MASKED]"}
 
-    def test_an_international_phone_number_still_tokenizes(self, mask_with_tokens):
-        """As many digits as a PAN, but written after "+": a phone number, as
-        the content rules read it too."""
-        out = mask_with_tokens({"customer_phone": "+966501234567"})
+    @pytest.mark.parametrize(
+        "phone",
+        [
+            "+966501234567",
+            "+971 50 123 4567",
+            "+201001234567",
+            "+86 138 0013 8000",
+            "+62 812 3456 7890",
+            # 15 digits, the most E.164 allows.
+            "+49 30 1234 5678 901",
+        ],
+    )
+    def test_an_international_phone_number_still_tokenizes(
+        self, mask_with_tokens, phone
+    ):
+        """As many digits as a PAN, but a phone number: written after "+" in a
+        phone field, within the 15 digits E.164 allows."""
+        out = mask_with_tokens({"customer_phone": phone})
         assert out["customer_phone"].startswith("ptok:v1:")
+
+    @pytest.mark.parametrize(
+        ("key", "value", "label"),
+        [
+            # Longer than E.164 allows.
+            ("customer_phone", "+5123450000000008", "[PHONE-MASKED]"),
+            ("customer_phone", "+9655123450000000008", "[PHONE-MASKED]"),
+            # A phone number, then a PAN.
+            ("customer_phone", "+96551234567 5123450000000008", "[PHONE-MASKED]"),
+            ("customer_phone", "ptok:+5123450000000008", "[PHONE-MASKED]"),
+            # Not written after "+", so not written as a phone number.
+            ("customer_phone", "tel 378282246310005", "[PHONE-MASKED]"),
+            # Outside a phone field "+" is no phone number: plus-addressing here.
+            ("customer_email", "jane+5123450000000008@example.com", "[EMAIL-MASKED]"),
+            ("customer_email", "jane+378282246310005@example.com", "[EMAIL-MASKED]"),
+            ("customer_name", "Jane +5123450000000008", "[NAME-MASKED]"),
+            (
+                "card_details",
+                "Mastercard Jane +5123450000000008 01/39",
+                "[NAME-MASKED]",
+            ),
+        ],
+    )
+    def test_a_plus_does_not_make_a_pan_a_phone_number(
+        self, mask_with_tokens, key, value, label
+    ):
+        assert mask_with_tokens({key: value}) == {key: label}
 
     def test_a_real_name_still_tokenizes(self, mask_with_tokens):
         """Not a blanket regression: only a PAN outranks the key."""
