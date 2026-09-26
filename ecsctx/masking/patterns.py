@@ -527,6 +527,19 @@ class _CardRun:
                 found.append((widest, stop))
         return found
 
+    def overexposed(self, shown: list[bool]) -> bool:
+        """Whether a Luhn-valid stretch of whole groups, 12-19 digits long,
+        anywhere in the run -- nothing excluded -- shows more than its first six
+        and last four, when ``shown`` says which of the run's digits show. The
+        widest stretch ending at a group has the most digits between its first
+        six and last four, so it is the only one to look at."""
+        count = [0, *accumulate(shown)]
+        ends = self.offsets
+        return any(
+            count[ends[stop + 1] - 4] > count[ends[widest] + 6]
+            for widest, stop in self._widest(0, len(self.sizes), 0, glued=False)
+        )
+
     def _widest(self, first: int, last: int, free: int, *, glued: bool) -> Iterator[tuple[int, int]]:
         """For each group first..last-1 that ends a stretch passing Luhn, the
         widest such stretch: starting at ``free`` or later, or at ``first`` when
@@ -653,6 +666,37 @@ def holds_pan_run(text: str, *, phone: bool = False) -> bool:
     return False
 
 
+# A run the card rule reads, wherever it is in a value; and what a truncation
+# keeps one of per digit: the digit, or a star.
+_RUN = re.compile(_CARD_RUN)
+_MARK = re.compile(r"[\d*]")
+
+
+def _overexposes_a_card(text: str, masked: str) -> bool:
+    """Whether ``masked``, the card rule's output for ``text``, shows more than
+    the first six and last four of a Luhn-valid reading of ``text``: any stretch
+    of whole groups, 12-19 digits long, wherever it stands. The rule leaves an
+    IBAN's digits, a word's own and each side of a range, which in free text
+    are not a card number; under a card key they may be one."""
+    # A truncation keeps one character per digit it hides or keeps, and the
+    # rule leaves stars as they were: the digits and stars of the two line up.
+    marks = [mark != "*" for mark in _MARK.findall(masked)]
+    if len(marks) != len(_MARK.findall(text)):
+        return True
+    before = position = 0  # marks before the run, and where counting stopped
+    for run in _RUN.finditer(text):
+        before += len(_MARK.findall(text, position, run.start()))
+        digits = len(_MARK.findall(text, run.start(), run.end()))  # no star in a run
+        shown = marks[before : before + digits]
+        # A digit showing among the run's first six or last four is among those
+        # of any stretch inside it too: only one between them can show more.
+        if any(shown[6 : digits - 4]) and _CardRun(text, run.start(), run.end()).overexposed(shown):
+            return True
+        before += digits
+        position = run.end()
+    return False
+
+
 def mask_card_value(value) -> str:
     """The value of a card-named key: the PAN truncated, the rest readable.
 
@@ -685,9 +729,18 @@ def mask_card_value(value) -> str:
             # shortest one issued (ISO/IEC 7812; Maestro issues from 12).
             return value
         # Enough digits to hide one, but not a clean PAN: scan rather than
-        # collapse, so an embedded PAN is truncated and its context survives.
+        # collapse, so an embedded PAN is truncated and its context survives --
+        # unless what the scan shows could still be one: a run of card-number
+        # length beside the truncations (each truncation's first six stay in
+        # place for this, so digits showing before it count with them), or a
+        # Luhn-valid reading the rule leaves in free text, showing more than
+        # its first six and last four.
         scanned = mask_by_patterns(text, _CARD_RULE_ONLY)
-        if scanned != text and not holds_pan_run(_TRUNCATED_PAN_RE.sub(" ", scanned)):
+        if (
+            scanned != text
+            and not holds_pan_run(_MASKED_REST.sub(" ", scanned))
+            and not _overexposes_a_card(text, scanned)
+        ):
             return scanned
         # The scan found nothing to truncate, yet the value carries twelve or
         # more digits under a card key -- or it truncated one card number and

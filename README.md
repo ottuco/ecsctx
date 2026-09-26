@@ -1036,7 +1036,10 @@ IBAN's check digits is still a card number (`DE89 370400440532013000` →
 are not card-style, glued to a word or to a truncation's stars, or split by a
 range's dash, shows what the rule reads of it; and the phone rule, which runs
 first, takes ten unbroken digits before a Unicode dash for a phone number
-(`4731592604–8–7311` → `[PHONE-MASKED]–8–7311`).
+(`4731592604–8–7311` → `[PHONE-MASKED]–8–7311`). Under a card key those values
+are refused (`[CARD-MASKED]`): a card key shows its scan only when no
+Luhn-valid reading in the value shows more than its first six and last four,
+and no run of card-number length is left beside the truncations.
 
 ### Structural fields (never scanned)
 

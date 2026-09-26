@@ -14,11 +14,12 @@ digits around a separator admit more than one reading -- one card, or a card
 and another number -- Luhn decides, and no output shows more than the first six
 and last four of any Luhn-valid reading of 12-19 digits, but over digits that
 belong to something else: a word's own, a truncation's, an IBAN's, each side of
-a range. An unbroken run of 12-19 digits is a card number wherever it stands. A
-card number written in groups may start after digits that belong to something
-else: a word ("INV-2026"), a "+" (a phone number), a truncation's stars. Before
-a number written in groups, digits that stand free, or an IBAN, still make one
-longer number, which is left whole unless a Luhn-valid reading lies inside it.
+a range. A card key refuses a value where those still show a card number. An
+unbroken run of 12-19 digits is a card number wherever it stands. A card number
+written in groups may start after digits that belong to something else: a word
+("INV-2026"), a "+" (a phone number), a truncation's stars. Before a number
+written in groups, digits that stand free, or an IBAN, still make one longer
+number, which is left whole unless a Luhn-valid reading lies inside it.
 """
 
 import time
@@ -132,6 +133,43 @@ class TestACardKeyRefusesWhatStillHoldsACardNumber:
         """The exact token shape, holding a card number: not passed as a token."""
         assert _card("ptok:v1:4111111111111111" + "A" * 27) == "ptok:v1:411111******1111" + "A" * 27
 
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            # A truncation starting inside a card number the rule leaves: the
+            # digits before it and its first six are one run, and it is
+            # refused.
+            ("Card5123 4500 000 00008 7354 6958 1147", "[CARD-MASKED]"),
+            # The card number's own stretch is truncated with the one after it.
+            ("REF6565 4319 3428 6 5756 2760 04 01/39", "REF656543***************0401/39"),
+            ("MC3775 2772 0405 6080 12 25", "MC377527**********1225"),
+        ],
+    )
+    def test_digits_before_a_truncation_count_with_its_first_six(self, value, expected):
+        """The check set each truncation aside with its first six, so the digits
+        showing before it were never counted with them: every digit of
+        5123450000000008 went out under a card key."""
+        assert _card(value) == expected
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            # 4111111111111111 across a dash between groups that are not
+            # card-style: in free text, a range of two numbers.
+            "1234 5678 4111111111\u2013111111",
+            # 682864831223098, its first digit a word's own.
+            "Payer74196-6 828648312230 98 12 25",
+            # 527376530058807672, its first group a truncation's last four.
+            "****5273 76 530058807672 12",
+        ],
+    )
+    def test_a_card_number_the_rule_leaves_beside_one_it_truncates(self, value):
+        """The rule leaves digits that belong to something else in free text,
+        and truncated a number beside them, so nothing looked left over: a
+        Luhn-valid reading showing past its first six and last four under a
+        card key is refused."""
+        assert _card(value) == "[CARD-MASKED]"
+
 
 class TestACardNumberGluedToAWordOrToStars:
     """Digits glued to a word, or to a truncation's stars, are not the head of
@@ -159,9 +197,10 @@ class TestACardNumberGluedToAWordOrToStars:
     def test_the_residual_a_card_glued_to_a_word_in_other_groups(self, mask):
         """Accepted, like ACCEPTED_LEAK_CASES in test_masking_filter: in
         groups no card is printed in, digits glued to a word are the word's
-        own."""
+        own. A card key refuses the value."""
         value = "Card5123 4500 000 00008 7354 6958 1147"
         assert mask(value) == "Card5123 4500 000 000087*******1147"
+        assert _card(value) == "[CARD-MASKED]"
 
 
 class TestLuhnDecidesBetweenReadings:

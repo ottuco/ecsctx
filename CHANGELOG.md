@@ -70,10 +70,14 @@
   `GB33 BUKB 4111 1111 1111 1111` truncates the card. An unbroken 12-19-digit
   run after an IBAN's check digits is a card number
   (`DE89 370400440532013000` → `DE89 370400********3000`).
-- A card key refuses a value (`[CARD-MASKED]`) that still holds a run of
-  card-number length once its card numbers are truncated. It showed the scan's
-  result whenever the scan truncated anything, so a second card number in a
-  shape the rule leaves went out beside the truncation
+- A card key refuses a value (`[CARD-MASKED]`) that could still show a card
+  number once its card numbers are truncated: a run of card-number length
+  beside the truncations, the digits before a truncation counting with its
+  first six (`Card5123 4500 000 00008 7354 6958 1147`), or a Luhn-valid
+  reading the rule leaves in free text (a word's own digits, a truncation's,
+  an IBAN's, a range's sides) showing more than its first six and last four.
+  It showed the scan's result whenever the scan truncated anything, so a
+  second card number in a shape the rule leaves went out beside the truncation
   (`REF5123450000000008 5123450000000008`), and a card number inside the exact
   token shape (`ptok:v1:4111111111111111AAA…`) passed as a token.
 - A log message holding a long run of `*` is masked in linear time. The check
