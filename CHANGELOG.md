@@ -29,8 +29,11 @@
   something else (`+965 5123450000000008`, `INV-2026 4508 7500 0000 1019`), a
   grouped one next to other digits (`2026 4111 1111 1111 1111`), one glued to
   a word in card-style groups (`Payer4508 7500 0000 1019`), and one grouped
-  with Unicode dashes or invisible characters (an en dash for a hyphen, a
-  zero-width space; also under a card or name key).
+  with invisible characters (a zero-width space) or Unicode dashes (an en dash
+  for a hyphen; also under a card or name key). Unicode dashes group a card
+  number only when its card-style groups are all of their run: with other
+  digits in it (`5123–4500–0000–0008 12 25`) the dashes join a range, and the
+  run is left whole, as in 0.15.1.
 - Where the digits around a separator are one card or a card beside another
   number, Luhn decides: no output shows more than the first six and last four
   of any Luhn-valid reading of 12-19 digits, except over the digits the next
@@ -50,32 +53,44 @@
   number.
 - Left whole, as before: a longer number written in groups with no Luhn-valid
   reading in it; an id glued to a word (`REF4111111111111111`,
-  `req42 1695000000 123`); and a range joined by a Unicode dash between groups
-  that are not card-style (`20260901–20260903`), whose sides are read as two
-  numbers, and never as one Luhn-valid reading across the dash. Accepted
-  residuals: a card number in groups that are not card-style, glued to a word
-  or to a truncation's stars (`Card5123 4500 000 00008 …`), or split by such a
-  dash (`411111111111–1111`), shows what the rule reads of it; and the phone
-  rule, which runs first in every pack, takes ten unbroken digits before a
-  Unicode dash for a phone number, so a card grouped ten and more that way
-  (`4731592604–8–7311` → `[PHONE-MASKED]–8–7311`) shows digits past its last
-  four.
-- An IBAN written in groups is left whole, and only the IBAN: its groups joined
-  by single spaces, up to the first length at which its check digits hold (mod
-  97). Digits after it, or after a tab or a line break, are read as any others
-  (`DE89 3704 0044 0532 0130 00\t4111 1111 1111 1111` truncates the card, as
-  in 0.15.1). After a bank code with letters the digits start a run of their
-  own, and are the IBAN's only when its check digits hold at the run's end:
+  `req42 1695000000 123`); a phone number written after `+` with at most 15
+  digits (E.164), even one that is also a card number's digits
+  (`+378282246310005 12`); and a range joined by a Unicode dash, whose sides
+  are read as two numbers, and never as one Luhn-valid reading across the dash
+  (`20260901–20260903`). Accepted residuals: a card number in groups that are
+  not card-style, glued to a word or to a truncation's stars
+  (`Card5123 4500 000 00008 …`), or split by such a dash
+  (`411111111111–1111`), shows what the rule reads of it; and the phone rule,
+  which runs first in every pack, takes phone-shaped digits at a card number's
+  end, and what is left of the card may no longer read as one: ten unbroken
+  digits before a Unicode dash (`4731592604–8–7311` →
+  `[PHONE-MASKED]–8–7311`), or a card's last digits with those after them
+  (`2026-09-26 7112\t1817\t9153\t4791\t968 433 4111` →
+  `2026-09-26 7112\t1817\t9153\t4791\t[PHONE-MASKED]`).
+- An IBAN written in groups is left whole, and only the IBAN: its country's
+  registered length, in groups of four joined by single spaces, with check
+  digits that hold (mod 97). Digits after it, or after a tab or a line break,
+  are read as any others (`DE89 3704 0044 0532 0130 00\t4111 1111 1111 1111`
+  truncates the card, as in 0.15.1). After a bank code with letters
+  (`GB33 BUKB`, `IT60 X054`) the digits start a run of their own, and are the
+  IBAN's only when the IBAN ends where the run does:
   `GB33 BUKB 2020 1555 5555 55` is left whole (it was part-truncated), and
-  `GB33 BUKB 4111 1111 1111 1111` truncates the card. An unbroken 12-19-digit
-  run after an IBAN's check digits is a card number
+  `GB28 BUKB 4111 1111 1111 1111`, 24 characters where a UK IBAN has 22,
+  truncates the card. Accepted residual: a card number after a country code,
+  check digits and a bank code with letters, together exactly that country's
+  IBAN length with check digits that hold (one time in 97), is read as that
+  IBAN (a 16-digit card after a four-character bank code makes 24 characters:
+  Saudi Arabia's, Pakistan's, Spain's and others' length). An unbroken
+  12-19-digit run after an IBAN's check digits is a card number
   (`DE89 370400440532013000` → `DE89 370400********3000`).
 - A card key refuses a value (`[CARD-MASKED]`) that could still show a card
   number once its card numbers are truncated: a run of card-number length
-  beside the truncations, the digits before a truncation counting with its
-  first six (`Card5123 4500 000 00008 7354 6958 1147`), or a Luhn-valid
-  reading the rule leaves in free text (a word's own digits, a truncation's,
-  an IBAN's, a range's sides) showing more than its first six and last four.
+  beside the truncations, joined by the dots or slashes the rule never reads
+  too (`4111.1111.1111.1111 5123450000000008`), the digits before a truncation
+  counting with its first six (`Card5123 4500 000 00008 7354 6958 1147`), or a
+  Luhn-valid reading the rule leaves in free text (a word's own digits, a
+  truncation's, an IBAN's, a range's sides) showing more than its first six
+  and last four.
   It showed the scan's result whenever the scan truncated anything, so a
   second card number in a shape the rule leaves went out beside the truncation
   (`REF5123450000000008 5123450000000008`), and a card number inside the exact
