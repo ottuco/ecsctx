@@ -459,6 +459,9 @@ class TestAnIbanReachesNoFurtherThanItself:
             "IT33 D331 4594 1473 1527 5639 378",
             "GE35 UD61 6287 1516 1475 49",
             "DO56 CO66 9528 0899 6783 8368 4613",
+            # A bank code that is also a country code and check digits.
+            "GE52 GT35 7010 2981 8153 61",
+            "DO59 BE96 9813 3295 9626 8758 9731",
         ],
     )
     def test_the_iban_itself_stays_whole(self, mask, value):

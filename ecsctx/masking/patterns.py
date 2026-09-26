@@ -356,20 +356,25 @@ class _CardRun:
         # bank code with letters ("GB33 BUKB "), a run is read as any other
         # unless the IBAN holds all of it: those digits could start a number of
         # their own.
+        # Every such head is tried: a group can itself look like a country code
+        # and check digits ("GE52 GT35 7010 ...", the bank code "GT35").
         self.iban_groups = 0
+        heads = []
         if self.sizes[0] == 2 and start >= 2 and _IBAN_HEAD.match(text, start - 2) is not None:
-            head, reach = start - 2, start
-        elif (before := _IBAN_BEFORE_RUN.search(text, max(0, start - _IBAN_REACH), start)) is not None:
-            head, reach = before.start(), end
-        else:
-            head = reach = None
-        if head is not None and (iban_end := _iban_end(text, head)) is not None and iban_end >= reach:
-            # Its groups end where a group of the run does: one separator
-            # character between each two.
-            covered = 0
-            while covered < len(self.sizes) and start + self.offsets[covered + 1] + covered <= iban_end:
-                covered += 1
-            self.iban_groups = covered
+            heads.append((start - 2, start))
+        position = max(0, start - _IBAN_REACH)
+        while (before := _IBAN_BEFORE_RUN.search(text, position, start)) is not None:
+            heads.append((before.start(), end))
+            position = before.start() + 1
+        for head, reach in heads:
+            if (iban_end := _iban_end(text, head)) is not None and iban_end >= reach:
+                # Its groups end where a group of the run does: one separator
+                # character between each two.
+                covered = 0
+                while covered < len(self.sizes) and start + self.offsets[covered + 1] + covered <= iban_end:
+                    covered += 1
+                self.iban_groups = covered
+                break
 
     def spans(self) -> list[tuple[int, int]]:
         """The character spans to truncate, overlapping readings merged."""
