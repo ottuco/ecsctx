@@ -1119,6 +1119,12 @@ def _is_holder_key(words: list[str]) -> bool:
     return "holder" in words
 
 
+# A card summary -- brand, holder's name, masked number and expiry in one
+# string -- carries the holder's name. The whole key only: `card_details_url`
+# is not one.
+_CARD_SUMMARY_KEY = "carddetails"
+
+
 # Key names only. The content rules have to find a credential anywhere in a
 # line; a key name *is* the name of its value, so the credential word is
 # matched at the END -- `scheme_token` and `api_token` name a token, while
@@ -1328,7 +1334,9 @@ def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozens
                 continue
         if field_type == "phone" and _is_tel_key(words):
             return "phone"
-        if field_type == "generic" and (_is_name_key(joined) or _is_holder_key(words)):
+        if field_type == "generic" and (
+            _is_name_key(joined) or _is_holder_key(words) or joined == _CARD_SUMMARY_KEY
+        ):
             # Also between address and generic, as before.
             return "name"
         if pattern.search(lowered):

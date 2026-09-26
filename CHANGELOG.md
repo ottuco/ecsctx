@@ -8,6 +8,10 @@
   (`ecsctx.contrib.ottu.masking.SAFE_KEYS`). Walked as part of the card, each
   auto-debit agreement id came out as `[CARD-MASKED]`. Without the list it
   stays masked.
+- `card_details`, as a key or as a "Card Details" label beside a `value`, is
+  masked as a name. It is one string of brand, holder's name, masked number and
+  expiry, and nothing classified it, so the holder's name shipped in clear. A
+  longer key (`card_details_url`) reads as before.
 
 ## v0.15.1 (2026-09-25)
 

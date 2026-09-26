@@ -24,10 +24,13 @@ word does. A `name` that classifies as nothing is readable only as a snake_case
 field id (`order_no`).
 """
 
+import json
+
 import pytest
 
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS
+from ecsctx.pii import configure_pii, tokenize
 
 ORDER_DESCRIPTION = [
     {"label_ar": "رقم الطلب", "label_en": "Order no", "name": "order_no", "order": 0, "value": "E2E-014-A-103838"},
@@ -117,3 +120,71 @@ class TestANameThatIsAPerson:
         masked = mask({"name": "Full Name", "value": "Jane Doe"})
         assert masked["name"] == "Full Name"
         assert "Jane" not in str(masked)
+
+
+# Brand, holder's name, masked number and expiry, in one string.
+CARD_DETAILS = "Mastercard Jane Payer 512345******0008 01/39"
+CARD_DETAILS_PAIR = {"verbose_name_en": "Card Details", "verbose_name_ar": "تفاصيل البطاقة", "value": CARD_DETAILS}
+# The Arabic label is no identifier the pair rule reads, so inside the name
+# container it is masked with the value, as under `card_holder`.
+MASKED_CARD_DETAILS_PAIR = {"verbose_name_en": "Card Details", "verbose_name_ar": "[NAME-MASKED]", "value": "[NAME-MASKED]"}
+
+
+class TestCardDetails:
+    """A card summary is masked as the holder's name it carries. Neither
+    `card_details` nor a "Card Details" label classified, so the name shipped
+    in clear."""
+
+    def test_a_label_value_pair(self):
+        masked = mask({"pg_params": {"card_details": dict(CARD_DETAILS_PAIR)}})
+        assert masked == {"pg_params": {"card_details": MASKED_CARD_DETAILS_PAIR}}
+
+    @pytest.mark.parametrize("label", ["Card Details", "CARD DETAILS", "card_details", "card-details"])
+    def test_the_label_alone_names_the_value(self, label):
+        masked = mask({"verbose_name_en": label, "value": CARD_DETAILS})
+        assert masked == {"verbose_name_en": label, "value": "[NAME-MASKED]"}
+
+    @pytest.mark.parametrize("key", ["card_details", "cardDetails", "CARD_DETAILS", "card-details", "Card Details"])
+    def test_a_plain_field(self, key):
+        assert mask({key: CARD_DETAILS}) == {key: "[NAME-MASKED]"}
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ({"card_details": CARD_DETAILS}, {"card_details": "[NAME-MASKED]"}),
+            ({"pg_params": {"card_details": CARD_DETAILS_PAIR}}, {"pg_params": {"card_details": MASKED_CARD_DETAILS_PAIR}}),
+        ],
+        ids=["field", "pair"],
+    )
+    def test_in_json_text(self, body, expected):
+        masked = mask({"body": json.dumps(body)})
+        assert json.loads(masked["body"]) == expected
+
+    def test_with_a_keyset_it_is_a_name_token(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        assert mask({"card_details": CARD_DETAILS}) == {"card_details": tokenize(CARD_DETAILS, "name")}
+
+    def test_a_pan_is_truncated_not_tokenized(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = mask(
+            {
+                "card_details": "5123450000000008",
+                "pg_params": {"card_details": {"verbose_name_en": "Card Details", "value": "5123450000000008"}},
+            }
+        )
+        assert masked == {
+            "card_details": "512345******0008",
+            "pg_params": {"card_details": {"verbose_name_en": "Card Details", "value": "512345******0008"}},
+        }
+
+    def test_a_card_type_label_is_not_one(self):
+        pair = {"verbose_name_en": "Card Type", "value": "Mastercard"}
+        assert mask({"pg_params": {"card_type": dict(pair)}}) == {"pg_params": {"card_type": pair}}
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("card_details_url", "https://pg.ottu.dev/checkout/card-details/"), ("carddetailsversion", "2")],
+        ids=["card_details_url", "carddetailsversion"],
+    )
+    def test_a_longer_key_is_not_one(self, key, value):
+        assert mask({key: value}) == {key: value}

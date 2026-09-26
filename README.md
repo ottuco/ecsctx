@@ -974,7 +974,7 @@ Card and expiry keys are matched precisely.
 |------|-----------|---------------------|--------|
 | **Secrets** | ending in `token`, `secret`, `password`, `passwd`, `passphrase`, `passcode`, `pwd`; `authorization` (also `HTTP_AUTHORIZATION`, `Proxy-Authorization`), `cookie`, `bearer`, `basic`, `digest`, `credential(s)`, an `api`/`access`/`secret`/`private`/`hmac`/`merchant`/… `_key(s)`, `access_code` | credential forms (`default`) | `[SECRET-MASKED…]`; a PAN-shaped credential is always the label, never truncated |
 | **Emails / phones** | containing `email`; `phone`, `mobile`, `tel` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]` |
-| **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
+| **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `card_details` (the whole key); `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
 | **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no` | 12–19 digit runs (`pci`) | `411111******1111` |
 | **CVV** | containing `cvv`, `cvc`, `security code`, `verification value`, or the words `csc`, `cvd`, `cvn`, `card code` — unless what follows names something *about* one (`cvv_required`, `cvvResult`, `cardSecurityCodeError`) | keyed and bare CVV (`pci`) | `[CVV-MASKED]` |
 | **SAD** | track data (`track2`, `trackData`, `raw_track`; not `track_id`), `pin`/`pinBlock`, EMV/chip data, and ending in `cryptogram`, `cavv`, `tavv`, `aav`, `ucaf` | — | `[SAD-MASKED]` |
