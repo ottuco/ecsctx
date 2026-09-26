@@ -1012,17 +1012,31 @@ an invisible character (a zero-width space) or, between card-style groups, a
 Unicode dash (`5123–4500–0000–0008`). Where the digits around a separator are
 one card or a card beside another number, Luhn decides, and no output shows
 more than the first six and last four of any Luhn-valid reading of 12–19
-digits. An unbroken run of 12–19 digits is a card number wherever it stands
+digits, except over digits the rule leaves as something else's (below). An
+unbroken run of 12–19 digits is a card number wherever it stands
 (`4111111111111111 1234` → `411111******1111 1234`); a number written in groups
 is read whole with a short group after it (`5123 4500 0000 0008 12` →
 `512345********0812`); a card number written in groups may follow digits that
 belong to a word, a phone number or another card
-(`INV-2026 4111 1111 1111 1111`); and in a longer run written in groups every
-Luhn-valid reading is truncated. A longer number with no Luhn-valid reading in
-it, a range joined by a Unicode dash (`20260901–20260930`) and an IBAN written
-in groups are left whole; an unbroken 12–19-digit run after an IBAN's check
-digits is still a card number (`DE89 370400440532013000` →
-`DE89 370400********3000`).
+(`INV-2026 4111 1111 1111 1111`), or be glued to a word in card-style groups
+(`Payer5123 4500 0000 0008 12 25` → `Payer512345******0008 12 25`); and in a
+longer run written in groups every Luhn-valid reading is truncated.
+
+Left whole: a longer number with no Luhn-valid reading in it; an id glued to a
+word (`REF4111111111111111`); a range joined by a Unicode dash between groups
+that are not card-style (`20260901–20260903`), whose sides are two numbers and
+never one reading across the dash; and an IBAN written in groups, only as far
+as the IBAN itself — its groups joined by single spaces, up to the first length
+at which its check digits hold. Digits after the IBAN, or after a tab or a line
+break, are read as any others; after a bank code with letters
+(`GB33 BUKB 2020 1555 5555 55`) the digits are the IBAN's only when its check
+digits hold at the end of their run. An unbroken 12–19-digit run after an
+IBAN's check digits is still a card number (`DE89 370400440532013000` →
+`DE89 370400********3000`). Accepted residuals: a card number in groups that
+are not card-style, glued to a word or to a truncation's stars, or split by a
+range's dash, shows what the rule reads of it; and the phone rule, which runs
+first, takes ten unbroken digits before a Unicode dash for a phone number
+(`4731592604–8–7311` → `[PHONE-MASKED]–8–7311`).
 
 ### Structural fields (never scanned)
 

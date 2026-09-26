@@ -32,24 +32,43 @@
   with Unicode dashes or invisible characters (an en dash for a hyphen, a
   zero-width space; also under a card or name key).
 - Where the digits around a separator are one card or a card beside another
-  number, Luhn decides, and no output shows more than the first six and last
-  four of any Luhn-valid reading of 12-19 digits. `5123450000000008 12` is a
-  card and a number (`512345******0008 12`; merged, it showed a last four of
-  `0812`), while `4 111111111111111` and `6011000000000000 001` are one card
-  each. Only an unbroken run splits off: a number written in groups is read
-  whole with a short group after it (`5123 4500 0000 0008 12` →
-  `512345********0812`), and `00` before a card is a Luhn-valid reading with it
+  number, Luhn decides: no output shows more than the first six and last four
+  of any Luhn-valid reading of 12-19 digits, except over the digits the next
+  two entries leave as something else's. `5123450000000008 12` is a card and a
+  number (`512345******0008 12`; merged, it showed a last four of `0812`),
+  while `4 111111111111111` and `6011000000000000 001` are one card each. Only
+  an unbroken run splits off: a number written in groups is read whole with a
+  short group after it (`5123 4500 0000 0008 12` → `512345********0812`), and
+  `00` before a card is a Luhn-valid reading with it
   (`10:00:00 4111111111111111` → `10:00:004111********1111`). In a longer run
   written in groups, every Luhn-valid reading along the groups is truncated,
-  overlapping ones as one span. Accepted residual: a card that is not
-  Luhn-valid itself (some 19-digit UnionPay), written as a Luhn-valid long
-  group and a short tail, is read as a card and a number.
+  overlapping ones as one span, including a card number's own when its
+  card-style groups are glued to a word or to a truncation's stars
+  (`Payer5123 4500 0000 0008 12 25` → `Payer512345******0008 12 25`). Accepted
+  residual: a card that is not Luhn-valid itself (some 19-digit UnionPay),
+  written as a Luhn-valid long group and a short tail, is read as a card and a
+  number.
 - Left whole, as before: a longer number written in groups with no Luhn-valid
-  reading in it, an id glued to a word (`REF4111111111111111`,
-  `req42 1695000000 123`), a range joined by a Unicode dash
-  (`20260901–20260930`), and an IBAN written in groups, now also one whose bank
-  code has letters (`GB33 BUKB 2020 1555 5555 55` was part-truncated). An
-  unbroken 12-19-digit run after an IBAN's check digits is a card number
+  reading in it; an id glued to a word (`REF4111111111111111`,
+  `req42 1695000000 123`); and a range joined by a Unicode dash between groups
+  that are not card-style (`20260901–20260903`), whose sides are read as two
+  numbers, and never as one Luhn-valid reading across the dash. Accepted
+  residuals: a card number in groups that are not card-style, glued to a word
+  or to a truncation's stars (`Card5123 4500 000 00008 …`), or split by such a
+  dash (`411111111111–1111`), shows what the rule reads of it; and the phone
+  rule, which runs first in every pack, takes ten unbroken digits before a
+  Unicode dash for a phone number, so a card grouped ten and more that way
+  (`4731592604–8–7311` → `[PHONE-MASKED]–8–7311`) shows digits past its last
+  four.
+- An IBAN written in groups is left whole, and only the IBAN: its groups joined
+  by single spaces, up to the first length at which its check digits hold (mod
+  97). Digits after it, or after a tab or a line break, are read as any others
+  (`DE89 3704 0044 0532 0130 00\t4111 1111 1111 1111` truncates the card, as
+  in 0.15.1). After a bank code with letters the digits start a run of their
+  own, and are the IBAN's only when its check digits hold at the run's end:
+  `GB33 BUKB 2020 1555 5555 55` is left whole (it was part-truncated), and
+  `GB33 BUKB 4111 1111 1111 1111` truncates the card. An unbroken 12-19-digit
+  run after an IBAN's check digits is a card number
   (`DE89 370400440532013000` → `DE89 370400********3000`).
 - A card key refuses a value (`[CARD-MASKED]`) that still holds a run of
   card-number length once its card numbers are truncated. It showed the scan's

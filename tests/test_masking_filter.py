@@ -1050,11 +1050,10 @@ ACCEPTED_LEAK_CASES = [
     # matched — required, since matching it would over-mask ordinary words
     # like "tokenization" that merely start with a keyword.
     ("cred-glued-no-separator-unmasked", "token12345"),
-    # All card rules share one lead guard: a match may only start right after
-    # a real prefix (quote, ":", "=", space, comma, dot, or start-of-string).
-    # A letter isn't in that set, so an unbroken digit run glued to a
-    # preceding letter matches no card rule at all (only a number written in
-    # space-separated groups may start glued to a word).
+    # Digits glued to a word are the word's own: the card rule reads a card
+    # number glued to a word only in card-style groups ("Payer4508 7500 0000
+    # 1019"), so one glued unbroken, or in other groups, ships as written. A
+    # card key refuses such a value.
     ("card-glued-to-letters-leading-9-unaffected", "REF9111111111111111 confirmed"),
     ("card-glued-to-letters-leading-other-unaffected", "REF4111111111111111 confirmed"),
     # The JWT rule's leading "\b" blocks a match when "eyJ" is glued directly

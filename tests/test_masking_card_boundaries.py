@@ -12,13 +12,13 @@ showing a last four that was not the card's.
 The rule reads each run of digits joined by separators as a whole. Where the
 digits around a separator admit more than one reading -- one card, or a card
 and another number -- Luhn decides, and no output shows more than the first six
-and last four of any Luhn-valid reading of 12-19 digits. An unbroken run of
-12-19 digits is a card number wherever it stands. A card number written in
-groups may start after digits that belong to something else: a word
-("INV-2026"), a "+" (a phone number), a truncation's stars. Before a number
-written in groups, digits that stand free, or an IBAN's country code and check
-digits, still make one longer number, which is left whole unless a Luhn-valid
-reading lies inside it.
+and last four of any Luhn-valid reading of 12-19 digits, but over digits that
+belong to something else: a word's own, a truncation's, an IBAN's, each side of
+a range. An unbroken run of 12-19 digits is a card number wherever it stands. A
+card number written in groups may start after digits that belong to something
+else: a word ("INV-2026"), a "+" (a phone number), a truncation's stars. Before
+a number written in groups, digits that stand free, or an IBAN, still make one
+longer number, which is left whole unless a Luhn-valid reading lies inside it.
 """
 
 import time
@@ -131,6 +131,37 @@ class TestACardKeyRefusesWhatStillHoldsACardNumber:
     def test_a_card_number_dressed_as_a_token(self):
         """The exact token shape, holding a card number: not passed as a token."""
         assert _card("ptok:v1:4111111111111111" + "A" * 27) == "ptok:v1:411111******1111" + "A" * 27
+
+
+class TestACardNumberGluedToAWordOrToStars:
+    """Digits glued to a word, or to a truncation's stars, are not the head of
+    a longer number -- unless they start card-style groups, where they are a
+    card number's own. A stretch of those groups that passes Luhn is
+    truncated, so a reading starting past the card's first group no longer
+    shows its head in clear."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected", "in_prose"),
+        [
+            ("Payer8183 9012 2443 0055 12 9891 4238 12 25", "Payer818390****************4238 12 25", None),
+            ("Payer5123 4500 0000 0008 12 25", "Payer512345******0008 12 25", None),
+            # In prose, a group of four beside a card number may be its CVV.
+            ("VISA4111 1111 1111 1111 1225", "VISA411111******1111 1225", "VISA411111******1111 [CVV-MASKED]"),
+            ("****6236 9128 3371 1376 1234", "****623691**********1234", None),
+            ("****4111 1111 1111 1111 123", "****411111*********1123", None),
+        ],
+    )
+    def test_the_card_number_shows_its_first_six_at_most(self, mask, value, expected, in_prose):
+        assert mask(value) == expected
+        assert _card(value) == expected
+        assert MaskPIIFilter(packs=PCI)._mask_string(value) == (in_prose or expected)
+
+    def test_the_residual_a_card_glued_to_a_word_in_other_groups(self, mask):
+        """Accepted, like ACCEPTED_LEAK_CASES in test_masking_filter: in
+        groups no card is printed in, digits glued to a word are the word's
+        own."""
+        value = "Card5123 4500 000 00008 7354 6958 1147"
+        assert mask(value) == "Card5123 4500 000 000087*******1147"
 
 
 class TestLuhnDecidesBetweenReadings:
@@ -305,6 +336,49 @@ class TestALongRunOfStars:
         assert time.perf_counter() - started < 0.5
 
 
+class TestAnIbanReachesNoFurtherThanItself:
+    """An IBAN in groups is left whole, but only the IBAN: its groups joined by
+    a space, up to the first length at which its check digits hold. Digits
+    past it, or past a tab or a line break, are read as any others."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (
+                "SA03 8000 0000 6080 1016 7519\n5123 4500 0000 0008 exp 01/39",
+                "SA03 8000 0000 6080 1016 7519\n512345******0008 exp 01/39",
+            ),
+            ("DE89\n4111 1111 1111 1111", "DE89\n411111******1111"),
+            ("DE89 3704 0044 0532 0130 00\t4111 1111 1111 1111", "DE89 3704 0044 0532 0130 00\t411111******1111"),
+            # Not an IBAN whose check digits hold, so not a bank code either.
+            ("GB33 BUKB 4111 1111 1111 1111", "GB33 BUKB 411111******1111"),
+            # Joined by a space the card number could be the IBAN's tail, so it
+            # does not start a number; its Luhn-valid reading is truncated.
+            ("DE89 3704 0044 0532 0130 00 4111 1111 1111 1111", "DE89 3704 0044 0532 0130 00 411111******1111"),
+        ],
+    )
+    def test_a_card_number_after_it_is_truncated(self, mask, value, expected):
+        assert mask(value) == expected
+
+    def test_after_a_bank_code_with_letters_the_iban_holds_the_whole_run(self, mask):
+        """Digits after "GB33 BUKB " start a run of their own: they are the
+        IBAN's only when its check digits hold at the run's end. Here they hold
+        at "GB33 BUKB 8211 1999", by chance, one time in 97."""
+        assert mask("GB33 BUKB 8211 1999 7383 7284 516") == "GB33 BUKB 821119*********4516"
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "DE89 3704 0044 0532 0130 00",
+            "GB33 BUKB 2020 1555 5555 55",
+            # Letters after the digits, still inside the IBAN.
+            "MT84 MALT 0110 0001 2345 MTLC AST0 01S",
+        ],
+    )
+    def test_the_iban_itself_stays_whole(self, mask, value):
+        assert mask(value) == value
+
+
 class TestInvisibleSeparators:
     """A copy or an editor leaves invisible characters between the groups."""
 
@@ -399,7 +473,9 @@ class TestUnicodeDashesGroupACardNumber:
     @pytest.mark.parametrize(
         "value",
         ["2026-09-01\u20132026-09-30", "20260901\u201320260930", "1000000\u20132000000", "ids 123456\u2013123999",
-         "12\u2212345678901234"],
+         "12\u2212345678901234",
+         # Luhn-valid across the dash, which a range still does not cross.
+         "period 20260901\u201320260903", "ids 1000000\u20131000999"],
     )
     def test_a_range_is_two_numbers(self, mask, value):
         assert mask(value) == value

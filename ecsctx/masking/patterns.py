@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import re
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from functools import lru_cache
 from heapq import merge
 from itertools import accumulate, pairwise
@@ -261,14 +261,46 @@ _DASH_CHARS = "-" + _UNICODE_DASHES
 # An ASCII digit's value, and the value Luhn doubles it to (its digits summed).
 _DIGIT_VALUE = bytes.maketrans(b"0123456789", bytes(range(10)))
 _DOUBLED_VALUE = bytes.maketrans(b"0123456789", bytes((0, 2, 4, 6, 8, 1, 3, 5, 7, 9)))
-# An IBAN's country code and two check digits, at the start of a word: the head
-# of one number, however its groups are spaced. Case-sensitive, as rule 11 is.
+# An IBAN's country code and two check digits, at the start of a word, as the
+# first two digits of a run. Case-sensitive, as rule 11 is.
 _IBAN_HEAD = re.compile(rf"(?<![^\W_])(?:{_IBAN_PREFIX})\d\d(?!\d)")
-# ...or its head and four-character groups, when the bank code has letters in
-# it: the digits after "GB33 BUKB " are the same IBAN.
+# ...or with four-character groups after them, ending right before a run: the
+# bank code has letters in it, as in "GB33 BUKB 2020 ...".
 _IBAN_BODY = re.compile(rf"(?<![^\W_])(?:{_IBAN_PREFIX})\d\d(?: [A-Z0-9]{{4}})+ \Z")
-# The longest IBAN, 34 characters, printed in groups of four.
+# One group of an IBAN printed in fours: after a single space, and not running
+# into more letters or digits.
+_IBAN_GROUP = re.compile(r" ([A-Z0-9]{1,4})(?![A-Z0-9])")
+# The shortest and the longest IBAN (Norway's; ISO 13616's limit).
+_IBAN_MIN = 15
+_IBAN_MAX = 34
+# The longest IBAN in groups of four, spaces included.
 _IBAN_REACH = 44
+
+
+def _iban_end(text: str, head: int, reach: int) -> int | None:
+    """Where the IBAN whose country code is at ``head`` ends: after the first of
+    its groups, at ``reach`` or beyond, at which its check digits hold (ISO
+    13616: the number with its first four characters moved to the end, letters
+    as 10-35, is 1 mod 97). None when they hold at no such length: then it is
+    no IBAN. Its groups are joined by a single space; a tab or a line break
+    ends it."""
+    # The country code and check digits, as the rearranged number ends in them.
+    tail = int(f"{int(text[head], 36)}{int(text[head + 1], 36)}{text[head + 2 : head + 4]}")
+    remainder, length, position = 0, 4, head + 4
+    while (group := _IBAN_GROUP.match(text, position)) is not None:
+        characters = group.group(1)
+        length += len(characters)
+        if length > _IBAN_MAX:
+            return None
+        for character in characters:
+            value = int(character, 36)
+            remainder = (remainder * (100 if value > 9 else 10) + value) % 97
+        position = group.end()
+        if length >= _IBAN_MIN and position >= reach and (remainder * 1_000_000 + tail) % 97 == 1:
+            return position
+        if len(characters) < 4:
+            return None  # a shorter group is the last one
+    return None
 
 
 def _card_style(sizes: list[int]) -> bool:
@@ -282,15 +314,17 @@ class _CardRun:
 
     Two readings of the same digits, and the output truncates both:
 
-    - The rule's own, from where a number may start (_readings): an unbroken
-      run of 12-19 digits is a card number wherever it stands; a number
-      written in groups is one card when it is 12-19 digits to the end of the
-      run and does not follow digits that could start the same, longer number.
+    - The rule's own, from where a number may start (_read): an unbroken run
+      of 12-19 digits is a card number wherever it stands; a number written in
+      groups is one card when it is 12-19 digits to the end of the run and does
+      not follow digits that could start the same, longer number.
     - Every stretch of whole groups, 12-19 digits long, that passes Luhn
       (_windows). Where a separator admits one card or a card beside another
       number, Luhn decides; truncating each such stretch, overlapping ones as
       one span, means no output shows more than the first six and last four of
-      any Luhn-valid reading.
+      a Luhn-valid reading -- but for the digits neither reads, which belong
+      to something else: an IBAN's, a word's own or a truncation's, a phone
+      number's after "+", and a range's across its dash (_windows).
     """
 
     def __init__(self, text: str, start: int, end: int) -> None:
@@ -319,18 +353,43 @@ class _CardRun:
         self.masked_after = self.sizes[-1] == 6 and _MASKED_REST.match(text, end) is not None
         self.hi = len(self.sizes) - 1 if self.masked_after else len(self.sizes)
         self.before = text[start - 1] if start else ""
-        self.iban = (
-            self.sizes[0] == 2 and start >= 2 and _IBAN_HEAD.match(text, start - 2) is not None
-        ) or _IBAN_BODY.search(text, max(0, start - _IBAN_REACH), start) is not None
+        # The run's leading groups that are an IBAN's: one whose country code
+        # is right before its first two digits, or before four-character groups
+        # right before the run. Only the IBAN itself, never what follows it.
+        # After a bank code with letters ("GB33 BUKB "), a run is read as any
+        # other unless the IBAN holds all of it: those digits could start a
+        # number of their own.
+        self.iban_groups = 0
+        if self.sizes[0] == 2 and start >= 2 and _IBAN_HEAD.match(text, start - 2) is not None:
+            head, reach = start - 2, start
+        elif (body := _IBAN_BODY.search(text, max(0, start - _IBAN_REACH), start)) is not None:
+            head, reach = body.start(), end
+        else:
+            head = reach = None
+        if head is not None and (iban_end := _iban_end(text, head, reach)) is not None:
+            # Its groups end where a group of the run does: one separator
+            # character between each two.
+            covered = 0
+            while covered < len(self.sizes) and start + self.offsets[covered + 1] + covered <= iban_end:
+                covered += 1
+            self.iban_groups = covered
 
     def spans(self) -> list[tuple[int, int]]:
         """The character spans to truncate, overlapping readings merged."""
         if self.lo >= self.hi:
             return []
-        readings = self._readings()
+        # A Unicode dash between groups that are not card-style joins a range
+        # of two numbers: each side is read on its own, and no stretch crosses
+        # the dash.
+        cuts = [] if _card_style(self.sizes) else [
+            index + 1 for index, sep in enumerate(self.seps) if sep in _UNICODE_DASHES
+        ]
+        readings: list[tuple[int, int]] = []
+        for first, last in pairwise([self.lo, *(cut for cut in cuts if self.lo < cut < self.hi), self.hi]):
+            readings += self._read(first, last)
         merged: list[tuple[int, int]] = []
         # Both lists come in order of their first group.
-        for first, last in merge(readings, self._windows(readings)):
+        for first, last in merge(readings, self._windows(cuts)):
             if merged and first <= merged[-1][1]:
                 merged[-1] = (merged[-1][0], max(merged[-1][1], last))
             else:
@@ -342,18 +401,6 @@ class _CardRun:
         sums = self.odd if (end - 1) % 2 == 0 else self.even
         return (sums[end] - sums[begin]) % 10 == 0
 
-    def _readings(self) -> list[tuple[int, int]]:
-        # A Unicode dash between groups that are not card-style joins a range
-        # of two numbers: each side is read on its own.
-        cuts = [] if _card_style(self.sizes) else [
-            index + 1 for index, sep in enumerate(self.seps) if sep in _UNICODE_DASHES
-        ]
-        bounds = [self.lo, *(cut for cut in cuts if self.lo < cut < self.hi), self.hi]
-        found: list[tuple[int, int]] = []
-        for first, last in pairwise(bounds):
-            found += self._read(first, last)
-        return found
-
     def _read(self, first: int, last: int) -> list[tuple[int, int]]:
         """Groups first..last-1, scanned for where a card number may start, as
         the rule's regex did: an unbroken run is one on its own; the rest of the
@@ -364,7 +411,7 @@ class _CardRun:
         found: list[tuple[int, int]] = []
         # A reading must not end on digits running into a truncation's stars.
         end_ok = last < self.hi or not self.masked_after
-        index = first
+        index = max(first, self.iban_groups)  # none starts inside an IBAN
         while index < last:
             size = self.sizes[index]
             total = self.offsets[last] - self.offsets[index]
@@ -426,11 +473,9 @@ class _CardRun:
         """Whether a number in groups starting at ``index`` would be the tail of
         one longer number: the digits before the space could start the same
         number when they stand free, are a hyphenated group, a word's own
-        ("req42") or an IBAN's -- unless they are a card number themselves.
-        Digits glued to a "+", a truncation's stars or other punctuation end
-        there, as do "INV-2026"'s: a hyphenated id."""
-        if self.iban:
-            return True
+        ("req42") or an IBAN's last group -- unless they are a card number
+        themselves. Digits glued to a "+", a truncation's stars or other
+        punctuation end there, as do "INV-2026"'s: a hyphenated id."""
         if index == 0 or self.seps[index - 1] != " ":
             return False
         previous = index - 1
@@ -447,22 +492,45 @@ class _CardRun:
             return not (self.start >= 2 and self.text[self.start - 2].isalpha())
         return False
 
-    def _windows(self, readings: list[tuple[int, int]]) -> list[tuple[int, int]]:
-        """Every stretch of whole groups, 12-19 digits long, that passes Luhn.
-        Not in an IBAN; not over a word's own digits ("REF4111...", a UUID's
-        "a456-4266...") unless the word starts card-style groups; and not a
-        phone number's digits after "+" on their own."""
-        if self.iban:
-            return []
-        first = self.lo
-        word = self.before.isalpha() or (
-            self.before in _DASH_CHARS and self.start >= 2 and self.text[self.start - 2].isalpha()
-        )
-        if word and first == 0 and not any(begin == 0 for begin, _ in readings):
-            while first + 1 < self.hi and not self.seps[first].isspace():
-                first += 1
-            first += 1
+    def _windows(self, cuts: list[int]) -> list[tuple[int, int]]:
+        """Every stretch of whole groups, 12-19 digits long, that passes Luhn,
+        except over digits that belong to something else: an IBAN's; a word's
+        own ("REF4111...", "INV-2026", a UUID's "a456-4266..."); a
+        truncation's last four; a phone number's after "+", on their own; and
+        across a range's dash (``cuts``). Digits glued to a letter or to a
+        truncation's stars still start the stretch of their own card number,
+        when it is written in card-style groups ("Payer5123 4500 0000 0008 12
+        25")."""
+        free = max(self.lo, self.iban_groups)  # where a stretch may start
+        if free == 0 and (
+            self.before.isalpha()
+            or (self.before in _DASH_CHARS and self.start >= 2 and self.text[self.start - 2].isalpha())
+        ):
+            # A word's own digits: the group glued to it, and those it joins by
+            # dashes.
+            while free + 1 < self.hi and not self.seps[free].isspace():
+                free += 1
+            free += 1
+        glued = free > 0 and not self.iban_groups and (self.lo == 1 or self.before.isalpha())
         phone = self.before == "+" and self.sizes[0] <= _PHONE_MAX_DIGITS
+        found: list[tuple[int, int]] = []
+        for first, last in pairwise([0, *(cut for cut in cuts if 0 < cut < self.hi), self.hi]):
+            if self.offsets[last] - self.offsets[first] < _MIN_PAN_DIGITS:
+                continue  # one side of a range, too short for a card number
+            for widest, stop in self._widest(first, last, max(first, free), glued=glued and first == 0):
+                if widest == stop == 0 and phone:
+                    continue
+                # Merged as they come: ends only grow, so a stretch reaching
+                # back over earlier ones swallows them.
+                while found and found[-1][1] >= widest:
+                    widest = min(widest, found.pop()[0])
+                found.append((widest, stop))
+        return found
+
+    def _widest(self, first: int, last: int, free: int, *, glued: bool) -> Iterator[tuple[int, int]]:
+        """For each group first..last-1 that ends a stretch passing Luhn, the
+        widest such stretch: starting at ``free`` or later, or at ``first`` when
+        ``glued`` and the stretch is in card-style groups."""
         ends, odd, even = self.offsets, self.odd, self.even
         # A stretch passes Luhn when its prefix sums at both ends agree, mod
         # 10, in the array that doubles the positions its end leaves doubled.
@@ -470,10 +538,14 @@ class _CardRun:
         # their residue, one per array, and the first one waiting that is not
         # yet too far back is the widest stretch ending there.
         waiting = ([deque() for _ in range(10)], [deque() for _ in range(10)])
-        found: list[tuple[int, int]] = []
-        begin = first
-        for stop in range(first, self.hi):
+        pending = glued  # the glued group, the lowest start, waits first
+        begin = free
+        for stop in range(first, last):
             end = ends[stop + 1]
+            if pending and end - ends[first] >= _MIN_PAN_DIGITS:
+                waiting[0][odd[ends[first]] % 10].append(first)
+                waiting[1][even[ends[first]] % 10].append(first)
+                pending = False
             while begin <= stop and end - ends[begin] >= _MIN_PAN_DIGITS:
                 waiting[0][odd[ends[begin]] % 10].append(begin)
                 waiting[1][even[ends[begin]] % 10].append(begin)
@@ -482,14 +554,11 @@ class _CardRun:
             queue = waiting[0 if doubled_odd else 1][(odd if doubled_odd else even)[end] % 10]
             while queue and end - ends[queue[0]] > _MAX_PAN_DIGITS:
                 queue.popleft()
-            if queue and not (queue[0] == stop == 0 and phone):
-                # Merged as they come: ends only grow, so a stretch reaching
-                # back over earlier ones swallows them.
-                widest = queue[0]
-                while found and found[-1][1] >= widest:
-                    widest = min(widest, found.pop()[0])
-                found.append((widest, stop))
-        return found
+            widest = queue[0] if queue else None
+            if glued and widest == first and not _card_style(self.sizes[first : stop + 1]):
+                widest = queue[1] if len(queue) > 1 else None
+            if widest is not None:
+                yield widest, stop
 
 
 def _mask_card_run(match: re.Match) -> str:
