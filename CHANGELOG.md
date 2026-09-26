@@ -33,6 +33,11 @@
   not the card's (`…0008 12` showed `0812`). A longer number that stands free,
   an id glued to a word, and an IBAN written in groups are left whole, as
   before.
+- `safe_tokenize`, and a card key, take a value for a token only in the exact
+  shape ecsctx emits (`ptok:v1:` and 43 base64url characters). Anything
+  starting `ptok:` passed as one, so `customer_name: "ptok:Jane Payer"` shipped
+  the name in clear, a phone field shipped `ptok:+378282246310005`, and a card
+  key shipped `ptok:<PAN>`.
 - The phone rule no longer reads a country code and a truncated card number's
   first six as a phone number (`+965 512345******0008`).
 

@@ -11,8 +11,13 @@ import re
 
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.pii import tokenize as _pii_tokenize
+from ecsctx.pii.crypto import TOKEN_PREFIX, TOKEN_VERSION
 
-_TOKEN_PREFIX = "ptok:"
+# The one shape ecsctx.pii.tokenize emits (hmac_tokenize): prefix, version, and
+# an HMAC-SHA-256 digest in unpadded base64url, 43 characters. Anything else
+# that starts "ptok:" was typed that way, and is no token.
+_TOKEN = rf"{TOKEN_PREFIX}:v{TOKEN_VERSION}:[A-Za-z0-9_-]{{43}}"
+_TOKEN_SHAPE = re.compile(_TOKEN)
 _REDACTED = "[PII_REDACTED]"
 
 # What _truncate_pan produces: the BIN, stars, and the last four (15 digits and
@@ -32,7 +37,7 @@ _MASKED_VALUE = re.compile(
 
 
 def already_tokenized(text: str) -> bool:
-    return text.startswith(_TOKEN_PREFIX)
+    return _TOKEN_SHAPE.fullmatch(text) is not None
 
 
 def safe_tokenize(value: str, field_type: str = "generic") -> str:

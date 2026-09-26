@@ -30,7 +30,7 @@ from collections.abc import Callable
 from functools import lru_cache
 from typing import NamedTuple
 
-from ecsctx.masking.tokens import _TRUNCATED_PAN, make_label, mask_by_field_type
+from ecsctx.masking.tokens import _TOKEN, _TRUNCATED_PAN, make_label, mask_by_field_type
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -317,8 +317,8 @@ _PAN_VALUE = re.compile(rf"\d{{12,19}}|(?!\d{{12}})\d(?:{_CARD_SEP}?\d){{11,18}}
 # label with a token, or a truncated card. A marker somewhere inside a longer
 # value, or brackets around anything else, do not make it safe.
 _SINGLE_MARKER = re.compile(
-    rf"\[[A-Z0-9-]+-MASKED(?::ptok:[\w:.-]+)?\]|{_TRUNCATED_PAN}"
-    rf"|\[CARD-MASKED:{_TRUNCATED_PAN}\]|ptok:[\w:.-]+"
+    rf"\[[A-Z0-9-]+-MASKED(?::{_TOKEN})?\]|{_TRUNCATED_PAN}"
+    rf"|\[CARD-MASKED:{_TRUNCATED_PAN}\]|{_TOKEN}"
 )
 
 
