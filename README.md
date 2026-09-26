@@ -1009,11 +1009,12 @@ data puts a `D` separator right after it.
 
 The card rule reads groups separated by a space, a hyphen or a Unicode dash
 (`5123–4500–0000–0008`). An unbroken run of 12–19 digits is a card number on
-its own, whatever number follows it (`4111111111111111 1234` →
-`411111******1111 1234`), and a card number may follow digits that belong to a
-word, a phone number or another card (`INV-2026 4111 1111 1111 1111`,
-`+965 4111111111111111`). A longer number that stands free, or an IBAN written
-in groups, is left whole.
+its own, whatever numbers stand beside it (`4111111111111111 1234` →
+`411111******1111 1234`, `10:00:00 4111111111111111` →
+`10:00:00 411111******1111`), and a card number written in groups may follow
+digits that belong to a word, a phone number or another card
+(`INV-2026 4111 1111 1111 1111`). A longer number written in groups, or an
+IBAN, is left whole.
 
 ### Structural fields (never scanned)
 

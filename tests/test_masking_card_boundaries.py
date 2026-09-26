@@ -10,10 +10,11 @@ in clear, and a short number after a PAN was merged into its truncation,
 showing a last four that was not the card's.
 
 An unbroken run of 12-19 digits is now a card number on its own, whatever
-follows it across a separator. A card number may start after digits that
-belong to something else: a word ("INV-2026"), a "+" (a phone number), a
-truncation's stars. Digits that stand free before it, or an IBAN's country code
-and check digits, still make one longer number, which is left whole.
+numbers stand beside it across a separator. A card number written in groups may
+start after digits that belong to something else: a word ("INV-2026"), a "+" (a
+phone number), a truncation's stars. Before a number written in groups, digits
+that stand free, or an IBAN's country code and check digits, still make one
+longer number, which is left whole.
 """
 
 import pytest
@@ -84,6 +85,32 @@ class TestACardNumberFollowedByMoreDigits:
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         out = MaskPIIFilter(packs=PCI)._mask_value({"customer_name": "5123450000000008 12"})
         assert out == {"customer_name": "[NAME-MASKED]"}
+
+
+class TestACardNumberAfterANumberThatStandsFree:
+    """The card rule refused every match after "<digit><space>", to keep a
+    longer number whole, so "point 1 <PAN>" shipped the card number; and a
+    shorter card number was merged into the number before it. An unbroken run
+    is a card number wherever it stands (CARD_NUMBER_CASES in
+    test_masking_filter has the prose forms)."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("10:00:00 4111111111111111", "10:00:00 411111******1111"),
+            ("qty 2 9123456789123456789", "qty 2 912345*********6789"),
+            ("12345678 123456789012", "12345678 ********9012"),
+            # Inside a number written in groups, which is left whole around it.
+            ("x 123456 78 123456789012", "x 123456 78 ********9012"),
+        ],
+    )
+    def test_the_card_number_is_truncated_and_the_number_before_it_kept(self, mask, value, expected):
+        assert mask(value) == expected
+
+    def test_a_card_number_written_in_groups_after_one_that_is_not(self, mask):
+        """The digits before it are a card number of their own, so it is not a
+        chunk of one longer number."""
+        assert mask("4111111111111111 4111 1111 1111 1111") == "411111******1111 411111******1111"
 
 
 class TestACardNumberAfterDigitsThatBelongToSomethingElse:

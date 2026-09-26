@@ -30,9 +30,15 @@
   (`Payer4508 7500 0000 1019`), or grouped with Unicode dashes (an en dash for
   a hyphen; also under a card or name key). A short number after a card number
   is no longer merged into its truncation, where it made a last four that was
-  not the card's (`…0008 12` showed `0812`). A longer number that stands free,
-  an id glued to a word, and an IBAN written in groups are left whole, as
-  before.
+  not the card's (`…0008 12` showed `0812`). A longer number written in
+  groups, an id glued to a word, and an IBAN written in groups are left whole,
+  as before.
+- A card number that is an unbroken run of 12-19 digits is truncated after a
+  number that stands free: `point 1 <PAN>`, `qty 2 <PAN>`, a time of day
+  (`10:00:00 <PAN>`). The card rule refused any match after a digit and a
+  space, to keep a longer number whole, so a 19-digit card number there
+  shipped in clear, and a shorter one was merged with the number before it
+  (`10:00:004111********1111`).
 - `safe_tokenize`, and a card key, take a value for a token only in the exact
   shape ecsctx emits (`ptok:v1:` and 43 base64url characters). Anything
   starting `ptok:` passed as one, so `customer_name: "ptok:Jane Payer"` shipped

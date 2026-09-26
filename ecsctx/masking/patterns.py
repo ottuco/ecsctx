@@ -216,8 +216,10 @@ _PHONE_MAX_DIGITS = 15
 # 2. Groups, as before: the whole number must be 12-19 digits, none after it.
 #    Written in space-separated groups it may start glued to a word
 #    ("Payer4508 7500 0000 1019"); a run glued to one is part of an id.
-# Where digits before the match could make it part of a longer number, its
-# replacement decides: _inside_a_longer_number.
+# Digits before the match are the replacement's to judge, which can see the
+# whole number they belong to (_inside_a_longer_number), and a run of 12-19
+# digits it truncates on its own, whatever number stands before it
+# (_mask_truncated_card).
 _CARD_PATTERN = (
     r"(?=\d)(?:"
     rf"(?:{_CARD_START}|(?:(?<=^\+)|(?<=[\s{re.escape(_NUMBER_PREFIX)}]\+))(?=\d{{{_PHONE_MAX_DIGITS + 1}}}))"
@@ -260,6 +262,19 @@ def _truncate_pan(digits: str) -> str:
     return f"{'*' * (len(digits) - 4)}{digits[-4:]}"
 
 
+# An unbroken run of 12-19 digits: a card number on its own, wherever it stands.
+_UNBROKEN_PAN = re.compile(r"(?<!\d)\d{12,19}(?!\d)")
+# A group of 15-19 digits carries its own first six and last four, so in a
+# match read in groups the short numbers beside it are other numbers ("qty 2
+# 4111111111111111"). A 12-14-digit group can still end one card number
+# written in groups ("11234 56 789123456789").
+_WHOLE_PAN_GROUP = re.compile(r"(?<!\d)\d{15,19}(?!\d)")
+
+
+def _truncate_run(run: re.Match) -> str:
+    return _truncate_pan(run.group(0))
+
+
 def _mask_truncated_card(match: re.Match) -> str:
     # The content rule only matches 12-19 digit runs, so digits always
     # carries a BIN and a last-4 to preserve — no short-input path needed.
@@ -267,9 +282,14 @@ def _mask_truncated_card(match: re.Match) -> str:
     # PII unconfigured, collapse to a bare label), losing the truncation.
     # Emitted bare: the truncation IS the value, and the stars alone make it a
     # fixed point — they break the digit run so no later pass re-matches it.
+    text = match.group(0)
     if _inside_a_longer_number(match.string, match.start()):
-        return match.group(0)
-    return _truncate_pan(_digits_only(match.group(0)))
+        # One longer number, left whole, except a card number that is an
+        # unbroken run in it: "point 1 <PAN>" shipped the card number.
+        return _UNBROKEN_PAN.sub(_truncate_run, text)
+    if not text.isdecimal() and _WHOLE_PAN_GROUP.search(text):
+        return _WHOLE_PAN_GROUP.sub(_truncate_run, text)
+    return _truncate_pan(_digits_only(text))
 
 
 # An IBAN's country code and two check digits, at the start of a word: the head
@@ -279,7 +299,9 @@ _IBAN_HEAD = re.compile(rf"(?<![^\W_])(?:{_IBAN_PREFIX})\d\d(?!\d)")
 
 def _inside_a_longer_number(text: str, start: int) -> bool:
     """Whether the card rule's match at ``start`` is a chunk of a longer
-    number, which the rule leaves whole rather than chop.
+    number, which the rule leaves whole rather than chop -- all of it but an
+    unbroken run of 12-19 digits, which _mask_truncated_card truncates wherever
+    it stands.
 
     What the lookbehind (?<!\\d ) approximated, and what it cannot see: which
     number the digits before the space belong to. They start the same number

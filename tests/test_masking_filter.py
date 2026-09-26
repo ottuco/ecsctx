@@ -713,11 +713,12 @@ def test_masks_jwt(label, sample, expected):
 
 
 # ---------------------------------------------------------------------------
-# Card numbers (PAN), 12-19 digits, dash/space separators. ecsctx truncates
-# to first 6 + last 4 (#159795, PCI DSS 3.4.1) — the leading digit no longer
-# changes the outcome, and every row below IS its own truncated core, bare:
-# brackets mean nothing survived, and a truncation carries the BIN and the last
-# four. Separators are stripped, so grouped input comes back contiguous.
+# Card numbers (PAN), 12-19 digits, dash (ASCII or Unicode)/space separators.
+# ecsctx truncates to first 6 + last 4 (#159795, PCI DSS 3.4.1) — the leading
+# digit no longer changes the outcome, and every row below IS its own truncated
+# core, bare: brackets mean nothing survived, and a truncation carries the BIN
+# and the last four. Separators are stripped, so grouped input comes back
+# contiguous; a number standing beside an unbroken run is kept as written.
 # ---------------------------------------------------------------------------
 CARD_NUMBER_CASES = [
     # continuous, leading 9
@@ -813,6 +814,16 @@ CARD_NUMBER_CASES = [
     ("card-16d-other-space-4x4", "1123 4567 8912 3456", "112345******3456"),
     ("card-17d-other-space-4x4", "1123 4567 8912 34567", "112345*******4567"),
     ("card-19d-other-space-4x4", "1123 4567 8912 3456789", "112345*********6789"),
+    # After a number that stands free: an unbroken run of 12-19 digits is a
+    # card number on its own, and the number before it is left as it is. The
+    # first two were accepted leaks, and a shorter card number was merged with
+    # the number before it ("qty 241111*******1111").
+    ("card-19d-9-preceded-by-digit-space", "point 1 9123456789123456789", "point 1 912345*********6789"),
+    ("card-19d-other-preceded-by-digit-space", "point 1 1234567891234567891", "point 1 123456*********7891"),
+    ("card-16d-after-a-quantity", "qty 2 4111111111111111", "qty 2 411111******1111"),
+    ("card-19d-after-a-quantity", "qty 2 9123456789123456789", "qty 2 912345*********6789"),
+    ("card-16d-after-a-time-of-day", "10:00:00 4111111111111111", "10:00:00 411111******1111"),
+    ("card-19d-after-a-time-of-day", "10:00:00 9123456789123456789", "10:00:00 912345*********6789"),
 ]
 
 
@@ -1008,6 +1019,10 @@ def test_over_masked_because_of_cvv(label, sample):
 # don't match a rule's shape at all), every case here is genuinely
 # sensitive-looking data (a real PAN, a real token) that a guard deliberately
 # lets through unmasked. Each is a settled decision, not an open bug.
+#
+# A card number after a number that stands free ("point 1 <PAN>") was one,
+# while the card rule refused every match after "<digit><space>". An unbroken
+# run of 12-19 digits is masked there now: see CARD_NUMBER_CASES.
 # ---------------------------------------------------------------------------
 ACCEPTED_LEAK_CASES = [
     # The bare-space credential rule requires a digit in the value, so it can
@@ -1024,12 +1039,6 @@ ACCEPTED_LEAK_CASES = [
     # space-separated groups may start glued to a word).
     ("card-glued-to-letters-leading-9-unaffected", "REF9111111111111111 confirmed"),
     ("card-glued-to-letters-leading-other-unaffected", "REF4111111111111111 confirmed"),
-    # The lead guard also blocks a match preceded by "<digit><space>", which
-    # ordinary text ending in a digit ("point 1", "step 2") triggers -- when
-    # the digits stand free; digits that belong to a word, a phone number or
-    # a truncation do not block it.
-    ("card-19d-9-preceded-by-digit-space-unaffected", "point 1 9123456789123456789"),
-    ("card-19d-other-preceded-by-digit-space-unaffected", "point 1 1234567891234567891"),
     # The JWT rule's leading "\b" blocks a match when "eyJ" is glued directly
     # to a word character.
     ("jwt-glued-to-letter-prefix-unmasked", f"abc{_JWT}"),
