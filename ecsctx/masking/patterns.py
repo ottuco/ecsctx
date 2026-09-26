@@ -172,30 +172,60 @@ _IBAN_PREFIX = (
 )
 
 # Card number rules, shared building blocks. Real-world PANs range 12-19
-# digits (ISO/IEC 7812 caps at 19; Maestro issues from 12). Only dash and
-# space count as real-world separators.
+# digits (ISO/IEC 7812 caps at 19; Maestro issues from 12). A hyphen, a space
+# or a Unicode dash separates their groups -- an editor turns a typed "-" into
+# an en dash -- and a dot, comma or underscore does not.
 #
 # The phone, card and SSN rules put a one-character lookahead for their first
 # character in front of the lead guard: it rejects most positions before the
 # costlier lookbehind runs, without changing what matches.
 #
-# _CARD_LEAD_GUARD: a match may only start right after a real prefix (quote,
-# "([{", ":", "=", space, comma, dot, or start-of-string), not mid-digit-run
-# or glued to a letter. The extra (?<!\d ) blocks a space that's itself
-# preceded by a digit, so a differently-grouped longer number's tail chunk
-# isn't mistaken for a fresh match.
+# _CARD_LEAD_GUARD (the phone and SSN rules): a match may only start right
+# after a real prefix (quote, "([{", ":", "=", space, comma, dot, or
+# start-of-string), not mid-digit-run or glued to a letter. The extra (?<!\d )
+# blocks a space that's itself preceded by a digit, so a differently-grouped
+# longer number's tail chunk isn't mistaken for a fresh match. The card rule
+# draws both lines more finely: see _CARD_PATTERN.
 # _CARD_TAIL_GUARD: a match may not be followed by more digits. A letter may
 # follow: Track 2 equivalent data puts a "D" separator straight after the PAN.
 # _PHONE_TAIL_GUARD also refuses a following letter — a digit run that runs
 # into letters is part of an id (a hex session_id starting with digits), and
-# the phone rule runs in every service, not only PCI ones.
-_CARD_LEAD_GUARD = r"(?:^|(?<=[\s,.:=\"'([{]))(?<!\d )"
-_CARD_TAIL_GUARD = r"(?![-\s]?\d)"
-_PHONE_TAIL_GUARD = _CARD_TAIL_GUARD + r"(?![A-Za-z])"
+# the phone rule runs in every service, not only PCI ones — and a star: digits
+# running into one are the first six of a truncated card number.
+_DASHES = "-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"
+_CARD_SEP = rf"[\s{re.escape(_DASHES)}]"
+_NUMBER_PREFIX = ",.:=\"'([{"
+_CARD_START = rf"(?:^|(?<=[\s{re.escape(_NUMBER_PREFIX)}]))"
+_CARD_LEAD_GUARD = _CARD_START + r"(?<!\d )"
+_CARD_TAIL_GUARD = rf"(?!{_CARD_SEP}?\d)"
+_PHONE_TAIL_GUARD = r"(?![-\s]?\d)(?![A-Za-z*])"
 # 11 more digits after the leading one = 12 total; 18 more = 19 total.
-_CARD_BODY = r"(?:[-\s]?\d){11,18}"
+_CARD_BODY = rf"(?:{_CARD_SEP}?\d){{11,18}}"
 # The shortest PAN issued. A value with fewer digits than this cannot be one.
 _MIN_PAN_DIGITS = 12
+_MAX_PAN_DIGITS = 19
+# E.164: a phone number has at most 15 digits, country code included.
+_PHONE_MAX_DIGITS = 15
+
+# The card rule's pattern, one of two readings at each start:
+# 1. An unbroken run of 12-19 digits is a card number on its own: digits after
+#    a separator are another number, never merged into its truncation, where
+#    they made a last four that was not the card's. After a "+" it is a card
+#    number only when longer than a phone number can be -- a country code
+#    glued to it -- since the phone rule has already refused it.
+# 2. Groups, as before: the whole number must be 12-19 digits, none after it.
+#    Written in space-separated groups it may start glued to a word
+#    ("Payer4508 7500 0000 1019"); a run glued to one is part of an id.
+# Where digits before the match could make it part of a longer number, its
+# replacement decides: _inside_a_longer_number.
+_CARD_PATTERN = (
+    r"(?=\d)(?:"
+    rf"(?:{_CARD_START}|(?:(?<=^\+)|(?<=[\s{re.escape(_NUMBER_PREFIX)}]\+))(?=\d{{{_PHONE_MAX_DIGITS + 1}}}))"
+    rf"\d{{{_MIN_PAN_DIGITS},{_MAX_PAN_DIGITS}}}(?!\d)"
+    r"|"
+    rf"(?:{_CARD_START}|(?<=[^\W\d_])(?=\d{{1,11}} \d))\d{_CARD_BODY}{_CARD_TAIL_GUARD}"
+    r")"
+)
 
 
 def _digits_only(text: str) -> str:
@@ -237,10 +267,52 @@ def _mask_truncated_card(match: re.Match) -> str:
     # PII unconfigured, collapse to a bare label), losing the truncation.
     # Emitted bare: the truncation IS the value, and the stars alone make it a
     # fixed point — they break the digit run so no later pass re-matches it.
+    if _inside_a_longer_number(match.string, match.start()):
+        return match.group(0)
     return _truncate_pan(_digits_only(match.group(0)))
 
 
-_PAN_VALUE = re.compile(r"\d(?:[-\s]?\d){11,18}")
+# An IBAN's country code and two check digits, at the start of a word: the head
+# of one number, however its groups are spaced. Case-sensitive, as rule 11 is.
+_IBAN_HEAD = re.compile(rf"(?<![^\W_])(?:{_IBAN_PREFIX})\d\d(?!\d)")
+
+
+def _inside_a_longer_number(text: str, start: int) -> bool:
+    """Whether the card rule's match at ``start`` is a chunk of a longer
+    number, which the rule leaves whole rather than chop.
+
+    What the lookbehind (?<!\\d ) approximated, and what it cannot see: which
+    number the digits before the space belong to. They start the same number
+    when they stand free -- at the start of the text or after a real prefix --
+    or are a group of a hyphenated one, or an IBAN's check digits, and are not
+    a card number themselves. Digits that belong to something else
+    end there: a word ("INV-2026"), a "+" (a phone number), a truncation's
+    stars. A match glued to a word, which the pattern allows only in
+    space-separated groups, is a longer number only when the word is an IBAN's
+    country code.
+    """
+    if start and text[start - 1].isalpha():
+        return start >= 2 and _IBAN_HEAD.match(text, start - 2) is not None
+    if start < 2 or text[start - 1] != " " or not text[start - 2].isdecimal():
+        return False
+    head = start - 2
+    while head and text[head - 1].isdecimal():
+        head -= 1
+    if _MIN_PAN_DIGITS <= start - 1 - head <= _MAX_PAN_DIGITS:
+        return False  # a card number of its own, which the rule reads alone
+    if not head:
+        return True
+    before = text[head - 1]
+    if before.isalpha():
+        return head >= 2 and _IBAN_HEAD.match(text, head - 2) is not None
+    if before in _DASHES:
+        return head < 2 or not text[head - 2].isalpha()
+    return before.isspace() or before in _NUMBER_PREFIX
+
+
+# A clean PAN: an unbroken run, or groups the first of which is not already a
+# PAN on its own -- "4111111111111111 12" is a card number and another number.
+_PAN_VALUE = re.compile(rf"\d{{12,19}}|(?!\d{{12}})\d(?:{_CARD_SEP}?\d){{11,18}}")
 # A value that is exactly one marker ecsctx itself produces: a bare label, a
 # label with a token, or a truncated card. A marker somewhere inside a longer
 # value, or brackets around anything else, do not make it safe.
@@ -282,9 +354,7 @@ def pan_shaped(text: str) -> bool:
 
 # A run of digits joined by single separators, as _PAN_VALUE reads a PAN, with
 # the "+" an international phone number starts with.
-_DIGIT_RUN = re.compile(r"\+?\d(?:[-\s]?\d)*")
-# E.164: a phone number has at most 15 digits, country code included.
-_PHONE_MAX_DIGITS = 15
+_DIGIT_RUN = re.compile(rf"\+?\d(?:{_CARD_SEP}?\d)*")
 
 
 def holds_pan_run(text: str, *, phone: bool = False) -> bool:
@@ -498,7 +568,7 @@ _CRED_LITERALS = (
 )
 _CVV_LITERALS = ("cvv", "cvc", "security")
 _PHONE_SHAPE = re.compile(r"\+\d|\d{3}\D{0,2}\d{3}\D?\d{4}")
-_CARD_SHAPE = re.compile(r"\d(?:[-\s]?\d){11}")
+_CARD_SHAPE = re.compile(rf"\d(?:{_CARD_SEP}?\d){{11}}")
 _SSN_SHAPE = re.compile(r"\d{3}[-\s]?\d{2}[-\s]?\d{4}")
 _IBAN_SHAPE = re.compile(r"[A-Za-z]{2}\d{2}")
 _THREE_DIGITS = re.compile(r"\d{3}")
@@ -790,7 +860,7 @@ _RULE_TABLE = (
     # pass cannot re-match it.
     _rule(
         "pci",
-        r"(?=\d)" + _CARD_LEAD_GUARD + r"\d" + _CARD_BODY + _CARD_TAIL_GUARD,
+        _CARD_PATTERN,
         _mask_truncated_card,
         _has_card_shape,
     ),

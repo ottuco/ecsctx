@@ -22,6 +22,19 @@
   or hex id with a long digit run, or (with `financial_ids`) a payment id gets
   the label too. In a phone field, a number written after `+` with at most 15
   digits (E.164) is the phone number and keeps its token.
+- The `pci` card rule truncates card numbers it shipped in clear under an
+  unclassified key: one followed by a space and more digits
+  (`5123450000000008 1234`), two side by side, one after a phone number or its
+  country code (`+965 5123450000000008`), after a number that is part of a word
+  (`INV-2026 4508 7500 0000 1019`), glued to a word in spaced groups
+  (`Payer4508 7500 0000 1019`), or grouped with Unicode dashes (an en dash for
+  a hyphen; also under a card or name key). A short number after a card number
+  is no longer merged into its truncation, where it made a last four that was
+  not the card's (`…0008 12` showed `0812`). A longer number that stands free,
+  an id glued to a word, and an IBAN written in groups are left whole, as
+  before.
+- The phone rule no longer reads a country code and a truncated card number's
+  first six as a phone number (`+965 512345******0008`).
 
 ## v0.15.1 (2026-09-25)
 

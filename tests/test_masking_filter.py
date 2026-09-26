@@ -935,8 +935,9 @@ NOT_MASKED = [
     ("iban-fake-country", "order AB12CDEF3456GH78 shipped"),
     ("iban-non-iban-country", "ref US12INVOICE0000042 paid"),
     ("iban-lowercase", "acct gb33bukb20201555 done"),
-    # Card rules only recognize dash/space (the two real-world PAN
-    # separators), so dot/comma/underscore are deliberately not chased.
+    # Card rules only recognize a dash (ASCII or Unicode) or a space, the
+    # real-world PAN separators, so dot/comma/underscore are deliberately not
+    # chased.
     ("card-dot-separated-not-a-real-pan-format", "4111.1111.1111.1111"),
     # outside the 12-19 digit range entirely
     ("card-11d-9-continuous", "91234567891"),
@@ -1018,12 +1019,15 @@ ACCEPTED_LEAK_CASES = [
     ("cred-glued-no-separator-unmasked", "token12345"),
     # All card rules share one lead guard: a match may only start right after
     # a real prefix (quote, ":", "=", space, comma, dot, or start-of-string).
-    # A letter isn't in that set, so a digit run glued to a preceding letter
-    # matches no card rule at all.
+    # A letter isn't in that set, so an unbroken digit run glued to a
+    # preceding letter matches no card rule at all (only a number written in
+    # space-separated groups may start glued to a word).
     ("card-glued-to-letters-leading-9-unaffected", "REF9111111111111111 confirmed"),
     ("card-glued-to-letters-leading-other-unaffected", "REF4111111111111111 confirmed"),
     # The lead guard also blocks a match preceded by "<digit><space>", which
-    # ordinary text ending in a digit ("point 1", "step 2") triggers.
+    # ordinary text ending in a digit ("point 1", "step 2") triggers -- when
+    # the digits stand free; digits that belong to a word, a phone number or
+    # a truncation do not block it.
     ("card-19d-9-preceded-by-digit-space-unaffected", "point 1 9123456789123456789"),
     ("card-19d-other-preceded-by-digit-space-unaffected", "point 1 1234567891234567891"),
     # The JWT rule's leading "\b" blocks a match when "eyJ" is glued directly

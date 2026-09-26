@@ -155,9 +155,8 @@ class TestTheCvvBesideAMaskedPanStillMasks:
     """
 
     def test_a_cvv_after_a_pan_in_one_string(self):
-        # A word between them on purpose: "<pan> 123" is itself a valid
-        # 19-digit space-separated PAN, and the card rule claims the whole run
-        # -- correct, and not what this test is about.
+        # A word between them on purpose: the context the CVV rule finds is
+        # the truncation, not a digit run beside the CVV.
         out = mask_by_all_patterns(f"{PAN} ref 123")
         assert TRUNCATED in out
         assert "[CVV-MASKED]" in out

@@ -823,7 +823,7 @@ handlers that never call `format()` see masked data too — and the formatter's
 strings already known clean are not scanned twice.
 
 **Log processor path** (automatic via `mask_sensitive_data`):
-- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`), for fraud correlation. Same input always produces the same token. Where no token can be made (PII not configured, or tokenization failing) the value becomes its type's label, `[EMAIL-MASKED]`; CVV is never tokenized and carries nothing, so it keeps a bracketed label (`[CVV-MASKED]`); a card number is never tokenized either, but its truncation IS carried, so it is bare (`411111******1111`) — under any key, including a name or email field. Expiry is not masked at all. A null stays null, and an empty value stays empty.
+- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`), for fraud correlation. Same input always produces the same token. Where no token can be made (PII not configured, or tokenization failing) the value becomes its type's label, `[EMAIL-MASKED]`; CVV is never tokenized and carries nothing, so it keeps a bracketed label (`[CVV-MASKED]`); a card number is never tokenized either, but its truncation IS carried, so it is bare (`411111******1111`) — under a card key, and with the `pci` pack under any key, including a name or email field. Expiry is not masked at all. A null stays null, and an empty value stays empty.
 - When PII is not configured: detected values become the bare label (`[EMAIL-MASKED]`) — raw PII never appears in logs.
 - Cardholder data is never tokenized: PANs are truncated to `411111******1111` whatever key they sit under — including, with the `pci` pack, a name or email field, because a keyed hash beside a truncation of the same PAN is the correlation PCI DSS FAQ 1117 warns about. With `pci`, a value that a PII, secret or id key would tokenize becomes its label instead when it holds a run of 12 or more digits among other text: a PAN typed beside a name, and also a long reference number, since the check fails closed. In a phone field, a number written after `+` with at most 15 digits (E.164) is the phone number and keeps its token. CVV is always `[CVV-MASKED]`. **Expiry is not masked**: it is Cardholder Data rather than Sensitive Authentication Data, so PCI permits storing it, and masking it only cost the ability to read an expired-card decline. The rule to remember: **brackets mean nothing survived**.
 
@@ -1006,6 +1006,14 @@ namedtuple is masked by its field names and rendered back to its repr text.
 A digit run that touches a letter is never a phone number — it is part of an
 id. The card rule still matches a PAN followed by a letter, because Track 2
 data puts a `D` separator right after it.
+
+The card rule reads groups separated by a space, a hyphen or a Unicode dash
+(`5123–4500–0000–0008`). An unbroken run of 12–19 digits is a card number on
+its own, whatever number follows it (`4111111111111111 1234` →
+`411111******1111 1234`), and a card number may follow digits that belong to a
+word, a phone number or another card (`INV-2026 4111 1111 1111 1111`,
+`+965 4111111111111111`). A longer number that stands free, or an IBAN written
+in groups, is left whole.
 
 ### Structural fields (never scanned)
 
