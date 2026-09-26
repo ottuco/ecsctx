@@ -376,9 +376,10 @@ class TestALongRunOfStars:
 
 
 class TestAnIbanReachesNoFurtherThanItself:
-    """An IBAN in groups is left whole, but only the IBAN: its groups joined by
-    a space, up to the first length at which its check digits hold. Digits
-    past it, or past a tab or a line break, are read as any others."""
+    """An IBAN in groups is left whole, but only the IBAN: its country's
+    registered length, in groups of four joined by a space, check digits
+    holding. Digits past it, or past a tab or a line break, are read as any
+    others."""
 
     @pytest.mark.parametrize(
         ("value", "expected"),
@@ -389,8 +390,10 @@ class TestAnIbanReachesNoFurtherThanItself:
             ),
             ("DE89\n4111 1111 1111 1111", "DE89\n411111******1111"),
             ("DE89 3704 0044 0532 0130 00\t4111 1111 1111 1111", "DE89 3704 0044 0532 0130 00\t411111******1111"),
-            # Not an IBAN whose check digits hold, so not a bank code either.
+            # Not a UK IBAN: 24 characters where the UK's are 22, check digits
+            # holding (GB28) or not (GB33). So not a bank code either.
             ("GB33 BUKB 4111 1111 1111 1111", "GB33 BUKB 411111******1111"),
+            ("terminal GB28 BUKB 4111 1111 1111 1111", "terminal GB28 BUKB 411111******1111"),
             # Joined by a space the card number could be the IBAN's tail, so it
             # does not start a number; its Luhn-valid reading is truncated.
             ("DE89 3704 0044 0532 0130 00 4111 1111 1111 1111", "DE89 3704 0044 0532 0130 00 411111******1111"),
@@ -399,10 +402,18 @@ class TestAnIbanReachesNoFurtherThanItself:
     def test_a_card_number_after_it_is_truncated(self, mask, value, expected):
         assert mask(value) == expected
 
+    def test_the_residual_a_card_number_that_completes_an_iban(self, mask):
+        """Accepted: a Pakistani IBAN is a four-letter bank code and 16
+        characters. With check digits that hold, one time in 97, a card number
+        after "PKdd LLLL" is that IBAN. A card key refuses the value."""
+        value = "PK85 ABCD 4111 1111 1111 1111"
+        assert mask(value) == value
+        assert _card(value) == "[CARD-MASKED]"
+
     def test_after_a_bank_code_with_letters_the_iban_holds_the_whole_run(self, mask):
         """Digits after "GB33 BUKB " start a run of their own: they are the
-        IBAN's only when its check digits hold at the run's end. Here they hold
-        at "GB33 BUKB 8211 1999", by chance, one time in 97."""
+        IBAN's only when the IBAN, 22 characters for the UK, ends where they
+        do."""
         assert mask("GB33 BUKB 8211 1999 7383 7284 516") == "GB33 BUKB 821119*********4516"
 
     @pytest.mark.parametrize(
@@ -412,6 +423,13 @@ class TestAnIbanReachesNoFurtherThanItself:
             "GB33 BUKB 2020 1555 5555 55",
             # Letters after the digits, still inside the IBAN.
             "MT84 MALT 0110 0001 2345 MTLC AST0 01S",
+            # Check digits that also hold at a shorter length: 16 characters.
+            "PL73 0798 5554 1795 1995 3680 5047",
+            # A bank code of a letter and digits: the digits start the run.
+            "SM86 U032 2509 8000 0000 0270 100",
+            "IT33 D331 4594 1473 1527 5639 378",
+            "GE35 UD61 6287 1516 1475 49",
+            "DO56 CO66 9528 0899 6783 8368 4613",
         ],
     )
     def test_the_iban_itself_stays_whole(self, mask, value):

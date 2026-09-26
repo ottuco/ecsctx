@@ -172,13 +172,20 @@ _WHOLE_TOKEN = rf"(?-i:{_TOKEN})(?=[.,;)]*(?![{_CRED_CHARS}:]))"
 # and all: "ptok:v1:hunter2" is one value. The characters after the prefix:
 _AFTER_PTOK = rf"[{_CRED_CHARS}:]"
 
-# ISO country codes in the SWIFT IBAN registry, as a regex alternation.
-_IBAN_PREFIX = (
-    "AD|AE|AL|AT|AZ|BA|BE|BG|BH|BR|BY|CH|CR|CY|CZ|DE|DK|DO|EE|EG|ES|FI|FO|FR|"
-    "GB|GE|GI|GL|GR|GT|HR|HU|IE|IL|IQ|IS|IT|JO|KW|KZ|LB|LC|LI|LT|LU|LV|LY|MC|"
-    "MD|ME|MK|MR|MT|MU|NL|NO|PK|PL|PS|PT|QA|RO|RS|SA|SC|SD|SE|SI|SK|SM|ST|SV|"
-    "TL|TN|TR|UA|VA|VG|XK"
-)
+# ISO country codes in the SWIFT IBAN registry, and the length of each one's
+# IBANs.
+_IBAN_LENGTHS = {
+    "AD": 24, "AE": 23, "AL": 28, "AT": 20, "AZ": 28, "BA": 20, "BE": 16, "BG": 22, "BH": 22, "BR": 29, "BY": 28,
+    "CH": 21, "CR": 22, "CY": 28, "CZ": 24, "DE": 22, "DK": 18, "DO": 28, "EE": 20, "EG": 29, "ES": 24, "FI": 18,
+    "FO": 18, "FR": 27, "GB": 22, "GE": 22, "GI": 23, "GL": 18, "GR": 27, "GT": 28, "HR": 21, "HU": 28, "IE": 22,
+    "IL": 23, "IQ": 23, "IS": 26, "IT": 27, "JO": 30, "KW": 30, "KZ": 20, "LB": 28, "LC": 32, "LI": 21, "LT": 20,
+    "LU": 20, "LV": 21, "LY": 25, "MC": 27, "MD": 24, "ME": 22, "MK": 19, "MR": 27, "MT": 31, "MU": 30, "NL": 18,
+    "NO": 15, "PK": 24, "PL": 28, "PS": 29, "PT": 25, "QA": 29, "RO": 24, "RS": 22, "SA": 24, "SC": 31, "SD": 18,
+    "SE": 24, "SI": 19, "SK": 24, "SM": 27, "ST": 25, "SV": 28, "TL": 23, "TN": 24, "TR": 26, "UA": 29, "VA": 22,
+    "VG": 24, "XK": 20,
+}
+# The country codes, as a regex alternation.
+_IBAN_PREFIX = "|".join(_IBAN_LENGTHS)
 
 # Card number rules, shared building blocks. Real-world PANs range 12-19
 # digits (ISO/IEC 7812 caps at 19; Maestro issues from 12). Whitespace, a
@@ -264,43 +271,33 @@ _DOUBLED_VALUE = bytes.maketrans(b"0123456789", bytes((0, 2, 4, 6, 8, 1, 3, 5, 7
 # An IBAN's country code and two check digits, at the start of a word, as the
 # first two digits of a run. Case-sensitive, as rule 11 is.
 _IBAN_HEAD = re.compile(rf"(?<![^\W_])(?:{_IBAN_PREFIX})\d\d(?!\d)")
-# ...or with four-character groups after them, ending right before a run: the
-# bank code has letters in it, as in "GB33 BUKB 2020 ...".
-_IBAN_BODY = re.compile(rf"(?<![^\W_])(?:{_IBAN_PREFIX})\d\d(?: [A-Z0-9]{{4}})+ \Z")
+# ...or with groups of four after them, and part of one, ending right before a
+# run: the bank code has letters in it ("GB33 BUKB 2020 ...", "IT60 X054 ...").
+_IBAN_BEFORE_RUN = re.compile(rf"(?<![^\W_])(?:{_IBAN_PREFIX})\d\d(?: [A-Z0-9]{{4}})*(?: [A-Z0-9]{{0,3}})\Z")
 # One group of an IBAN printed in fours: after a single space, and not running
 # into more letters or digits.
 _IBAN_GROUP = re.compile(r" ([A-Z0-9]{1,4})(?![A-Z0-9])")
-# The shortest and the longest IBAN (Norway's; ISO 13616's limit).
-_IBAN_MIN = 15
-_IBAN_MAX = 34
-# The longest IBAN in groups of four, spaces included.
+# The longest IBAN in groups of four, spaces included, before a run in it.
 _IBAN_REACH = 44
 
 
-def _iban_end(text: str, head: int, reach: int) -> int | None:
-    """Where the IBAN whose country code is at ``head`` ends: after the first of
-    its groups, at ``reach`` or beyond, at which its check digits hold (ISO
-    13616: the number with its first four characters moved to the end, letters
-    as 10-35, is 1 mod 97). None when they hold at no such length: then it is
-    no IBAN. Its groups are joined by a single space; a tab or a line break
-    ends it."""
-    # The country code and check digits, as the rearranged number ends in them.
-    tail = int(f"{int(text[head], 36)}{int(text[head + 1], 36)}{text[head + 2 : head + 4]}")
-    remainder, length, position = 0, 4, head + 4
-    while (group := _IBAN_GROUP.match(text, position)) is not None:
-        characters = group.group(1)
-        length += len(characters)
-        if length > _IBAN_MAX:
+def _iban_end(text: str, head: int) -> int | None:
+    """Where the IBAN whose country code is at ``head`` ends: at its country's
+    length, printed in groups of four joined by single spaces, when its check
+    digits hold (ISO 13616: the number with its first four characters moved to
+    the end, letters as 10-35, is 1 mod 97). None when the groups there do not
+    make that length, or the check digits do not hold: then it is no IBAN."""
+    wanted = _IBAN_LENGTHS[text[head : head + 2]] - 4
+    characters, position = [], head + 4
+    while wanted:
+        group = _IBAN_GROUP.match(text, position)
+        if group is None or len(group.group(1)) != min(4, wanted):
             return None
-        for character in characters:
-            value = int(character, 36)
-            remainder = (remainder * (100 if value > 9 else 10) + value) % 97
+        characters.append(group.group(1))
+        wanted -= len(group.group(1))
         position = group.end()
-        if length >= _IBAN_MIN and position >= reach and (remainder * 1_000_000 + tail) % 97 == 1:
-            return position
-        if len(characters) < 4:
-            return None  # a shorter group is the last one
-    return None
+    rearranged = "".join(characters) + text[head : head + 4]
+    return position if int("".join(str(int(character, 36)) for character in rearranged)) % 97 == 1 else None
 
 
 def _card_style(sizes: list[int]) -> bool:
@@ -354,19 +351,19 @@ class _CardRun:
         self.hi = len(self.sizes) - 1 if self.masked_after else len(self.sizes)
         self.before = text[start - 1] if start else ""
         # The run's leading groups that are an IBAN's: one whose country code
-        # is right before its first two digits, or before four-character groups
-        # right before the run. Only the IBAN itself, never what follows it.
-        # After a bank code with letters ("GB33 BUKB "), a run is read as any
-        # other unless the IBAN holds all of it: those digits could start a
-        # number of their own.
+        # is right before its first two digits, or before its groups right
+        # before the run. Only the IBAN itself, never what follows it. After a
+        # bank code with letters ("GB33 BUKB "), a run is read as any other
+        # unless the IBAN holds all of it: those digits could start a number of
+        # their own.
         self.iban_groups = 0
         if self.sizes[0] == 2 and start >= 2 and _IBAN_HEAD.match(text, start - 2) is not None:
             head, reach = start - 2, start
-        elif (body := _IBAN_BODY.search(text, max(0, start - _IBAN_REACH), start)) is not None:
-            head, reach = body.start(), end
+        elif (before := _IBAN_BEFORE_RUN.search(text, max(0, start - _IBAN_REACH), start)) is not None:
+            head, reach = before.start(), end
         else:
             head = reach = None
-        if head is not None and (iban_end := _iban_end(text, head, reach)) is not None:
+        if head is not None and (iban_end := _iban_end(text, head)) is not None and iban_end >= reach:
             # Its groups end where a group of the run does: one separator
             # character between each two.
             covered = 0
