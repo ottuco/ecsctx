@@ -157,11 +157,16 @@ _GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
 
 
 # Credential value characters: token / base64url / JWT / hex (no whitespace).
-_CRED_VALUE = r"[A-Za-z0-9._~+/\-]"
+_CRED_CHARS = r"A-Za-z0-9._~+/\-"
+_CRED_VALUE = rf"[{_CRED_CHARS}]"
 
 # A value that is already a PII token (ptok:v1:…), which a key rule or an
 # earlier pass put there: masking it again would tokenize "ptok" and break it.
-_TOKEN_START = r"ptok:"
+# Only the exact shape, all of it (case-sensitive, as ecsctx emits it).
+_WHOLE_TOKEN = rf"(?-i:{_TOKEN})(?![{_CRED_CHARS}:])"
+# Any other value typed after "ptok:" is the credential, up to its end, colons
+# and all: "ptok:v1:hunter2" is one value. The characters after the prefix:
+_AFTER_PTOK = rf"[{_CRED_CHARS}:]"
 
 # ISO country codes in the SWIFT IBAN registry, as a regex alternation.
 _IBAN_PREFIX = (
@@ -779,7 +784,8 @@ _RULE_TABLE = (
     # 3. Credential — ":" / "=" (secret_key=abc123).
     _rule(
         "default",
-        rf"\b({_CRED_KEYWORD}[\"'\s]*[:=][\"'\s]*)(?!{_TOKEN_START})({_CRED_VALUE}+={{0,2}})",
+        rf"\b({_CRED_KEYWORD}[\"'\s]*[:=][\"'\s]*)(?!{_WHOLE_TOKEN})"
+        rf"((?:ptok:{_AFTER_PTOK}+|{_CRED_VALUE}+)={{0,2}})",
         _cred_kv,
         _has_credential,
         _sub_near_credential_words,
@@ -816,7 +822,8 @@ _RULE_TABLE = (
     _rule(
         "default",
         
-        rf"\b({_CRED_KEYWORD})\s+(?!{_TOKEN_START})(?=(?:{_CRED_VALUE})*\d)({_CRED_VALUE}{{8,}}={{0,2}})",
+        rf"\b({_CRED_KEYWORD})\s+(?!{_WHOLE_TOKEN})(?=(?:ptok:{_AFTER_PTOK}*|{_CRED_VALUE}*)\d)"
+        rf"((?:ptok:{_AFTER_PTOK}{{8,}}|{_CRED_VALUE}{{8,}})={{0,2}})",
         _cred_space,
         _has_credential,
         _sub_near_credential_words,

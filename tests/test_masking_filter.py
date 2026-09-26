@@ -44,6 +44,7 @@ from ecsctx.masking.tokens import (
     safe_tokenize,
 )
 from ecsctx.pii import configure_pii
+from ecsctx.pii.crypto import hmac_tokenize
 
 
 def _mask(msg):
@@ -68,6 +69,8 @@ def _pem(kind: str, body: str) -> str:
 
 _JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.abc123def456ghi"
 _HEX = "1a2b3c4d5e6f7a8b9c0d1e2f"
+# A real token, as tokenize() emits it: only this exact shape passes as masked.
+_A_TOKEN = hmac_tokenize("user@example.com", bytes(32), "email", "test")
 
 
 class TestCheckIfSensitiveKeyword:
@@ -154,10 +157,10 @@ class TestMakeLabelAndAlreadyMasked:
 
     def test_already_masked_detects_every_form_masking_produces(self):
         assert already_masked("[CVV-MASKED]")
-        assert already_masked("ptok:v1:abc")
+        assert already_masked(_A_TOKEN)
         assert already_masked("450875******1019")  # the bare truncated PAN
         # Pre-0.11 documents re-masked by a newer release.
-        assert already_masked("[EMAIL-MASKED:ptok:v1:abc]")
+        assert already_masked(f"[EMAIL-MASKED:{_A_TOKEN}]")
         assert already_masked("[CARD-MASKED:450875******1019]")
         assert not already_masked("plain text")
 
@@ -190,7 +193,7 @@ class TestMaskByFieldType:
 
     def test_already_masked_value_passthrough(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        already = "[EMAIL-MASKED:ptok:v1:xyz]"
+        already = f"[EMAIL-MASKED:{_A_TOKEN}]"
         assert mask_by_field_type(already, "email") == already
 
     def test_falls_back_to_bare_label_when_tokenization_raises(

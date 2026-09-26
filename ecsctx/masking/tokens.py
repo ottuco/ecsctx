@@ -15,7 +15,8 @@ from ecsctx.pii.crypto import TOKEN_PREFIX, TOKEN_VERSION
 
 # The one shape ecsctx.pii.tokenize emits (hmac_tokenize): prefix, version, and
 # an HMAC-SHA-256 digest in unpadded base64url, 43 characters. Anything else
-# that starts "ptok:" was typed that way, and is no token.
+# that starts "ptok:" was typed that way: it is no token, and is masked like
+# any other value of its type.
 _TOKEN = rf"{TOKEN_PREFIX}:v{TOKEN_VERSION}:[A-Za-z0-9_-]{{43}}"
 _TOKEN_SHAPE = re.compile(_TOKEN)
 _REDACTED = "[PII_REDACTED]"
@@ -29,9 +30,9 @@ _TRUNCATED_PAN = r"(?:\d{6})?\*{4,}\d{4}"
 
 # A whole value that masking itself produced: a bare label, a bare token, a
 # truncated PAN, or the pre-0.11 bracketed card form, which still arrives from
-# documents masked by an older release.
+# documents masked by an older release. A token only in the exact shape.
 _MASKED_VALUE = re.compile(
-    rf"\[[A-Z0-9-]+-MASKED(?::ptok:[\w:.-]+)?\]|ptok:[\w:.-]+"
+    rf"\[[A-Z0-9-]+-MASKED(?::{_TOKEN})?\]|{_TOKEN}"
     rf"|{_TRUNCATED_PAN}|\[CARD-MASKED:{_TRUNCATED_PAN}\]"
 )
 

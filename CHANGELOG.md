@@ -39,11 +39,13 @@
   space, to keep a longer number whole, so a 19-digit card number there
   shipped in clear, and a shorter one was merged with the number before it
   (`10:00:004111********1111`).
-- `safe_tokenize`, and a card key, take a value for a token only in the exact
-  shape ecsctx emits (`ptok:v1:` and 43 base64url characters). Anything
-  starting `ptok:` passed as one, so `customer_name: "ptok:Jane Payer"` shipped
-  the name in clear, a phone field shipped `ptok:+378282246310005`, and a card
-  key shipped `ptok:<PAN>`.
+- A value passes as already tokenized only in the exact shape ecsctx emits
+  (`ptok:v1:` and 43 base64url characters): in `safe_tokenize`,
+  `already_masked`, under a card key and in the credential text rules.
+  Anything starting `ptok:` passed as one, so `customer_name: "ptok:Jane Payer"`
+  shipped the name in clear, a phone field shipped `ptok:+378282246310005`, a
+  card key shipped `ptok:<PAN>`, and `password=ptok:hunter2` shipped
+  `hunter2`.
 - The phone rule no longer reads a country code and a truncated card number's
   first six as a phone number (`+965 512345******0008`).
 
