@@ -124,6 +124,9 @@ class TestACardKeyRefusesWhatStillHoldsACardNumber:
             # A card number the rule leaves: glued to a word, or to more digits.
             ("REF5123450000000008 5123450000000008", "[CARD-MASKED]"),
             ("4111 1111 1111 11111234 5123450000000008", "[CARD-MASKED]"),
+            # Written with dots or slashes, which the rule never reads.
+            ("4111.1111.1111.1111 5123450000000008", "[CARD-MASKED]"),
+            ("4111/1111/1111/1111 5123450000000008", "[CARD-MASKED]"),
         ],
     )
     def test_the_value(self, value, expected):

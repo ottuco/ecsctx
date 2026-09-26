@@ -667,6 +667,14 @@ def holds_pan_run(text: str, *, phone: bool = False) -> bool:
 # keeps one of per digit: the digit, or a star.
 _RUN = re.compile(_CARD_RUN)
 _MARK = re.compile(r"[\d*]")
+# A run of digits as a card number may be written under a card key: joined as
+# the card rule joins them, or by the dots and slashes it never reads
+# ("4111.1111.1111.1111").
+_WRITTEN_RUN = re.compile(rf"\d(?:(?:{_CARD_SEP}|[./])?\d)*")
+
+
+def _holds_a_written_run(text: str) -> bool:
+    return any(sum(character.isdigit() for character in run) >= _MIN_PAN_DIGITS for run in _WRITTEN_RUN.findall(text))
 
 
 def _overexposes_a_card(text: str, masked: str) -> bool:
@@ -728,14 +736,14 @@ def mask_card_value(value) -> str:
         # Enough digits to hide one, but not a clean PAN: scan rather than
         # collapse, so an embedded PAN is truncated and its context survives --
         # unless what the scan shows could still be one: a run of card-number
-        # length beside the truncations (each truncation's first six stay in
-        # place for this, so digits showing before it count with them), or a
-        # Luhn-valid reading the rule leaves in free text, showing more than
-        # its first six and last four.
+        # length beside the truncations, dots and slashes joining it too (each
+        # truncation's first six stay in place for this, so digits showing
+        # before it count with them), or a Luhn-valid reading the rule leaves
+        # in free text, showing more than its first six and last four.
         scanned = mask_by_patterns(text, _CARD_RULE_ONLY)
         if (
             scanned != text
-            and not holds_pan_run(_MASKED_REST.sub(" ", scanned))
+            and not _holds_a_written_run(_MASKED_REST.sub(" ", scanned))
             and not _overexposes_a_card(text, scanned)
         ):
             return scanned
