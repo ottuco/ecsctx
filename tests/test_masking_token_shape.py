@@ -138,6 +138,8 @@ class TestACredentialBehindThePrefixInText:
             ("password=ptok:v1:hunter2", "password=[SECRET-MASKED]"),
             ('"password": "ptok:hunter2"', '"password": "[SECRET-MASKED]"'),
             ("Bearer ptok:hunter2abc", "Bearer [SECRET-MASKED]"),
+            # "ptok:" counts toward the eight characters a bare value needs.
+            ("Bearer ptok:hunter2", "Bearer [SECRET-MASKED]"),
             # Not the exact shape: more after the token, or not as it is emitted.
             (f"password={_A_TOKEN}:hunter2", "password=[SECRET-MASKED]"),
             (f"password={_A_TOKEN.upper()}", "password=[SECRET-MASKED]"),
@@ -148,7 +150,19 @@ class TestACredentialBehindThePrefixInText:
 
     @pytest.mark.parametrize(
         "text",
-        [f"password={_A_TOKEN}", f"password: {_A_TOKEN}", f'"password": "{_A_TOKEN}"', f"Bearer {_A_TOKEN}"],
+        [
+            f"password={_A_TOKEN}",
+            f"password: {_A_TOKEN}",
+            f'"password": "{_A_TOKEN}"',
+            f"Bearer {_A_TOKEN}",
+            # Sentence punctuation after the token is not part of it.
+            f"password={_A_TOKEN}.",
+            f"password={_A_TOKEN}. Retry.",
+            f"password={_A_TOKEN}, then",
+            f"password={_A_TOKEN};",
+            f"(password={_A_TOKEN})",
+            f"Bearer {_A_TOKEN}.",
+        ],
     )
     def test_a_real_token_stays_whole(self, text):
         assert mask_by_all_patterns(text) == text

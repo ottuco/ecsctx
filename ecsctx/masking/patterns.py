@@ -164,8 +164,9 @@ _CRED_VALUE = rf"[{_CRED_CHARS}]"
 
 # A value that is already a PII token (ptok:v1:…), which a key rule or an
 # earlier pass put there: masking it again would tokenize "ptok" and break it.
-# Only the exact shape, all of it (case-sensitive, as ecsctx emits it).
-_WHOLE_TOKEN = rf"(?-i:{_TOKEN})(?![{_CRED_CHARS}:])"
+# Only the exact shape, all of it (case-sensitive, as ecsctx emits it), though
+# a sentence may go on after it: "password=ptok:v1:…." ends at the full stop.
+_WHOLE_TOKEN = rf"(?-i:{_TOKEN})(?=[.,;)]*(?![{_CRED_CHARS}:]))"
 # Any other value typed after "ptok:" is the credential, up to its end, colons
 # and all: "ptok:v1:hunter2" is one value. The characters after the prefix:
 _AFTER_PTOK = rf"[{_CRED_CHARS}:]"
@@ -992,12 +993,13 @@ _RULE_TABLE = (
         _payid_kv,
         _has_id,
     ),
-    # 8. Credential — bare space (Bearer abc12345).
+    # 8. Credential — bare space (Bearer abc12345). A value of eight or more
+    # characters, "ptok:" counted among them (Bearer ptok:hunter2).
     _rule(
         "default",
         
         rf"\b({_CRED_KEYWORD})\s+(?!{_WHOLE_TOKEN})(?=(?:ptok:{_AFTER_PTOK}*|{_CRED_VALUE}*)\d)"
-        rf"((?:ptok:{_AFTER_PTOK}{{8,}}|{_CRED_VALUE}{{8,}})={{0,2}})",
+        rf"((?:ptok:{_AFTER_PTOK}{{3,}}|{_CRED_VALUE}{{8,}})={{0,2}})",
         _cred_space,
         _has_credential,
         _sub_near_credential_words,

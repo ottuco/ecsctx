@@ -63,7 +63,9 @@
   Anything starting `ptok:` passed as one, so `customer_name: "ptok:Jane Payer"`
   shipped the name in clear, a phone field shipped `ptok:+378282246310005`, a
   card key shipped `ptok:<PAN>`, and `password=ptok:hunter2` shipped
-  `hunter2`.
+  `hunter2`. In the credential text rules a real token may end a sentence
+  (`password=<token>.` stays whole), and `ptok:` counts toward the eight
+  characters a bare value needs (`Bearer ptok:hunter2` is masked).
 - The phone rule no longer reads a country code and a truncated card number's
   first six as a phone number (`+965 512345******0008`).
 
