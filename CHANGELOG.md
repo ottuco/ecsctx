@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A saved card's `agreements` read through with Ottu's safe keys
+  (`ecsctx.contrib.ottu.masking.SAFE_KEYS`). Walked as part of the card, each
+  auto-debit agreement id came out as `[CARD-MASKED]`. Without the list it
+  stays masked.
+
 ## v0.15.1 (2026-09-25)
 
 ### Fixes
