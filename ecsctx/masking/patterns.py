@@ -26,6 +26,7 @@ nothing survived, and a truncation carries the BIN and the last four).
 from __future__ import annotations
 
 import re
+from collections import deque
 from collections.abc import Callable
 from functools import lru_cache
 from heapq import merge
@@ -460,27 +461,32 @@ class _CardRun:
                 first += 1
             first += 1
         phone = self.before == "+" and self.sizes[0] <= _PHONE_MAX_DIGITS
+        ends, odd, even = self.offsets, self.odd, self.even
+        # A stretch passes Luhn when its prefix sums at both ends agree, mod
+        # 10, in the array that doubles the positions its end leaves doubled.
+        # So for each end, the starts 12-19 digits back wait in a queue by
+        # their residue, one per array, and the first one waiting that is not
+        # yet too far back is the widest stretch ending there.
+        waiting = ([deque() for _ in range(10)], [deque() for _ in range(10)])
         found: list[tuple[int, int]] = []
-        ends, odd, even, hi = self.offsets, self.odd, self.even, self.hi
-        # Stretches come in order of their first group, so one ending no later
-        # than the furthest found so far lies inside that one: only a stretch
-        # reaching past it can widen what is truncated.
-        reached = first - 1
-        last = first
-        for begin in range(first, hi):
-            last = max(last, begin)
-            # The first group ending 12 digits or more after this one begins.
-            while last < hi and ends[last + 1] - ends[begin] < _MIN_PAN_DIGITS:
-                last += 1
-            start = ends[begin]
-            for stop in range(max(last, reached + 1), hi):
-                end = ends[stop + 1]
-                if end - start > _MAX_PAN_DIGITS:
-                    break
-                sums = odd if (end - 1) % 2 == 0 else even
-                if (sums[end] - sums[start]) % 10 == 0 and not (begin == stop == 0 and phone):
-                    found.append((begin, stop))
-                    reached = stop
+        begin = first
+        for stop in range(first, self.hi):
+            end = ends[stop + 1]
+            while begin <= stop and end - ends[begin] >= _MIN_PAN_DIGITS:
+                waiting[0][odd[ends[begin]] % 10].append(begin)
+                waiting[1][even[ends[begin]] % 10].append(begin)
+                begin += 1
+            doubled_odd = (end - 1) % 2 == 0
+            queue = waiting[0 if doubled_odd else 1][(odd if doubled_odd else even)[end] % 10]
+            while queue and end - ends[queue[0]] > _MAX_PAN_DIGITS:
+                queue.popleft()
+            if queue and not (queue[0] == stop == 0 and phone):
+                # Merged as they come: ends only grow, so a stretch reaching
+                # back over earlier ones swallows them.
+                widest = queue[0]
+                while found and found[-1][1] >= widest:
+                    widest = min(widest, found.pop()[0])
+                found.append((widest, stop))
         return found
 
 
