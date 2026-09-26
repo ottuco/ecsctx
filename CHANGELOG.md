@@ -51,6 +51,12 @@
   code has letters (`GB33 BUKB 2020 1555 5555 55` was part-truncated). An
   unbroken 12-19-digit run after an IBAN's check digits is a card number
   (`DE89 370400440532013000` → `DE89 370400********3000`).
+- A card key refuses a value (`[CARD-MASKED]`) that still holds a run of
+  card-number length once its card numbers are truncated. It showed the scan's
+  result whenever the scan truncated anything, so a second card number in a
+  shape the rule leaves went out beside the truncation
+  (`REF5123450000000008 5123450000000008`), and a card number inside the exact
+  token shape (`ptok:v1:4111111111111111AAA…`) passed as a token.
 - A value passes as already tokenized only in the exact shape ecsctx emits
   (`ptok:v1:` and 43 base64url characters): in `safe_tokenize`,
   `already_masked`, under a card key and in the credential text rules.

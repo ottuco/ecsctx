@@ -595,7 +595,8 @@ def mask_card_value(value) -> str:
     """
     if isinstance(value, str) and not value:
         return value  # nothing was there; see mask_by_field_type
-    if isinstance(value, str) and _SINGLE_MARKER.fullmatch(value):
+    if isinstance(value, str) and _SINGLE_MARKER.fullmatch(value) and not holds_pan_run(value):
+        # A marker, not a token-shaped string with a card number in it.
         return value
     if isinstance(value, (str, int)) and not isinstance(value, bool):
         text = str(value).strip()
@@ -608,12 +609,14 @@ def mask_card_value(value) -> str:
         # Enough digits to hide one, but not a clean PAN: scan rather than
         # collapse, so an embedded PAN is truncated and its context survives.
         scanned = mask_by_patterns(text, _CARD_RULE_ONLY)
-        if scanned != text:
+        if scanned != text and not holds_pan_run(_TRUNCATED_PAN_RE.sub(" ", scanned)):
             return scanned
         # The scan found nothing to truncate, yet the value carries twelve or
-        # more digits under a card key. `4508750**0001019` is the shape that
-        # matters: 14 of 16 digits kept, far past what PCI DSS 3.5.1 allows,
-        # and no contiguous run for the card rule to catch. Refuse it.
+        # more digits under a card key -- or it truncated one card number and
+        # left another, in a shape the rule does not read ("REF5123450000000008
+        # 5123450000000008"). `4508750**0001019` is the shape that matters: 14
+        # of 16 digits kept, far past what PCI DSS 3.5.1 allows, and no
+        # contiguous run for the card rule to catch. Refuse it.
         return f"[{make_label('card')}]"
     return f"[{make_label('card')}]"
 

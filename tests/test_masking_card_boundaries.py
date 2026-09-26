@@ -107,6 +107,32 @@ class TestACardNumberFollowedByMoreDigits:
         assert out == {"customer_name": "[NAME-MASKED]"}
 
 
+class TestACardKeyRefusesWhatStillHoldsACardNumber:
+    """A card key shows what is not a card number. It showed a scan's result
+    whenever the scan truncated anything, so a second card number in a shape
+    the rule never reads went out with it; now a value that still holds a run
+    of card-number length, beside the truncations, is refused whole."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            # Truncated by the card rule itself: nothing is left over.
+            ("4111 1111 1111 1111 5123450000000008", "411111******1111 512345******0008"),
+            ("5123 4500 0000 0008 12 25 5123450000000008", "512345******0008 12 25 512345******0008"),
+            ("5123450000000008 4111 1111 1111 1111 1234", "512345******0008 411111******1111 1234"),
+            # A card number the rule leaves: glued to a word, or to more digits.
+            ("REF5123450000000008 5123450000000008", "[CARD-MASKED]"),
+            ("4111 1111 1111 11111234 5123450000000008", "[CARD-MASKED]"),
+        ],
+    )
+    def test_the_value(self, value, expected):
+        assert _card(value) == expected
+
+    def test_a_card_number_dressed_as_a_token(self):
+        """The exact token shape, holding a card number: not passed as a token."""
+        assert _card("ptok:v1:4111111111111111" + "A" * 27) == "ptok:v1:411111******1111" + "A" * 27
+
+
 class TestLuhnDecidesBetweenReadings:
     """Digits around a separator are one card or a card and another number.
     The long group alone is the card only when it is Luhn-valid and the whole
