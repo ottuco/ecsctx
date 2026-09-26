@@ -325,6 +325,30 @@ class TestAPanOutranksEveryOtherClassification:
         out = mask_with_tokens({"customer": {"first_name": PAN, "city": "Kuwait"}})
         assert out["customer"]["first_name"] == TRUNCATED
 
+    @pytest.mark.parametrize(
+        "value", [f"Jane Payer {PAN}", "4508 7500 0000 1019 Jane Payer"]
+    )
+    def test_a_pan_inside_a_pii_value_is_the_label_not_a_token(
+        self, mask_with_tokens, value
+    ):
+        """Beside other text a PAN would be hashed with it, and the card rule
+        cannot always tell where it ends."""
+        assert mask_with_tokens({"customer_name": value}) == {
+            "customer_name": "[NAME-MASKED]"
+        }
+
+    def test_a_pan_dressed_as_a_token_is_not_let_through(self, mask_with_tokens):
+        """A token-shaped value is passed through as masked already, so the
+        check for a PAN inside must look at it too."""
+        out = mask_with_tokens({"customer_name": f"ptok:{PAN}"})
+        assert out == {"customer_name": "[NAME-MASKED]"}
+
+    def test_an_international_phone_number_still_tokenizes(self, mask_with_tokens):
+        """As many digits as a PAN, but written after "+": a phone number, as
+        the content rules read it too."""
+        out = mask_with_tokens({"customer_phone": "+966501234567"})
+        assert out["customer_phone"].startswith("ptok:v1:")
+
     def test_a_real_name_still_tokenizes(self, mask_with_tokens):
         """Not a blanket regression: only a PAN outranks the key."""
         out = mask_with_tokens({"customer_first_name": "Farhan"})

@@ -40,6 +40,7 @@ from ecsctx.masking.patterns import (
     SAFE_KEYS,
     _joined_names,
     classify_key,
+    holds_pan_run,
     int_is_pan,
     known_clean,
     mask_by_patterns,
@@ -315,6 +316,13 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     rule -- a service that never opted in keeps tokenizing a long id in a name
     field, as it does today.
 
+    A PAN inside a longer value -- a card summary's number, a card number typed
+    beside a name -- would be hashed with the rest of it, so that value gets
+    the label instead. A value shaped like a token gets no pass: `ptok:` typed
+    before a PAN would carry it out whole. The cost is a real token that
+    happens to hold such a run, about one in 10^8, which a second pass turns
+    into the label.
+
     A credential is the exception: shaped like a PAN it is masked whole, in
     every pack. Truncation shows ten digits of it -- the saved card's
     sixteen-digit gateway token, a numeric api key -- and a hash of something
@@ -322,12 +330,11 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     """
     if field_type == "secret" and pan_shaped(text):
         return f"[{make_label('secret')}]"
-    if (
-        "pci" in ctx.packs
-        and get_field_rule(field_type).tokenizable
-        and pan_shaped(text)
-    ):
-        return mask_card_value(text)
+    if "pci" in ctx.packs and get_field_rule(field_type).tokenizable:
+        if pan_shaped(text):
+            return mask_card_value(text)
+        if holds_pan_run(text):
+            return f"[{make_label(field_type)}]"
     return mask_by_field_type(text, field_type)
 
 

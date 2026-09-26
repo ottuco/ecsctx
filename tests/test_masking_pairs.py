@@ -164,6 +164,27 @@ class TestCardDetails:
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         assert mask({"card_details": CARD_DETAILS}) == {"card_details": tokenize(CARD_DETAILS, "name")}
 
+    @pytest.mark.parametrize(
+        ("pg_params", "expected"),
+        [
+            (
+                {"card_number": "5123450000000008", "card_details": "Mastercard Jane Payer 5123450000000008 01/39"},
+                {"card_number": "512345******0008", "card_details": "[NAME-MASKED]"},
+            ),
+            # The holder typed the card number into the name box.
+            (
+                {"card_holder": "5123450000000008", "card_details": "Mastercard 5123450000000008 512345******0008 01/39"},
+                {"card_holder": "512345******0008", "card_details": "[NAME-MASKED]"},
+            ),
+        ],
+        ids=["number", "holder"],
+    )
+    def test_with_a_keyset_a_pan_inside_it_is_the_label(self, token_keyset_path, pg_params, expected):
+        # A token of text holding a PAN, beside the PAN's truncation, is what
+        # FAQ 1117 forbids.
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        assert mask({"pg_params": pg_params}) == {"pg_params": expected}
+
     def test_a_pan_is_truncated_not_tokenized(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
         masked = mask(

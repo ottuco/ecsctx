@@ -280,6 +280,27 @@ def pan_shaped(text: str) -> bool:
     return _PAN_VALUE.fullmatch(text.strip()) is not None
 
 
+# A run of digits joined by single separators, as _PAN_VALUE reads a PAN, with
+# the "+" an international phone number starts with.
+_DIGIT_RUN = re.compile(r"\+?\d(?:[-\s]?\d)*")
+
+
+def holds_pan_run(text: str) -> bool:
+    """Whether ``text`` holds, anywhere in it, a run of digits long enough to
+    be a PAN.
+
+    Looser than the card rule on purpose: the rule must find where a PAN ends
+    to truncate it, and cannot when more digits follow. A run written after
+    "+" is a phone number, as the content rules read it: their phone rule runs
+    before the card rule.
+    """
+    return any(
+        not run.startswith("+")
+        and sum(character.isdigit() for character in run) >= _MIN_PAN_DIGITS
+        for run in _DIGIT_RUN.findall(text)
+    )
+
+
 def mask_card_value(value) -> str:
     """The value of a card-named key: the PAN truncated, the rest readable.
 
