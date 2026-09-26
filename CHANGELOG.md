@@ -1,5 +1,115 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A saved card's `agreements` read through with Ottu's safe keys
+  (`ecsctx.contrib.ottu.masking.SAFE_KEYS`). Walked as part of the card, each
+  auto-debit agreement id came out as `[CARD-MASKED]`. Without the list it
+  stays masked.
+- `card_details`, as a key or as a "Card Details" label beside a `value`, is
+  masked as a name. It is one string of brand, holder's name, masked number and
+  expiry, and nothing classified it, so the holder's name shipped in clear. A
+  longer key (`card_details_url`) reads as before.
+- With the `pci` pack, a value that a PII, secret, national-id or payment-id
+  key would tokenize is its label (`[NAME-MASKED]`), not a token, when it holds
+  a card number among other text. A card number typed beside a name
+  (`customer_name: "Jane 4111…"`), or a full number in a card summary, was
+  hashed with the rest of the value, beside the same PAN's truncation: the
+  pairing PCI DSS FAQ 1117 forbids. The check fails closed: any run of 12 or
+  more digits counts, so such a value holding a long reference number, a UUID
+  or hex id with a long digit run, or (with `financial_ids`) a payment id gets
+  the label too. In a phone field, a number written after `+` with at most 15
+  digits (E.164) is the phone number and keeps its token.
+- The `pci` card rule reads a whole run of digit groups, and truncates card
+  numbers it shipped in clear under an unclassified key: one followed by a
+  space and more digits (`5123450000000008 1234`), two side by side, one after
+  a number that stands free (`point 1 <PAN>`, `qty 2 <PAN>`) or belongs to
+  something else (`+965 5123450000000008`, `INV-2026 4508 7500 0000 1019`), a
+  grouped one next to other digits (`2026 4111 1111 1111 1111`), one glued to
+  a word in card-style groups (`Payer4508 7500 0000 1019`), and one grouped
+  with invisible characters (a zero-width space) or Unicode dashes (an en dash
+  for a hyphen; also under a card or name key). Unicode dashes group a card
+  number only when its card-style groups are all of their run: with other
+  digits in it (`5123–4500–0000–0008 12 25`) the dashes join a range, and the
+  run is left whole, as in 0.15.1.
+- Where the digits around a separator are one card or a card beside another
+  number, Luhn decides: no output shows more than the first six and last four
+  of any Luhn-valid reading of 12-19 digits, except over the digits the next
+  two entries leave as something else's. `5123450000000008 12` is a card and a
+  number (`512345******0008 12`; merged, it showed a last four of `0812`),
+  while `4 111111111111111` and `6011000000000000 001` are one card each. Only
+  an unbroken run splits off: a number written in groups is read whole with a
+  short group after it (`5123 4500 0000 0008 12` → `512345********0812`), and
+  `00` before a card is a Luhn-valid reading with it
+  (`10:00:00 4111111111111111` → `10:00:004111********1111`). In a longer run
+  written in groups, every Luhn-valid reading along the groups is truncated,
+  overlapping ones as one span, including a card number's own when its
+  card-style groups are glued to a word or to a truncation's stars
+  (`Payer5123 4500 0000 0008 12 25` → `Payer512345******0008 12 25`). Accepted
+  residual: a card that is not Luhn-valid itself (some 19-digit UnionPay),
+  written as a Luhn-valid long group and a short tail, is read as a card and a
+  number.
+- Left whole, as before: a longer number written in groups with no Luhn-valid
+  reading in it; an id glued to a word (`REF4111111111111111`,
+  `req42 1695000000 123`); a phone number written after `+` with at most 15
+  digits (E.164), even one that is also a card number's digits
+  (`+378282246310005 12`); and a range joined by a Unicode dash, whose sides
+  are read as two numbers, and never as one Luhn-valid reading across the dash
+  (`20260901–20260903`). Accepted residuals: a card number in groups that are
+  not card-style, glued to a word or to a truncation's stars
+  (`Card5123 4500 000 00008 …`), or split by such a dash
+  (`411111111111–1111`), shows what the rule reads of it; and the phone rule,
+  which runs first in every pack, takes phone-shaped digits at a card number's
+  end, and what is left of the card may no longer read as one: ten unbroken
+  digits before a Unicode dash (`4731592604–8–7311` →
+  `[PHONE-MASKED]–8–7311`), or a card's last digits with those after them
+  (`2026-09-26 7112\t1817\t9153\t4791\t968 433 4111` →
+  `2026-09-26 7112\t1817\t9153\t4791\t[PHONE-MASKED]`).
+- An IBAN written in groups is left whole, and only the IBAN: its country's
+  registered length, in groups of four joined by single spaces, with check
+  digits that hold (mod 97). Digits after it, or after a tab or a line break,
+  are read as any others (`DE89 3704 0044 0532 0130 00\t4111 1111 1111 1111`
+  truncates the card, as in 0.15.1). After a bank code with letters
+  (`GB33 BUKB`, `IT60 X054`) the digits start a run of their own, and are the
+  IBAN's only when the IBAN ends where the run does:
+  `GB33 BUKB 2020 1555 5555 55` is left whole (it was part-truncated), and
+  `GB28 BUKB 4111 1111 1111 1111`, 24 characters where a UK IBAN has 22,
+  truncates the card. Accepted residual: a card number after a country code,
+  check digits and a bank code with letters, together exactly that country's
+  IBAN length with check digits that hold (one time in 97), is read as that
+  IBAN (a 16-digit card after a four-character bank code makes 24 characters:
+  Saudi Arabia's, Pakistan's, Spain's and others' length). An unbroken
+  12-19-digit run after an IBAN's check digits is a card number
+  (`DE89 370400440532013000` → `DE89 370400********3000`).
+- A card key refuses a value (`[CARD-MASKED]`) that could still show a card
+  number once its card numbers are truncated: a run of card-number length
+  beside the truncations, joined by the dots or slashes the rule never reads
+  too (`4111.1111.1111.1111 5123450000000008`), the digits before a truncation
+  counting with its first six (`Card5123 4500 000 00008 7354 6958 1147`), or a
+  Luhn-valid reading the rule leaves in free text (a word's own digits, a
+  truncation's, an IBAN's, a range's sides) showing more than its first six
+  and last four.
+  It showed the scan's result whenever the scan truncated anything, so a
+  second card number in a shape the rule leaves went out beside the truncation
+  (`REF5123450000000008 5123450000000008`), and a card number inside the exact
+  token shape (`ptok:v1:4111111111111111AAA…`) passed as a token.
+- A log message holding a long run of `*` is masked in linear time. The check
+  for a truncated card number beside a possible CVV tried its stars from each
+  one of them: about a second for 16,000 stars, and sixteen for 64,000.
+- A value passes as already tokenized only in the exact shape ecsctx emits
+  (`ptok:v1:` and 43 base64url characters): in `safe_tokenize`,
+  `already_masked`, under a card key and in the credential text rules.
+  Anything starting `ptok:` passed as one, so `customer_name: "ptok:Jane Payer"`
+  shipped the name in clear, a phone field shipped `ptok:+378282246310005`, a
+  card key shipped `ptok:<PAN>`, and `password=ptok:hunter2` shipped
+  `hunter2`. In the credential text rules a real token may end a sentence
+  (`password=<token>.` stays whole), and `ptok:` counts toward the eight
+  characters a bare value needs (`Bearer ptok:hunter2` is masked).
+- The phone rule no longer reads a country code and a truncated card number's
+  first six as a phone number (`+965 512345******0008`).
+
 ## v0.15.1 (2026-09-25)
 
 ### Fixes

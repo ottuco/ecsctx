@@ -823,9 +823,9 @@ handlers that never call `format()` see masked data too — and the formatter's
 strings already known clean are not scanned twice.
 
 **Log processor path** (automatic via `mask_sensitive_data`):
-- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`), for fraud correlation. Same input always produces the same token. Where no token can be made (PII not configured, or tokenization failing) the value becomes its type's label, `[EMAIL-MASKED]`; CVV is never tokenized and carries nothing, so it keeps a bracketed label (`[CVV-MASKED]`); a card number is never tokenized either, but its truncation IS carried, so it is bare (`411111******1111`) — under any key, including a name or email field. Expiry is not masked at all. A null stays null, and an empty value stays empty.
+- When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`), for fraud correlation. Same input always produces the same token. Where no token can be made (PII not configured, or tokenization failing) the value becomes its type's label, `[EMAIL-MASKED]`; CVV is never tokenized and carries nothing, so it keeps a bracketed label (`[CVV-MASKED]`); a card number is never tokenized either, but its truncation IS carried, so it is bare (`411111******1111`) — under a card key, and with the `pci` pack under any key, including a name or email field. Expiry is not masked at all. A null stays null, and an empty value stays empty.
 - When PII is not configured: detected values become the bare label (`[EMAIL-MASKED]`) — raw PII never appears in logs.
-- Cardholder data is never tokenized: PANs are truncated to `411111******1111` whatever key they sit under — including a name or email field, because a keyed hash beside a truncation of the same PAN is the correlation PCI DSS FAQ 1117 warns about. CVV is always `[CVV-MASKED]`. **Expiry is not masked**: it is Cardholder Data rather than Sensitive Authentication Data, so PCI permits storing it, and masking it only cost the ability to read an expired-card decline. The rule to remember: **brackets mean nothing survived**.
+- Cardholder data is never tokenized: PANs are truncated to `411111******1111` whatever key they sit under — including, with the `pci` pack, a name or email field, because a keyed hash beside a truncation of the same PAN is the correlation PCI DSS FAQ 1117 warns about. With `pci`, a value that a PII, secret or id key would tokenize becomes its label instead when it holds a run of 12 or more digits among other text: a PAN typed beside a name, and also a long reference number, since the check fails closed. In a phone field, a number written after `+` with at most 15 digits (E.164) is the phone number and keeps its token. CVV is always `[CVV-MASKED]`. **Expiry is not masked**: it is Cardholder Data rather than Sensitive Authentication Data, so PCI permits storing it, and masking it only cost the ability to read an expired-card decline. The rule to remember: **brackets mean nothing survived**.
 
 **Explicit encryption API** (standalone, NOT part of the log processor pipeline):
 - `protect()` / `reveal()` use **AES-256-GCM** for randomized ciphertext (`penc:v1:<kid>:...`) when reversible encryption is needed. Requires `PII_ACCESS=full`.
@@ -974,7 +974,7 @@ Card and expiry keys are matched precisely.
 |------|-----------|---------------------|--------|
 | **Secrets** | ending in `token`, `secret`, `password`, `passwd`, `passphrase`, `passcode`, `pwd`; `authorization` (also `HTTP_AUTHORIZATION`, `Proxy-Authorization`), `cookie`, `bearer`, `basic`, `digest`, `credential(s)`, an `api`/`access`/`secret`/`private`/`hmac`/`merchant`/… `_key(s)`, `access_code` | credential forms (`default`) | `[SECRET-MASKED…]`; a PAN-shaped credential is always the label, never truncated |
 | **Emails / phones** | containing `email`; `phone`, `mobile`, `tel` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]` |
-| **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
+| **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `card_details` (the whole key); `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
 | **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no` | 12–19 digit runs (`pci`) | `411111******1111` |
 | **CVV** | containing `cvv`, `cvc`, `security code`, `verification value`, or the words `csc`, `cvd`, `cvn`, `card code` — unless what follows names something *about* one (`cvv_required`, `cvvResult`, `cardSecurityCodeError`) | keyed and bare CVV (`pci`) | `[CVV-MASKED]` |
 | **SAD** | track data (`track2`, `trackData`, `raw_track`; not `track_id`), `pin`/`pinBlock`, EMV/chip data, and ending in `cryptogram`, `cavv`, `tavv`, `aav`, `ucaf` | — | `[SAD-MASKED]` |
@@ -1006,6 +1006,51 @@ namedtuple is masked by its field names and rendered back to its repr text.
 A digit run that touches a letter is never a phone number — it is part of an
 id. The card rule still matches a PAN followed by a letter, because Track 2
 data puts a `D` separator right after it.
+
+The card rule reads a whole run of digit groups separated by a space, a hyphen,
+an invisible character (a zero-width space) or, between card-style groups that
+are all of their run, a Unicode dash (`5123–4500–0000–0008`; with other digits
+in the run, `5123–4500–0000–0008 12 25`, the dashes join a range). Where the
+digits around a separator are one card or a card beside another number, Luhn
+decides, and no output shows more than the first six and last four of any
+Luhn-valid reading of 12–19 digits, except over digits the rule leaves as
+something else's (below). An unbroken run of 12–19 digits is a card number
+wherever it stands (`4111111111111111 1234` → `411111******1111 1234`); a number
+written in groups is read whole with a short group after it
+(`5123 4500 0000 0008 12` → `512345********0812`); a card number written in
+groups may follow digits that belong to a word, a phone number or another card
+(`INV-2026 4111 1111 1111 1111`), or be glued to a word in card-style groups
+(`Payer5123 4500 0000 0008 12 25` → `Payer512345******0008 12 25`); and in a
+longer run written in groups every Luhn-valid reading is truncated.
+
+Left whole: a longer number with no Luhn-valid reading in it; an id glued to a
+word (`REF4111111111111111`); a phone number written after `+` with at most 15
+digits (E.164), even one that is also a card number's digits
+(`+378282246310005 12`); a range joined by a Unicode dash (`20260901–20260903`),
+whose sides are two numbers and never one reading across the dash; and an IBAN
+written in groups, only as far as the IBAN itself — its country's registered
+length, in groups of four joined by single spaces, with check digits that hold.
+Digits after the IBAN, or after a tab or a line break, are read as any others;
+after a bank code with letters (`GB33 BUKB 2020 1555 5555 55`,
+`IT60 X054 2811 1010 0000 0123 456`) the digits are the IBAN's only when the
+IBAN ends where their run does. An unbroken 12–19-digit run after an IBAN's
+check digits is still a card number (`DE89 370400440532013000` →
+`DE89 370400********3000`).
+
+Accepted residuals: a card number in groups that are not card-style, glued to a
+word or to a truncation's stars, or split by a range's dash, shows what the rule
+reads of it; the phone rule, which runs first, takes phone-shaped digits at a
+card number's end — ten unbroken digits before a Unicode dash
+(`4731592604–8–7311` → `[PHONE-MASKED]–8–7311`), or a card's last digits with
+those after them (`2026-09-26 7112\t1817\t9153\t4791\t968 433 4111` →
+`2026-09-26 7112\t1817\t9153\t4791\t[PHONE-MASKED]`) — and what is left of the
+card may no longer read as one; and a card number that, after a country code,
+check digits and a bank code with letters, makes exactly that country's IBAN
+length with check digits that hold (one time in 97) is read as the IBAN. Under a
+card key those values are refused (`[CARD-MASKED]`): a card key shows its scan
+only when no Luhn-valid reading in the value shows more than its first six and
+last four, and no run of card-number length is left beside the truncations, dots
+and slashes joining it too (`4111.1111.1111.1111`).
 
 ### Structural fields (never scanned)
 

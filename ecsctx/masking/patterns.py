@@ -26,11 +26,14 @@ nothing survived, and a truncation carries the BIN and the last four).
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Iterator
 from functools import lru_cache
+from heapq import merge
+from itertools import accumulate, pairwise
 from typing import NamedTuple
 
-from ecsctx.masking.tokens import _TRUNCATED_PAN, make_label, mask_by_field_type
+from ecsctx.masking.tokens import _TOKEN, _TRUNCATED_PAN, make_label, mask_by_field_type
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -157,45 +160,70 @@ _GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
 
 
 # Credential value characters: token / base64url / JWT / hex (no whitespace).
-_CRED_VALUE = r"[A-Za-z0-9._~+/\-]"
+_CRED_CHARS = r"A-Za-z0-9._~+/\-"
+_CRED_VALUE = rf"[{_CRED_CHARS}]"
 
 # A value that is already a PII token (ptok:v1:…), which a key rule or an
 # earlier pass put there: masking it again would tokenize "ptok" and break it.
-_TOKEN_START = r"ptok:"
+# Only the exact shape, all of it (case-sensitive, as ecsctx emits it), though
+# a sentence may go on after it: "password=ptok:v1:…." ends at the full stop.
+_WHOLE_TOKEN = rf"(?-i:{_TOKEN})(?=[.,;)]*(?![{_CRED_CHARS}:]))"
+# Any other value typed after "ptok:" is the credential, up to its end, colons
+# and all: "ptok:v1:hunter2" is one value. The characters after the prefix:
+_AFTER_PTOK = rf"[{_CRED_CHARS}:]"
 
-# ISO country codes in the SWIFT IBAN registry, as a regex alternation.
-_IBAN_PREFIX = (
-    "AD|AE|AL|AT|AZ|BA|BE|BG|BH|BR|BY|CH|CR|CY|CZ|DE|DK|DO|EE|EG|ES|FI|FO|FR|"
-    "GB|GE|GI|GL|GR|GT|HR|HU|IE|IL|IQ|IS|IT|JO|KW|KZ|LB|LC|LI|LT|LU|LV|LY|MC|"
-    "MD|ME|MK|MR|MT|MU|NL|NO|PK|PL|PS|PT|QA|RO|RS|SA|SC|SD|SE|SI|SK|SM|ST|SV|"
-    "TL|TN|TR|UA|VA|VG|XK"
-)
+# ISO country codes in the SWIFT IBAN registry, and the length of each one's
+# IBANs.
+_IBAN_LENGTHS = {
+    "AD": 24, "AE": 23, "AL": 28, "AT": 20, "AZ": 28, "BA": 20, "BE": 16, "BG": 22, "BH": 22, "BR": 29, "BY": 28,
+    "CH": 21, "CR": 22, "CY": 28, "CZ": 24, "DE": 22, "DK": 18, "DO": 28, "EE": 20, "EG": 29, "ES": 24, "FI": 18,
+    "FO": 18, "FR": 27, "GB": 22, "GE": 22, "GI": 23, "GL": 18, "GR": 27, "GT": 28, "HR": 21, "HU": 28, "IE": 22,
+    "IL": 23, "IQ": 23, "IS": 26, "IT": 27, "JO": 30, "KW": 30, "KZ": 20, "LB": 28, "LC": 32, "LI": 21, "LT": 20,
+    "LU": 20, "LV": 21, "LY": 25, "MC": 27, "MD": 24, "ME": 22, "MK": 19, "MR": 27, "MT": 31, "MU": 30, "NL": 18,
+    "NO": 15, "PK": 24, "PL": 28, "PS": 29, "PT": 25, "QA": 29, "RO": 24, "RS": 22, "SA": 24, "SC": 31, "SD": 18,
+    "SE": 24, "SI": 19, "SK": 24, "SM": 27, "ST": 25, "SV": 28, "TL": 23, "TN": 24, "TR": 26, "UA": 29, "VA": 22,
+    "VG": 24, "XK": 20,
+}
+# The country codes, as a regex alternation.
+_IBAN_PREFIX = "|".join(_IBAN_LENGTHS)
 
 # Card number rules, shared building blocks. Real-world PANs range 12-19
-# digits (ISO/IEC 7812 caps at 19; Maestro issues from 12). Only dash and
-# space count as real-world separators.
+# digits (ISO/IEC 7812 caps at 19; Maestro issues from 12). Whitespace, a
+# hyphen and the invisible characters a copy or an editor leaves between digits
+# separate their groups. A Unicode dash does between card-style groups -- an
+# editor turns a typed "-" into an en dash -- and elsewhere joins a range of two
+# numbers. A dot, comma or underscore never does.
 #
-# The phone, card and SSN rules put a one-character lookahead for their first
+# The phone and SSN rules put a one-character lookahead for their first
 # character in front of the lead guard: it rejects most positions before the
 # costlier lookbehind runs, without changing what matches.
 #
-# _CARD_LEAD_GUARD: a match may only start right after a real prefix (quote,
-# "([{", ":", "=", space, comma, dot, or start-of-string), not mid-digit-run
-# or glued to a letter. The extra (?<!\d ) blocks a space that's itself
-# preceded by a digit, so a differently-grouped longer number's tail chunk
-# isn't mistaken for a fresh match.
-# _CARD_TAIL_GUARD: a match may not be followed by more digits. A letter may
-# follow: Track 2 equivalent data puts a "D" separator straight after the PAN.
-# _PHONE_TAIL_GUARD also refuses a following letter — a digit run that runs
-# into letters is part of an id (a hex session_id starting with digits), and
-# the phone rule runs in every service, not only PCI ones.
-_CARD_LEAD_GUARD = r"(?:^|(?<=[\s,.:=\"'([{]))(?<!\d )"
-_CARD_TAIL_GUARD = r"(?![-\s]?\d)"
-_PHONE_TAIL_GUARD = _CARD_TAIL_GUARD + r"(?![A-Za-z])"
-# 11 more digits after the leading one = 12 total; 18 more = 19 total.
-_CARD_BODY = r"(?:[-\s]?\d){11,18}"
+# _CARD_LEAD_GUARD (the phone and SSN rules): a match may only start right
+# after a real prefix (quote, "([{", ":", "=", space, comma, dot, or
+# start-of-string), not mid-digit-run or glued to a letter. The extra (?<!\d )
+# blocks a space that's itself preceded by a digit, so a differently-grouped
+# longer number's tail chunk isn't mistaken for a fresh match. The card rule
+# reads a whole run of groups instead, and judges it with Luhn: _CardRun.
+# _PHONE_TAIL_GUARD: a match may not be followed by more digits, nor by a
+# letter — a digit run that runs into letters is part of an id (a hex
+# session_id starting with digits), and the phone rule runs in every service,
+# not only PCI ones — nor by a truncation's stars and last four: digits running
+# into those are a truncated card number's first six.
+_UNICODE_DASHES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"
+_INVISIBLE_SEPARATORS = "\u00ad\u200b\u200c\u200d\u2060\ufeff"
+_CARD_SEP = rf"[\s\-{_UNICODE_DASHES}{_INVISIBLE_SEPARATORS}]"
+_NUMBER_PREFIX = ",.:=\"'([{"
+_CARD_LEAD_GUARD = rf"(?:^|(?<=[\s{re.escape(_NUMBER_PREFIX)}]))(?<!\d )"
+_PHONE_TAIL_GUARD = r"(?![-\s]?\d)(?![A-Za-z])(?!\*{4,}\d{4})"
 # The shortest PAN issued. A value with fewer digits than this cannot be one.
 _MIN_PAN_DIGITS = 12
+_MAX_PAN_DIGITS = 19
+# E.164: a phone number has at most 15 digits, country code included.
+_PHONE_MAX_DIGITS = 15
+# What the card rule reads, as a whole: a run of digits joined by single
+# separators, with at least a card number's digits in it. A letter may end it:
+# Track 2 equivalent data puts a "D" separator straight after the PAN.
+_CARD_RUN = rf"(?<!\d)(?=\d(?:{_CARD_SEP}?\d){{{_MIN_PAN_DIGITS - 1}}})\d(?:{_CARD_SEP}?\d)*"
 
 
 def _digits_only(text: str) -> str:
@@ -230,23 +258,355 @@ def _truncate_pan(digits: str) -> str:
     return f"{'*' * (len(digits) - 4)}{digits[-4:]}"
 
 
-def _mask_truncated_card(match: re.Match) -> str:
-    # The content rule only matches 12-19 digit runs, so digits always
-    # carries a BIN and a last-4 to preserve — no short-input path needed.
-    # Deliberately not mask_by_field_type: that would tokenize (or, with
-    # PII unconfigured, collapse to a bare label), losing the truncation.
-    # Emitted bare: the truncation IS the value, and the stars alone make it a
-    # fixed point — they break the digit run so no later pass re-matches it.
-    return _truncate_pan(_digits_only(match.group(0)))
+_DIGIT_GROUP = re.compile(r"\d+")
+_NOT_DIGIT = re.compile(r"\D")
+# A truncation's stars and last four, which its first six run into. Matched
+# from the first star only: tried from every star of a long run, each attempt
+# read to the end of it.
+_MASKED_REST = re.compile(r"(?<!\*)\*{4,}\d{4}")
+_DASH_CHARS = "-" + _UNICODE_DASHES
+# An ASCII digit's value, and the value Luhn doubles it to (its digits summed).
+_DIGIT_VALUE = bytes.maketrans(b"0123456789", bytes(range(10)))
+_DOUBLED_VALUE = bytes.maketrans(b"0123456789", bytes((0, 2, 4, 6, 8, 1, 3, 5, 7, 9)))
+# An IBAN's country code and two check digits, at the start of a word, as the
+# first two digits of a run. Case-sensitive, as rule 11 is.
+_IBAN_HEAD = re.compile(rf"(?<![^\W_])(?:{_IBAN_PREFIX})\d\d(?!\d)")
+# ...or with groups of four after them, and part of one, ending right before a
+# run: the bank code has letters in it ("GB33 BUKB 2020 ...", "IT60 X054 ...").
+_IBAN_BEFORE_RUN = re.compile(rf"(?<![^\W_])(?:{_IBAN_PREFIX})\d\d(?: [A-Z0-9]{{4}})*(?: [A-Z0-9]{{0,3}})\Z")
+# One group of an IBAN printed in fours: after a single space, and not running
+# into more letters or digits.
+_IBAN_GROUP = re.compile(r" ([A-Z0-9]{1,4})(?![A-Z0-9])")
+# The longest IBAN in groups of four, spaces included, before a run in it.
+_IBAN_REACH = 44
 
 
-_PAN_VALUE = re.compile(r"\d(?:[-\s]?\d){11,18}")
+def _iban_end(text: str, head: int) -> int | None:
+    """Where the IBAN whose country code is at ``head`` ends: at its country's
+    length, printed in groups of four joined by single spaces, when its check
+    digits hold (ISO 13616: the number with its first four characters moved to
+    the end, letters as 10-35, is 1 mod 97). None when the groups there do not
+    make that length, or the check digits do not hold: then it is no IBAN."""
+    wanted = _IBAN_LENGTHS[text[head : head + 2]] - 4
+    characters, position = [], head + 4
+    while wanted:
+        group = _IBAN_GROUP.match(text, position)
+        if group is None or len(group.group(1)) != min(4, wanted):
+            return None
+        characters.append(group.group(1))
+        wanted -= len(group.group(1))
+        position = group.end()
+    rearranged = "".join(characters) + text[head : head + 4]
+    return position if int("".join(str(int(character, 36)) for character in rearranged)) % 97 == 1 else None
+
+
+def _card_style(sizes: list[int]) -> bool:
+    """Grouped the way card numbers are printed: in fours with a last group of
+    any length, or Amex's 4-6-5."""
+    return (len(sizes) >= 3 and all(size == 4 for size in sizes[:-1])) or sizes == [4, 6, 5]
+
+
+class _CardRun:
+    """One run of digit groups joined by separators, as the card rule reads it.
+
+    Two readings of the same digits, and the output truncates both:
+
+    - The rule's own, from where a number may start (_read): an unbroken run
+      of 12-19 digits is a card number wherever it stands; a number written in
+      groups is one card when it is 12-19 digits to the end of the run and does
+      not follow digits that could start the same, longer number.
+    - Every stretch of whole groups, 12-19 digits long, that passes Luhn
+      (_windows). Where a separator admits one card or a card beside another
+      number, Luhn decides; truncating each such stretch, overlapping ones as
+      one span, means no output shows more than the first six and last four of
+      a Luhn-valid reading -- but for the digits neither reads, which belong
+      to something else: an IBAN's, a word's own or a truncation's, a phone
+      number's after "+", and a range's across its dash (_windows).
+    """
+
+    def __init__(self, text: str, start: int, end: int) -> None:
+        self.text = text
+        self.start = start
+        run = text[start:end]
+        groups = _DIGIT_GROUP.findall(run)
+        # One separator character between each two groups, so a group's place
+        # in the text follows from the digits and separators before it.
+        self.seps = _NOT_DIGIT.findall(run)
+        self.sizes = list(map(len, groups))
+        self.offsets = [0, *accumulate(self.sizes)]
+        digits = "".join(groups)
+        if not digits.isascii():
+            digits = "".join(str(int(digit)) for digit in digits)
+        plain = list(digits.encode().translate(_DIGIT_VALUE))
+        doubled = list(digits.encode().translate(_DOUBLED_VALUE))
+        # Luhn sums with the odd, or the even, positions doubled, as prefix
+        # sums: any stretch's Luhn sum is one subtraction.
+        odd, even = plain[:], doubled[:]
+        odd[1::2], even[1::2] = doubled[1::2], plain[1::2]
+        self.odd, self.even = [0, *accumulate(odd)], [0, *accumulate(even)]
+        # A truncation the rule made, read again by a later pass: its last four
+        # follow its stars, its first six run into them. Neither is a number.
+        self.lo = 1 if self.sizes[0] == 4 and text[max(0, start - 4) : start] == "****" else 0
+        self.masked_after = self.sizes[-1] == 6 and _MASKED_REST.match(text, end) is not None
+        self.hi = len(self.sizes) - 1 if self.masked_after else len(self.sizes)
+        self.before = text[start - 1] if start else ""
+        # The run's leading groups that are an IBAN's: one whose country code
+        # is right before its first two digits, or before its groups right
+        # before the run. Only the IBAN itself, never what follows it. After a
+        # bank code with letters ("GB33 BUKB "), a run is read as any other
+        # unless the IBAN holds all of it: those digits could start a number of
+        # their own.
+        # Every such head is tried: a group can itself look like a country code
+        # and check digits ("GE52 GT35 7010 ...", the bank code "GT35").
+        self.iban_groups = 0
+        heads = []
+        if self.sizes[0] == 2 and start >= 2 and _IBAN_HEAD.match(text, start - 2) is not None:
+            heads.append((start - 2, start))
+        position = max(0, start - _IBAN_REACH)
+        while (before := _IBAN_BEFORE_RUN.search(text, position, start)) is not None:
+            heads.append((before.start(), end))
+            position = before.start() + 1
+        for head, reach in heads:
+            if (iban_end := _iban_end(text, head)) is not None and iban_end >= reach:
+                # Its groups end where a group of the run does: one separator
+                # character between each two.
+                covered = 0
+                while covered < len(self.sizes) and start + self.offsets[covered + 1] + covered <= iban_end:
+                    covered += 1
+                self.iban_groups = covered
+                break
+
+    def spans(self) -> list[tuple[int, int]]:
+        """The character spans to truncate, overlapping readings merged."""
+        if self.lo >= self.hi:
+            return []
+        # A Unicode dash between groups that are not card-style joins a range
+        # of two numbers: each side is read on its own, and no stretch crosses
+        # the dash.
+        cuts = [] if _card_style(self.sizes) else [
+            index + 1 for index, sep in enumerate(self.seps) if sep in _UNICODE_DASHES
+        ]
+        readings: list[tuple[int, int]] = []
+        for first, last in pairwise([self.lo, *(cut for cut in cuts if self.lo < cut < self.hi), self.hi]):
+            readings += self._read(first, last)
+        merged: list[tuple[int, int]] = []
+        # Both lists come in order of their first group.
+        for first, last in merge(readings, self._windows(cuts)):
+            if merged and first <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], last))
+            else:
+                merged.append((first, last))
+        return [(self.start + self.offsets[first] + first, self.start + self.offsets[last + 1] + last) for first, last in merged]
+
+    def luhn(self, first: int, last: int) -> bool:
+        begin, end = self.offsets[first], self.offsets[last + 1]
+        sums = self.odd if (end - 1) % 2 == 0 else self.even
+        return (sums[end] - sums[begin]) % 10 == 0
+
+    def _read(self, first: int, last: int) -> list[tuple[int, int]]:
+        """Groups first..last-1, scanned for where a card number may start, as
+        the rule's regex did: an unbroken run is one on its own; the rest of the
+        run, 12-19 digits, is one in groups. Luhn decides between the two: the
+        unbroken run alone is the card only when it passes Luhn and the whole
+        does not (a "15-digit card and a 1" that is really one 16-digit card
+        otherwise shows the card's middle)."""
+        found: list[tuple[int, int]] = []
+        # A reading must not end on digits running into a truncation's stars.
+        end_ok = last < self.hi or not self.masked_after
+        index = max(first, self.iban_groups)  # none starts inside an IBAN
+        while index < last:
+            size = self.sizes[index]
+            total = self.offsets[last] - self.offsets[index]
+            if size < _MIN_PAN_DIGITS and total > _MAX_PAN_DIGITS:
+                index += 1  # no reading starts here: too short, and too long to the end
+                continue
+            kind = self._start(index, first)
+            if kind is None:
+                index += 1
+                continue
+            refused = self._refused(index)
+            fits = end_ok and _MIN_PAN_DIGITS <= total <= _MAX_PAN_DIGITS
+            whole = (
+                kind != "plus" and fits and not refused and (kind != "letter" or _card_style(self.sizes[index:last]))
+            )
+            if kind != "letter" and _MIN_PAN_DIGITS <= size <= _MAX_PAN_DIGITS and (
+                kind != "plus" or size > _PHONE_MAX_DIGITS
+            ):
+                if whole and last - index > 1 and not (self.luhn(index, index) and not self.luhn(index, last - 1)):
+                    found.append((index, last - 1))
+                    break
+                found.append((index, index))
+                index += 1
+                continue
+            if whole:
+                long = next((k for k in range(index, last) if self.sizes[k] >= _MIN_PAN_DIGITS), None)
+                if long is not None and self.luhn(long, long) and not self.luhn(index, last - 1):
+                    found.append((long, long))
+                else:
+                    found.append((index, last - 1))
+                break
+            if refused and fits and kind != "plus":
+                # One longer number, left whole but for an unbroken run in it.
+                found += [(k, k) for k in range(index, last) if _MIN_PAN_DIGITS <= self.sizes[k] <= _MAX_PAN_DIGITS]
+                break
+            index += 1
+        return found
+
+    def _start(self, index: int, first: int) -> str | None:
+        """How a card number may start at group ``index``: "free" (after a real
+        prefix), "plus" (after a "+" -- only an unbroken run longer than a phone
+        number), "letter" (glued to a word -- only in card-style groups), or not
+        at all."""
+        if index > first:
+            return "free" if self.seps[index - 1].isspace() else None
+        if first > self.lo:
+            return None  # after a dash that joins a range
+        if self.lo == 1:
+            return "free" if self.seps[0].isspace() else None  # after a truncation
+        before = self.before
+        if not before or before.isspace() or before in _NUMBER_PREFIX:
+            return "free"
+        if before == "+":
+            ahead = self.text[self.start - 2] if self.start >= 2 else ""
+            return "plus" if not ahead or ahead.isspace() or ahead in _NUMBER_PREFIX else None
+        return "letter" if before.isalpha() else None
+
+    def _refused(self, index: int) -> bool:
+        """Whether a number in groups starting at ``index`` would be the tail of
+        one longer number: the digits before the space could start the same
+        number when they stand free, are a hyphenated group, a word's own
+        ("req42") or an IBAN's last group -- unless they are a card number
+        themselves. Digits glued to a "+", a truncation's stars or other
+        punctuation end there, as do "INV-2026"'s: a hyphenated id."""
+        if index == 0 or self.seps[index - 1] != " ":
+            return False
+        previous = index - 1
+        if _MIN_PAN_DIGITS <= self.sizes[previous] <= _MAX_PAN_DIGITS:
+            return False
+        if previous > 0:
+            return True  # a group of a longer number
+        if self.lo == 1:
+            return False  # a truncation's last four
+        before = self.before
+        if not before or before.isspace() or before in _NUMBER_PREFIX or before.isalpha():
+            return True
+        if before in _DASH_CHARS:
+            return not (self.start >= 2 and self.text[self.start - 2].isalpha())
+        return False
+
+    def _windows(self, cuts: list[int]) -> list[tuple[int, int]]:
+        """Every stretch of whole groups, 12-19 digits long, that passes Luhn,
+        except over digits that belong to something else: an IBAN's; a word's
+        own ("REF4111...", "INV-2026", a UUID's "a456-4266..."); a
+        truncation's last four; a phone number's after "+", on their own; and
+        across a range's dash (``cuts``). Digits glued to a letter or to a
+        truncation's stars that start a Luhn-valid card number of their own, in
+        card-style groups ("Payer5123 4500 0000 0008 12 25"), are a card's, not
+        the word's or the truncation's: stretches start in them as anywhere."""
+        free = max(self.lo, self.iban_groups)  # where a stretch may start
+        if free == 0 and (
+            self.before.isalpha()
+            or (self.before in _DASH_CHARS and self.start >= 2 and self.text[self.start - 2].isalpha())
+        ):
+            # A word's own digits: the group glued to it, and those it joins by
+            # dashes.
+            while free + 1 < self.hi and not self.seps[free].isspace():
+                free += 1
+            free += 1
+        bounds = [0, *(cut for cut in cuts if 0 < cut < self.hi), self.hi]
+        glued = self.lo == 1 or self.before.isalpha()
+        if free and glued and not self.iban_groups and self._starts_a_card(bounds[1]):
+            free = 0
+        phone = self.before == "+" and self.sizes[0] <= _PHONE_MAX_DIGITS
+        found: list[tuple[int, int]] = []
+        for first, last in pairwise(bounds):
+            if self.offsets[last] - self.offsets[first] < _MIN_PAN_DIGITS:
+                continue  # one side of a range, too short for a card number
+            for widest, stop in self._widest(first, last, max(first, free)):
+                if widest == stop == 0 and phone:
+                    continue
+                # Merged as they come: ends only grow, so a stretch reaching
+                # back over earlier ones swallows them.
+                while found and found[-1][1] >= widest:
+                    widest = min(widest, found.pop()[0])
+                found.append((widest, stop))
+        return found
+
+    def _starts_a_card(self, last: int) -> bool:
+        """Whether the run's first groups, before ``last``, are a Luhn-valid
+        card number in card-style groups: 4-4-x, 4-4-4-x, 4-4-4-4-x or 4-6-5."""
+        return any(
+            _card_style(self.sizes[: stop + 1])
+            and _MIN_PAN_DIGITS <= self.offsets[stop + 1] <= _MAX_PAN_DIGITS
+            and self.luhn(0, stop)
+            for stop in range(2, min(last, 5))
+        )
+
+    def overexposed(self, shown: list[bool]) -> bool:
+        """Whether a Luhn-valid stretch of whole groups, 12-19 digits long,
+        anywhere in the run -- nothing excluded -- shows more than its first six
+        and last four, when ``shown`` says which of the run's digits show. The
+        widest stretch ending at a group has the most digits between its first
+        six and last four, so it is the only one to look at."""
+        count = [0, *accumulate(shown)]
+        ends = self.offsets
+        return any(
+            count[ends[stop + 1] - 4] > count[ends[widest] + 6]
+            for widest, stop in self._widest(0, len(self.sizes), 0)
+        )
+
+    def _widest(self, first: int, last: int, free: int) -> Iterator[tuple[int, int]]:
+        """For each group first..last-1 that ends a stretch passing Luhn, the
+        widest such stretch starting at ``free`` or later."""
+        ends, odd, even = self.offsets, self.odd, self.even
+        # A stretch passes Luhn when its prefix sums at both ends agree, mod
+        # 10, in the array that doubles the positions its end leaves doubled.
+        # So for each end, the starts 12-19 digits back wait in a queue by
+        # their residue, one per array, and the first one waiting that is not
+        # yet too far back is the widest stretch ending there.
+        waiting = ([deque() for _ in range(10)], [deque() for _ in range(10)])
+        begin = free
+        for stop in range(first, last):
+            end = ends[stop + 1]
+            while begin <= stop and end - ends[begin] >= _MIN_PAN_DIGITS:
+                waiting[0][odd[ends[begin]] % 10].append(begin)
+                waiting[1][even[ends[begin]] % 10].append(begin)
+                begin += 1
+            doubled_odd = (end - 1) % 2 == 0
+            queue = waiting[0 if doubled_odd else 1][(odd if doubled_odd else even)[end] % 10]
+            while queue and end - ends[queue[0]] > _MAX_PAN_DIGITS:
+                queue.popleft()
+            if queue:
+                yield queue[0], stop
+
+
+def _mask_card_run(match: re.Match) -> str:
+    """The card rule's replacement: each card number in the run truncated, the
+    rest as written. Deliberately not mask_by_field_type: that would tokenize
+    (or, with PII unconfigured, collapse to a bare label), losing the
+    truncation. Emitted bare: the truncation IS the value, and the stars alone
+    make it a fixed point -- they break the digit run, and a later pass leaves
+    a truncation's first six and last four alone."""
+    spans = _CardRun(match.string, match.start(), match.end()).spans()
+    if not spans:
+        return match.group(0)
+    text, parts, copied = match.string, [], match.start()
+    for first, last in spans:
+        parts.append(text[copied:first])
+        parts.append(_truncate_pan(_digits_only(text[first:last])))
+        copied = last
+    parts.append(text[copied : match.end()])
+    return "".join(parts)
+
+
+# A value made only of digit groups: pan_shaped reads it with the card rule.
+_CARD_VALUE = re.compile(rf"\d(?:{_CARD_SEP}?\d)*")
 # A value that is exactly one marker ecsctx itself produces: a bare label, a
 # label with a token, or a truncated card. A marker somewhere inside a longer
 # value, or brackets around anything else, do not make it safe.
 _SINGLE_MARKER = re.compile(
-    rf"\[[A-Z0-9-]+-MASKED(?::ptok:[\w:.-]+)?\]|{_TRUNCATED_PAN}"
-    rf"|\[CARD-MASKED:{_TRUNCATED_PAN}\]|ptok:[\w:.-]+"
+    rf"\[[A-Z0-9-]+-MASKED(?::{_TOKEN})?\]|{_TRUNCATED_PAN}"
+    rf"|\[CARD-MASKED:{_TRUNCATED_PAN}\]|{_TOKEN}"
 )
 
 
@@ -272,12 +632,83 @@ def int_is_pan(value: int) -> bool:
 
 
 def pan_shaped(text: str) -> bool:
-    """Whether ``text`` is, in its entirety, a PAN.
+    """Whether ``text`` is, in its entirety, one card number: 12-19 digits in
+    groups that the card rule reads as one card, not as a card beside another
+    number ("5123450000000008 12").
 
     Public because the filter asks it of a value that a PII key already
     claimed: a card number typed into the name box is still a card number.
     """
-    return _PAN_VALUE.fullmatch(text.strip()) is not None
+    value = text.strip()
+    if not _CARD_VALUE.fullmatch(value):
+        return False
+    if not _MIN_PAN_DIGITS <= sum(character.isdigit() for character in value) <= _MAX_PAN_DIGITS:
+        return False
+    return _CardRun(value, 0, len(value)).spans() == [(0, len(value))]
+
+
+# A run of digits joined by single separators, as the card rule reads one, with
+# the "+" an international phone number starts with.
+_DIGIT_RUN = re.compile(rf"\+?\d(?:{_CARD_SEP}?\d)*")
+
+
+def holds_pan_run(text: str, *, phone: bool = False) -> bool:
+    """Whether ``text`` holds, anywhere in it, a run of digits long enough to
+    be a PAN.
+
+    Looser than the card rule on purpose: the rule must find where a PAN ends
+    to truncate it, and cannot when more digits follow. In a phone field
+    (``phone``) a run written after "+" is the phone number, unless it is
+    longer than E.164 allows -- a PAN, or a phone number with a PAN after it.
+    Anywhere else "+" changes nothing: in an email address it is
+    plus-addressing.
+    """
+    for run in _DIGIT_RUN.findall(text):
+        digits = sum(character.isdigit() for character in run)
+        if phone and run.startswith("+") and digits <= _PHONE_MAX_DIGITS:
+            continue
+        if digits >= _MIN_PAN_DIGITS:
+            return True
+    return False
+
+
+# A run the card rule reads, wherever it is in a value; and what a truncation
+# keeps one of per digit: the digit, or a star.
+_RUN = re.compile(_CARD_RUN)
+_MARK = re.compile(r"[\d*]")
+# A run of digits as a card number may be written under a card key: joined as
+# the card rule joins them, or by the dots and slashes it never reads
+# ("4111.1111.1111.1111").
+_WRITTEN_RUN = re.compile(rf"\d(?:(?:{_CARD_SEP}|[./])?\d)*")
+
+
+def _holds_a_written_run(text: str) -> bool:
+    return any(sum(character.isdigit() for character in run) >= _MIN_PAN_DIGITS for run in _WRITTEN_RUN.findall(text))
+
+
+def _overexposes_a_card(text: str, masked: str) -> bool:
+    """Whether ``masked``, the card rule's output for ``text``, shows more than
+    the first six and last four of a Luhn-valid reading of ``text``: any stretch
+    of whole groups, 12-19 digits long, wherever it stands. The rule leaves an
+    IBAN's digits, a word's own and each side of a range, which in free text
+    are not a card number; under a card key they may be one."""
+    # A truncation keeps one character per digit it hides or keeps, and the
+    # rule leaves stars as they were: the digits and stars of the two line up.
+    marks = [mark != "*" for mark in _MARK.findall(masked)]
+    if len(marks) != len(_MARK.findall(text)):
+        return True
+    before = position = 0  # marks before the run, and where counting stopped
+    for run in _RUN.finditer(text):
+        before += len(_MARK.findall(text, position, run.start()))
+        digits = len(_MARK.findall(text, run.start(), run.end()))  # no star in a run
+        shown = marks[before : before + digits]
+        # A digit showing among the run's first six or last four is among those
+        # of any stretch inside it too: only one between them can show more.
+        if any(shown[6 : digits - 4]) and _CardRun(text, run.start(), run.end()).overexposed(shown):
+            return True
+        before += digits
+        position = run.end()
+    return False
 
 
 def mask_card_value(value) -> str:
@@ -300,25 +731,37 @@ def mask_card_value(value) -> str:
     """
     if isinstance(value, str) and not value:
         return value  # nothing was there; see mask_by_field_type
-    if isinstance(value, str) and _SINGLE_MARKER.fullmatch(value):
+    if isinstance(value, str) and _SINGLE_MARKER.fullmatch(value) and not holds_pan_run(value):
+        # A marker, not a token-shaped string with a card number in it.
         return value
     if isinstance(value, (str, int)) and not isinstance(value, bool):
         text = str(value).strip()
-        if _PAN_VALUE.fullmatch(text):
+        if pan_shaped(text):
             return _truncate_pan(_digits_only(text))
         if sum(character.isdigit() for character in text) < _MIN_PAN_DIGITS:
             # Too few digits to be a PAN whatever else it holds: 12 is the
             # shortest one issued (ISO/IEC 7812; Maestro issues from 12).
             return value
         # Enough digits to hide one, but not a clean PAN: scan rather than
-        # collapse, so an embedded PAN is truncated and its context survives.
+        # collapse, so an embedded PAN is truncated and its context survives --
+        # unless what the scan shows could still be one: a run of card-number
+        # length beside the truncations, dots and slashes joining it too (each
+        # truncation's first six stay in place for this, so digits showing
+        # before it count with them), or a Luhn-valid reading the rule leaves
+        # in free text, showing more than its first six and last four.
         scanned = mask_by_patterns(text, _CARD_RULE_ONLY)
-        if scanned != text:
+        if (
+            scanned != text
+            and not _holds_a_written_run(_MASKED_REST.sub(" ", scanned))
+            and not _overexposes_a_card(text, scanned)
+        ):
             return scanned
         # The scan found nothing to truncate, yet the value carries twelve or
-        # more digits under a card key. `4508750**0001019` is the shape that
-        # matters: 14 of 16 digits kept, far past what PCI DSS 3.5.1 allows,
-        # and no contiguous run for the card rule to catch. Refuse it.
+        # more digits under a card key -- or it truncated one card number and
+        # left another, in a shape the rule does not read ("REF5123450000000008
+        # 5123450000000008"). `4508750**0001019` is the shape that matters: 14
+        # of 16 digits kept, far past what PCI DSS 3.5.1 allows, and no
+        # contiguous run for the card rule to catch. Refuse it.
         return f"[{make_label('card')}]"
     return f"[{make_label('card')}]"
 
@@ -471,7 +914,7 @@ _CRED_LITERALS = (
 )
 _CVV_LITERALS = ("cvv", "cvc", "security")
 _PHONE_SHAPE = re.compile(r"\+\d|\d{3}\D{0,2}\d{3}\D?\d{4}")
-_CARD_SHAPE = re.compile(r"\d(?:[-\s]?\d){11}")
+_CARD_SHAPE = re.compile(rf"\d(?:{_CARD_SEP}?\d){{11}}")
 _SSN_SHAPE = re.compile(r"\d{3}[-\s]?\d{2}[-\s]?\d{4}")
 _IBAN_SHAPE = re.compile(r"[A-Za-z]{2}\d{2}")
 _THREE_DIGITS = re.compile(r"\d{3}")
@@ -660,7 +1103,8 @@ _RULE_TABLE = (
     # 3. Credential — ":" / "=" (secret_key=abc123).
     _rule(
         "default",
-        rf"\b({_CRED_KEYWORD}[\"'\s]*[:=][\"'\s]*)(?!{_TOKEN_START})({_CRED_VALUE}+={{0,2}})",
+        rf"\b({_CRED_KEYWORD}[\"'\s]*[:=][\"'\s]*)(?!{_WHOLE_TOKEN})"
+        rf"((?:ptok:{_AFTER_PTOK}+|{_CRED_VALUE}+)={{0,2}})",
         _cred_kv,
         _has_credential,
         _sub_near_credential_words,
@@ -693,11 +1137,13 @@ _RULE_TABLE = (
         _payid_kv,
         _has_id,
     ),
-    # 8. Credential — bare space (Bearer abc12345).
+    # 8. Credential — bare space (Bearer abc12345). A value of eight or more
+    # characters, "ptok:" counted among them (Bearer ptok:hunter2).
     _rule(
         "default",
         
-        rf"\b({_CRED_KEYWORD})\s+(?!{_TOKEN_START})(?=(?:{_CRED_VALUE})*\d)({_CRED_VALUE}{{8,}}={{0,2}})",
+        rf"\b({_CRED_KEYWORD})\s+(?!{_WHOLE_TOKEN})(?=(?:ptok:{_AFTER_PTOK}*|{_CRED_VALUE}*)\d)"
+        rf"((?:ptok:{_AFTER_PTOK}{{3,}}|{_CRED_VALUE}{{8,}})={{0,2}})",
         _cred_space,
         _has_credential,
         _sub_near_credential_words,
@@ -757,14 +1203,15 @@ _RULE_TABLE = (
     ),
     # 15. Card number — truncated, bare (411111******1111; last 4
     # only below 15 digits, see _truncate_pan); the middle never survives,
-    # starred or not.
+    # starred or not. A whole run of digit groups is read at once, and Luhn
+    # decides between its readings: _CardRun.
     # The output stays inside the [LABEL…] convention so already_masked()
     # idempotency holds, and the stars break the digit run so a second
     # pass cannot re-match it.
     _rule(
         "pci",
-        r"(?=\d)" + _CARD_LEAD_GUARD + r"\d" + _CARD_BODY + _CARD_TAIL_GUARD,
-        _mask_truncated_card,
+        _CARD_RUN,
+        _mask_card_run,
         _has_card_shape,
     ),
     # 16. SSN (123-45-6789).
@@ -803,7 +1250,7 @@ RULES: tuple[Rule, ...] = tuple(
 # saying what it is, so the other rules have nothing to add and applying them
 # would mask by shape inside a field that is not about them.
 _CARD_RULE_ONLY: tuple[Rule, ...] = tuple(
-    rule for rule in RULES if rule.repl is _mask_truncated_card
+    rule for rule in RULES if rule.repl is _mask_card_run
 )
 
 
@@ -1119,6 +1566,12 @@ def _is_holder_key(words: list[str]) -> bool:
     return "holder" in words
 
 
+# A card summary -- brand, holder's name, masked number and expiry in one
+# string -- carries the holder's name. The whole key only: `card_details_url`
+# is not one.
+_CARD_SUMMARY_KEY = "carddetails"
+
+
 # Key names only. The content rules have to find a credential anywhere in a
 # line; a key name *is* the name of its value, so the credential word is
 # matched at the END -- `scheme_token` and `api_token` name a token, while
@@ -1328,7 +1781,9 @@ def classify_key(key: str, packs: frozenset[str], safe: frozenset[str] = frozens
                 continue
         if field_type == "phone" and _is_tel_key(words):
             return "phone"
-        if field_type == "generic" and (_is_name_key(joined) or _is_holder_key(words)):
+        if field_type == "generic" and (
+            _is_name_key(joined) or _is_holder_key(words) or joined == _CARD_SUMMARY_KEY
+        ):
             # Also between address and generic, as before.
             return "name"
         if pattern.search(lowered):
