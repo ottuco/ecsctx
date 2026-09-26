@@ -1007,14 +1007,22 @@ A digit run that touches a letter is never a phone number — it is part of an
 id. The card rule still matches a PAN followed by a letter, because Track 2
 data puts a `D` separator right after it.
 
-The card rule reads groups separated by a space, a hyphen or a Unicode dash
-(`5123–4500–0000–0008`). An unbroken run of 12–19 digits is a card number on
-its own, whatever numbers stand beside it (`4111111111111111 1234` →
-`411111******1111 1234`, `10:00:00 4111111111111111` →
-`10:00:00 411111******1111`), and a card number written in groups may follow
-digits that belong to a word, a phone number or another card
-(`INV-2026 4111 1111 1111 1111`). A longer number written in groups, or an
-IBAN, is left whole.
+The card rule reads a whole run of digit groups separated by a space, a hyphen,
+an invisible character (a zero-width space) or, between card-style groups, a
+Unicode dash (`5123–4500–0000–0008`). Where the digits around a separator are
+one card or a card beside another number, Luhn decides, and no output shows
+more than the first six and last four of any Luhn-valid reading of 12–19
+digits. An unbroken run of 12–19 digits is a card number wherever it stands
+(`4111111111111111 1234` → `411111******1111 1234`); a number written in groups
+is read whole with a short group after it (`5123 4500 0000 0008 12` →
+`512345********0812`); a card number written in groups may follow digits that
+belong to a word, a phone number or another card
+(`INV-2026 4111 1111 1111 1111`); and in a longer run written in groups every
+Luhn-valid reading is truncated. A longer number with no Luhn-valid reading in
+it, a range joined by a Unicode dash (`20260901–20260930`) and an IBAN written
+in groups are left whole; an unbroken 12–19-digit run after an IBAN's check
+digits is still a card number (`DE89 370400440532013000` →
+`DE89 370400********3000`).
 
 ### Structural fields (never scanned)
 

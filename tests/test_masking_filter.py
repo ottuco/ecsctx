@@ -599,7 +599,7 @@ IBAN_MASKED_CASES = [
     ("iban-bh-digit-run-collision", "acct BH67BMAG00001299123456 debited", "acct [IBAN-MASKED] debited"),
     ("iban-qa-digit-run-collision", "acct QA58DOHB00001234567890ABCDEFG debited", "acct [IBAN-MASKED] debited"),
     # Synthetic IBANs pinned to exact digit-run lengths, covering the card
-    # rule's collision window directly (_CARD_BODY matches a 12-19-digit
+    # rule's collision window directly (the card rule reads a 12-19-digit
     # run). 13 (2 check digits + 11 BBAN) is the shortest constructible case.
     ("iban-digit-run-13-just-over-card-floor", "acct GB1212345678901 debited", "acct [IBAN-MASKED] debited"),
     ("iban-digit-run-16-classic-pan-length", "acct GB3412345678901234 debited", "acct [IBAN-MASKED] debited"),
@@ -825,8 +825,21 @@ CARD_NUMBER_CASES = [
     ("card-19d-other-preceded-by-digit-space", "point 1 1234567891234567891", "point 1 123456*********7891"),
     ("card-16d-after-a-quantity", "qty 2 4111111111111111", "qty 2 411111******1111"),
     ("card-19d-after-a-quantity", "qty 2 9123456789123456789", "qty 2 912345*********6789"),
-    ("card-16d-after-a-time-of-day", "10:00:00 4111111111111111", "10:00:00 411111******1111"),
+    # "00" and the card are a Luhn-valid reading (zeros never change Luhn), so
+    # the time's last field is truncated with it: first four and last four.
+    ("card-16d-after-a-time-of-day", "10:00:00 4111111111111111", "10:00:004111********1111"),
     ("card-19d-after-a-time-of-day", "10:00:00 9123456789123456789", "10:00:00 912345*********6789"),
+    # Longer than a card, in groups: every Luhn-valid reading of 12-19 digits
+    # along the groups is truncated, overlapping ones as one span. These were
+    # NOT_MASKED (and the 4x4 ones the CVV space-cascade xfail) until a
+    # reading inside them was checked with Luhn.
+    ("card-20d-9-space-luhn-reading", "912345 678912 34567891", "912345**********7891"),
+    ("card-20d-9-dash-luhn-reading", "9123-4567-8912-34567891", "912345**********7891"),
+    ("card-20d-other-space-luhn-reading", "112345 678912 34567891", "112345 **********7891"),
+    ("card-20d-other-dash-luhn-reading", "1123-4567-8912-34567891", "1123-4567-********7891"),
+    ("card-20d-9-space-4x4-luhn-reading", "9123 4567 8912 34567891", "912345**********7891"),
+    # The CVV rule still claims the two groups the card reading leaves.
+    ("card-20d-other-space-4x4-luhn-reading", "1123 4567 8912 34567891", "[CVV-MASKED] [CVV-MASKED] ********7891"),
 ]
 
 
@@ -957,15 +970,15 @@ NOT_MASKED = [
     ("card-11d-9-continuous", "91234567891"),
     ("card-20d-9-continuous", "91234567891234567891"),
     ("card-11d-9-space", "912345 67891"),
-    ("card-20d-9-space", "912345 678912 34567891"),
+    ("card-20d-space-no-luhn-reading", "223307 924402 68599528"),
     ("card-11d-9-dash", "9123-4567-891"),
-    ("card-20d-9-dash", "9123-4567-8912-34567891"),
+    ("card-20d-dash-no-luhn-reading", "0109-2815-9013-96245957"),
     ("card-11d-other-continuous", "11234567891"),
     ("card-20d-other-continuous", "11234567891234567891"),
     ("card-11d-other-space", "112345 67891"),
-    ("card-20d-other-space", "112345 678912 34567891"),
+    ("card-20d-other-space-no-luhn-reading", "907866 661760 31372159"),
     ("card-11d-other-dash", "1123-4567-891"),
-    ("card-20d-other-dash", "1123-4567-8912-34567891"),
+    ("card-20d-other-dash-no-luhn-reading", "1177-7741-2154-72803852"),
     # Email rule requires a literal "@", a domain, a dot, and a 2+ letter
     # TLD — anything short of that full shape is left alone.
     ("email-no-tld-dot", "user@localhost"),
@@ -997,15 +1010,17 @@ def test_does_not_over_mask(label, sample):
 # rows stay — their first 12 digits ARE card-shaped, so the text does carry
 # card context and the rule is entitled to look at the groups. Closing those
 # needs the card rules to claim the whole run first, which is a change to
-# rule 15, not to the CVV rule.
+# rule 15, not to the CVV rule. The rows here have no Luhn-valid reading of
+# 12-19 digits; the earlier ones had one, and are truncated as cards now
+# (CARD_NUMBER_CASES).
 #
 # The in-range 4-4-4-4 rows this list carried in the ported source are no
 # longer affected — truncated-PAN masking claims the whole run before the
 # CVV rule can see the groups — and now live in CARD_NUMBER_CASES.
 # ---------------------------------------------------------------------------
 OVER_MASKED_BECAUSE_OF_CVV = [
-    ("card-20d-9-space", "9123 4567 8912 34567891"),
-    ("card-20d-other-space", "1123 4567 8912 34567891"),
+    ("card-20d-space-no-luhn-reading", "1123 4567 8912 34567890"),
+    ("card-20d-other-space-no-luhn-reading", "0109 2815 9013 96245957"),
 ]
 
 
