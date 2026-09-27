@@ -11,8 +11,14 @@ import re
 
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.pii import tokenize as _pii_tokenize
+from ecsctx.pii.crypto import TOKEN_PREFIX, TOKEN_VERSION
 
-_TOKEN_PREFIX = "ptok:"
+# The one shape ecsctx.pii.tokenize emits (hmac_tokenize): prefix, version, and
+# an HMAC-SHA-256 digest in unpadded base64url, 43 characters. Anything else
+# that starts "ptok:" was typed that way: it is no token, and is masked like
+# any other value of its type.
+_TOKEN = rf"{TOKEN_PREFIX}:v{TOKEN_VERSION}:[A-Za-z0-9_-]{{43}}"
+_TOKEN_SHAPE = re.compile(_TOKEN)
 _REDACTED = "[PII_REDACTED]"
 
 # What _truncate_pan produces: the BIN, stars, and the last four (15 digits and
@@ -20,19 +26,21 @@ _REDACTED = "[PII_REDACTED]"
 # gone, THIS SHAPE IS THE MARKER -- it is the only thing saying "a PAN already
 # passed through here", so it has to be recognisable on its own. Five stars is
 # the fewest _truncate_pan ever emits (a 15-digit PAN); {4,} leaves a margin.
-_TRUNCATED_PAN = r"(?:\d{6})?\*{4,}\d{4}"
+# The stars match from the first one only: a search tried from every star of a
+# long run reads to the end of it each time, which is quadratic.
+_TRUNCATED_PAN = r"(?:\d{6})?(?<!\*)\*{4,}\d{4}"
 
 # A whole value that masking itself produced: a bare label, a bare token, a
 # truncated PAN, or the pre-0.11 bracketed card form, which still arrives from
-# documents masked by an older release.
+# documents masked by an older release. A token only in the exact shape.
 _MASKED_VALUE = re.compile(
-    rf"\[[A-Z0-9-]+-MASKED(?::ptok:[\w:.-]+)?\]|ptok:[\w:.-]+"
+    rf"\[[A-Z0-9-]+-MASKED(?::{_TOKEN})?\]|{_TOKEN}"
     rf"|{_TRUNCATED_PAN}|\[CARD-MASKED:{_TRUNCATED_PAN}\]"
 )
 
 
 def already_tokenized(text: str) -> bool:
-    return text.startswith(_TOKEN_PREFIX)
+    return _TOKEN_SHAPE.fullmatch(text) is not None
 
 
 def safe_tokenize(value: str, field_type: str = "generic") -> str:

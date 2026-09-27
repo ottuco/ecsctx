@@ -155,9 +155,8 @@ class TestTheCvvBesideAMaskedPanStillMasks:
     """
 
     def test_a_cvv_after_a_pan_in_one_string(self):
-        # A word between them on purpose: "<pan> 123" is itself a valid
-        # 19-digit space-separated PAN, and the card rule claims the whole run
-        # -- correct, and not what this test is about.
+        # A word between them on purpose: the context the CVV rule finds is
+        # the truncation, not a digit run beside the CVV.
         out = mask_by_all_patterns(f"{PAN} ref 123")
         assert TRUNCATED in out
         assert "[CVV-MASKED]" in out
@@ -324,6 +323,71 @@ class TestAPanOutranksEveryOtherClassification:
         container's type rather than by a key of its own."""
         out = mask_with_tokens({"customer": {"first_name": PAN, "city": "Kuwait"}})
         assert out["customer"]["first_name"] == TRUNCATED
+
+    @pytest.mark.parametrize(
+        "value", [f"Jane Payer {PAN}", "4508 7500 0000 1019 Jane Payer"]
+    )
+    def test_a_pan_inside_a_pii_value_is_the_label_not_a_token(
+        self, mask_with_tokens, value
+    ):
+        """Beside other text a PAN would be hashed with it, and the card rule
+        cannot always tell where it ends."""
+        assert mask_with_tokens({"customer_name": value}) == {
+            "customer_name": "[NAME-MASKED]"
+        }
+
+    def test_a_pan_dressed_as_a_token_is_not_let_through(self, mask_with_tokens):
+        """A token-shaped value is passed through as masked already, so the
+        check for a PAN inside must look at it too."""
+        out = mask_with_tokens({"customer_name": f"ptok:{PAN}"})
+        assert out == {"customer_name": "[NAME-MASKED]"}
+
+    @pytest.mark.parametrize(
+        "phone",
+        [
+            "+966501234567",
+            "+971 50 123 4567",
+            "+201001234567",
+            "+86 138 0013 8000",
+            "+62 812 3456 7890",
+            # 15 digits, the most E.164 allows.
+            "+49 30 1234 5678 901",
+        ],
+    )
+    def test_an_international_phone_number_still_tokenizes(
+        self, mask_with_tokens, phone
+    ):
+        """As many digits as a PAN, but a phone number: written after "+" in a
+        phone field, within the 15 digits E.164 allows."""
+        out = mask_with_tokens({"customer_phone": phone})
+        assert out["customer_phone"].startswith("ptok:v1:")
+
+    @pytest.mark.parametrize(
+        ("key", "value", "label"),
+        [
+            # Longer than E.164 allows.
+            ("customer_phone", "+5123450000000008", "[PHONE-MASKED]"),
+            ("customer_phone", "+9655123450000000008", "[PHONE-MASKED]"),
+            # A phone number, then a PAN.
+            ("customer_phone", "+96551234567 5123450000000008", "[PHONE-MASKED]"),
+            ("customer_phone", "ptok:+5123450000000008", "[PHONE-MASKED]"),
+            # Not written after "+", so not written as a phone number.
+            ("customer_phone", "tel 378282246310005", "[PHONE-MASKED]"),
+            # Outside a phone field "+" is no phone number: plus-addressing here.
+            ("customer_email", "jane+5123450000000008@example.com", "[EMAIL-MASKED]"),
+            ("customer_email", "jane+378282246310005@example.com", "[EMAIL-MASKED]"),
+            ("customer_name", "Jane +5123450000000008", "[NAME-MASKED]"),
+            (
+                "card_details",
+                "Mastercard Jane +5123450000000008 01/39",
+                "[NAME-MASKED]",
+            ),
+        ],
+    )
+    def test_a_plus_does_not_make_a_pan_a_phone_number(
+        self, mask_with_tokens, key, value, label
+    ):
+        assert mask_with_tokens({key: value}) == {key: label}
 
     def test_a_real_name_still_tokenizes(self, mask_with_tokens):
         """Not a blanket regression: only a PAN outranks the key."""

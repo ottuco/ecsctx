@@ -31,6 +31,9 @@ SAFE_KEYS = frozenset({
     # The saved card's gateway code, read through when the card is walked under
     # its `token` key in ottu_pg's webhook.
     "pg_code",
+    # The saved card's auto-debit agreement ids, read through when the card is
+    # walked under its `token` key in ottu_pg's webhook. Not card data.
+    "agreements",
     # Ottu's `billing` is the fee breakdown shown on the checkout page, not an
     # address, but `billing` stays a PII container (elsewhere it holds a city
     # and a postcode). Its own keys are listed instead, so the amounts escape

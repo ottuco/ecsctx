@@ -44,6 +44,7 @@ from ecsctx.masking.tokens import (
     safe_tokenize,
 )
 from ecsctx.pii import configure_pii
+from ecsctx.pii.crypto import hmac_tokenize
 
 
 def _mask(msg):
@@ -68,6 +69,8 @@ def _pem(kind: str, body: str) -> str:
 
 _JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.abc123def456ghi"
 _HEX = "1a2b3c4d5e6f7a8b9c0d1e2f"
+# A real token, as tokenize() emits it: only this exact shape passes as masked.
+_A_TOKEN = hmac_tokenize("user@example.com", bytes(32), "email", "test")
 
 
 class TestCheckIfSensitiveKeyword:
@@ -154,10 +157,10 @@ class TestMakeLabelAndAlreadyMasked:
 
     def test_already_masked_detects_every_form_masking_produces(self):
         assert already_masked("[CVV-MASKED]")
-        assert already_masked("ptok:v1:abc")
+        assert already_masked(_A_TOKEN)
         assert already_masked("450875******1019")  # the bare truncated PAN
         # Pre-0.11 documents re-masked by a newer release.
-        assert already_masked("[EMAIL-MASKED:ptok:v1:abc]")
+        assert already_masked(f"[EMAIL-MASKED:{_A_TOKEN}]")
         assert already_masked("[CARD-MASKED:450875******1019]")
         assert not already_masked("plain text")
 
@@ -190,7 +193,7 @@ class TestMaskByFieldType:
 
     def test_already_masked_value_passthrough(self, token_keyset_path):
         configure_pii(token_keyset_path=token_keyset_path, env="test")
-        already = "[EMAIL-MASKED:ptok:v1:xyz]"
+        already = f"[EMAIL-MASKED:{_A_TOKEN}]"
         assert mask_by_field_type(already, "email") == already
 
     def test_falls_back_to_bare_label_when_tokenization_raises(
@@ -596,7 +599,7 @@ IBAN_MASKED_CASES = [
     ("iban-bh-digit-run-collision", "acct BH67BMAG00001299123456 debited", "acct [IBAN-MASKED] debited"),
     ("iban-qa-digit-run-collision", "acct QA58DOHB00001234567890ABCDEFG debited", "acct [IBAN-MASKED] debited"),
     # Synthetic IBANs pinned to exact digit-run lengths, covering the card
-    # rule's collision window directly (_CARD_BODY matches a 12-19-digit
+    # rule's collision window directly (the card rule reads a 12-19-digit
     # run). 13 (2 check digits + 11 BBAN) is the shortest constructible case.
     ("iban-digit-run-13-just-over-card-floor", "acct GB1212345678901 debited", "acct [IBAN-MASKED] debited"),
     ("iban-digit-run-16-classic-pan-length", "acct GB3412345678901234 debited", "acct [IBAN-MASKED] debited"),
@@ -713,11 +716,12 @@ def test_masks_jwt(label, sample, expected):
 
 
 # ---------------------------------------------------------------------------
-# Card numbers (PAN), 12-19 digits, dash/space separators. ecsctx truncates
-# to first 6 + last 4 (#159795, PCI DSS 3.4.1) — the leading digit no longer
-# changes the outcome, and every row below IS its own truncated core, bare:
-# brackets mean nothing survived, and a truncation carries the BIN and the last
-# four. Separators are stripped, so grouped input comes back contiguous.
+# Card numbers (PAN), 12-19 digits, dash (ASCII or Unicode)/space separators.
+# ecsctx truncates to first 6 + last 4 (#159795, PCI DSS 3.4.1) — the leading
+# digit no longer changes the outcome, and every row below IS its own truncated
+# core, bare: brackets mean nothing survived, and a truncation carries the BIN
+# and the last four. Separators are stripped, so grouped input comes back
+# contiguous; a number standing beside an unbroken run is kept as written.
 # ---------------------------------------------------------------------------
 CARD_NUMBER_CASES = [
     # continuous, leading 9
@@ -813,6 +817,29 @@ CARD_NUMBER_CASES = [
     ("card-16d-other-space-4x4", "1123 4567 8912 3456", "112345******3456"),
     ("card-17d-other-space-4x4", "1123 4567 8912 34567", "112345*******4567"),
     ("card-19d-other-space-4x4", "1123 4567 8912 3456789", "112345*********6789"),
+    # After a number that stands free: an unbroken run of 12-19 digits is a
+    # card number on its own, and the number before it is left as it is. The
+    # first two were accepted leaks, and a shorter card number was merged with
+    # the number before it ("qty 241111*******1111").
+    ("card-19d-9-preceded-by-digit-space", "point 1 9123456789123456789", "point 1 912345*********6789"),
+    ("card-19d-other-preceded-by-digit-space", "point 1 1234567891234567891", "point 1 123456*********7891"),
+    ("card-16d-after-a-quantity", "qty 2 4111111111111111", "qty 2 411111******1111"),
+    ("card-19d-after-a-quantity", "qty 2 9123456789123456789", "qty 2 912345*********6789"),
+    # "00" and the card are a Luhn-valid reading (zeros never change Luhn), so
+    # the time's last field is truncated with it: first four and last four.
+    ("card-16d-after-a-time-of-day", "10:00:00 4111111111111111", "10:00:004111********1111"),
+    ("card-19d-after-a-time-of-day", "10:00:00 9123456789123456789", "10:00:00 912345*********6789"),
+    # Longer than a card, in groups: every Luhn-valid reading of 12-19 digits
+    # along the groups is truncated, overlapping ones as one span. These were
+    # NOT_MASKED (and the 4x4 ones the CVV space-cascade xfail) until a
+    # reading inside them was checked with Luhn.
+    ("card-20d-9-space-luhn-reading", "912345 678912 34567891", "912345**********7891"),
+    ("card-20d-9-dash-luhn-reading", "9123-4567-8912-34567891", "912345**********7891"),
+    ("card-20d-other-space-luhn-reading", "112345 678912 34567891", "112345 **********7891"),
+    ("card-20d-other-dash-luhn-reading", "1123-4567-8912-34567891", "1123-4567-********7891"),
+    ("card-20d-9-space-4x4-luhn-reading", "9123 4567 8912 34567891", "912345**********7891"),
+    # The CVV rule still claims the two groups the card reading leaves.
+    ("card-20d-other-space-4x4-luhn-reading", "1123 4567 8912 34567891", "[CVV-MASKED] [CVV-MASKED] ********7891"),
 ]
 
 
@@ -935,22 +962,23 @@ NOT_MASKED = [
     ("iban-fake-country", "order AB12CDEF3456GH78 shipped"),
     ("iban-non-iban-country", "ref US12INVOICE0000042 paid"),
     ("iban-lowercase", "acct gb33bukb20201555 done"),
-    # Card rules only recognize dash/space (the two real-world PAN
-    # separators), so dot/comma/underscore are deliberately not chased.
+    # Card rules only recognize a dash (ASCII or Unicode) or a space, the
+    # real-world PAN separators, so dot/comma/underscore are deliberately not
+    # chased.
     ("card-dot-separated-not-a-real-pan-format", "4111.1111.1111.1111"),
     # outside the 12-19 digit range entirely
     ("card-11d-9-continuous", "91234567891"),
     ("card-20d-9-continuous", "91234567891234567891"),
     ("card-11d-9-space", "912345 67891"),
-    ("card-20d-9-space", "912345 678912 34567891"),
+    ("card-20d-space-no-luhn-reading", "223307 924402 68599528"),
     ("card-11d-9-dash", "9123-4567-891"),
-    ("card-20d-9-dash", "9123-4567-8912-34567891"),
+    ("card-20d-dash-no-luhn-reading", "0109-2815-9013-96245957"),
     ("card-11d-other-continuous", "11234567891"),
     ("card-20d-other-continuous", "11234567891234567891"),
     ("card-11d-other-space", "112345 67891"),
-    ("card-20d-other-space", "112345 678912 34567891"),
+    ("card-20d-other-space-no-luhn-reading", "907866 661760 31372159"),
     ("card-11d-other-dash", "1123-4567-891"),
-    ("card-20d-other-dash", "1123-4567-8912-34567891"),
+    ("card-20d-other-dash-no-luhn-reading", "1177-7741-2154-72803852"),
     # Email rule requires a literal "@", a domain, a dot, and a 2+ letter
     # TLD — anything short of that full shape is left alone.
     ("email-no-tld-dot", "user@localhost"),
@@ -982,15 +1010,17 @@ def test_does_not_over_mask(label, sample):
 # rows stay — their first 12 digits ARE card-shaped, so the text does carry
 # card context and the rule is entitled to look at the groups. Closing those
 # needs the card rules to claim the whole run first, which is a change to
-# rule 15, not to the CVV rule.
+# rule 15, not to the CVV rule. The rows here have no Luhn-valid reading of
+# 12-19 digits; the earlier ones had one, and are truncated as cards now
+# (CARD_NUMBER_CASES).
 #
 # The in-range 4-4-4-4 rows this list carried in the ported source are no
 # longer affected — truncated-PAN masking claims the whole run before the
 # CVV rule can see the groups — and now live in CARD_NUMBER_CASES.
 # ---------------------------------------------------------------------------
 OVER_MASKED_BECAUSE_OF_CVV = [
-    ("card-20d-9-space", "9123 4567 8912 34567891"),
-    ("card-20d-other-space", "1123 4567 8912 34567891"),
+    ("card-20d-space-no-luhn-reading", "1123 4567 8912 34567890"),
+    ("card-20d-other-space-no-luhn-reading", "0109 2815 9013 96245957"),
 ]
 
 
@@ -1007,6 +1037,10 @@ def test_over_masked_because_of_cvv(label, sample):
 # don't match a rule's shape at all), every case here is genuinely
 # sensitive-looking data (a real PAN, a real token) that a guard deliberately
 # lets through unmasked. Each is a settled decision, not an open bug.
+#
+# A card number after a number that stands free ("point 1 <PAN>") was one,
+# while the card rule refused every match after "<digit><space>". An unbroken
+# run of 12-19 digits is masked there now: see CARD_NUMBER_CASES.
 # ---------------------------------------------------------------------------
 ACCEPTED_LEAK_CASES = [
     # The bare-space credential rule requires a digit in the value, so it can
@@ -1016,16 +1050,12 @@ ACCEPTED_LEAK_CASES = [
     # matched — required, since matching it would over-mask ordinary words
     # like "tokenization" that merely start with a keyword.
     ("cred-glued-no-separator-unmasked", "token12345"),
-    # All card rules share one lead guard: a match may only start right after
-    # a real prefix (quote, ":", "=", space, comma, dot, or start-of-string).
-    # A letter isn't in that set, so a digit run glued to a preceding letter
-    # matches no card rule at all.
+    # Digits glued to a word are the word's own: the card rule reads a card
+    # number glued to a word only in card-style groups ("Payer4508 7500 0000
+    # 1019"), so one glued unbroken, or in other groups, ships as written. A
+    # card key refuses such a value.
     ("card-glued-to-letters-leading-9-unaffected", "REF9111111111111111 confirmed"),
     ("card-glued-to-letters-leading-other-unaffected", "REF4111111111111111 confirmed"),
-    # The lead guard also blocks a match preceded by "<digit><space>", which
-    # ordinary text ending in a digit ("point 1", "step 2") triggers.
-    ("card-19d-9-preceded-by-digit-space-unaffected", "point 1 9123456789123456789"),
-    ("card-19d-other-preceded-by-digit-space-unaffected", "point 1 1234567891234567891"),
     # The JWT rule's leading "\b" blocks a match when "eyJ" is glued directly
     # to a word character.
     ("jwt-glued-to-letter-prefix-unmasked", f"abc{_JWT}"),

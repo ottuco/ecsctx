@@ -77,8 +77,15 @@ class TestTheSavedCardInTheWebhook:
             "is_expired",
             "will_expire_soon",
             "cvv_required",
+            "agreements",
         ):
             assert token[key] == SAVED_CARD[key], key
+
+    def test_without_the_preset_its_agreements_stay_masked(self):
+        # Ottu's word, not the core's: to the core rules it is a leaf of the
+        # card with no rule of its own, so it takes the card's type.
+        token = MaskPIIFilter(packs=ALL_PACKS)._mask_value({"token": dict(SAVED_CARD)})["token"]
+        assert token["agreements"] == ["[CARD-MASKED]"]
 
     def test_its_bookkeeping_timestamps_read_through(self, mask):
         # `Card.as_dict()` carries `created`/`modified`: fourteen digits each,
