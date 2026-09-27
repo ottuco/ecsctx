@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.15.2 (2026-09-27)
+
+### Fixes
+- Merge pull request #66 from ottuco/fix/ottu-agreements-card-details (c65f6c0)
+- fix(masking): an IBAN is found when a group of it looks like another's head (5c320e4)
+- fix(masking): digits glued to a word that start a card number are a card's (49d182c)
+- fix(masking): a card key counts a card number written with dots or slashes (92b5131)
+- fix(masking): an IBAN is its country's registered length, not a mod-97 chance (e14ffb4)
+- fix(masking): a card key refuses a value that could still show a card number (e6b68bb)
+- fix(masking): the card rule's exclusions cover only what they name (c4b1a99)
+- fix(masking): a truncation's stars are matched from the first one only (86c1131)
+- fix(masking): a token ends a sentence; ptok: counts toward a credential (0f68e22)
+- fix(masking): a card key refuses a value that still holds a card number (80ab2bc)
+- fix(masking): the card rule reads a run of groups whole, and Luhn decides (9208ea7)
+- fix(masking): only a real token passes as already masked, in values and in text (55bc9f6)
+- fix(masking): a card number after a number that stands free is truncated (19b27bb)
+- fix(masking): only the exact token shape passes as already tokenized (9e2fdc2)
+- fix(masking): a card number touching other digits is still truncated (784503c)
+- fix(masking): a "+" spares only a phone number in a phone field (b6c5464)
+- fix(masking): a PII value with a PAN amid other text is its label, not a token (241792a)
+- fix(masking): a card details value is masked as the holder's name (329db24)
+- fix(masking): a saved card's agreements read through with Ottu's safe keys (a51faf3)
+
+### Other
+- docs(masking): the card rule's residuals and exclusions as the code has them (e3bc8f0)
+- perf(masking): the card rule finds Luhn-valid stretches in one pass (46444ed)
+
+
 ## Unreleased
 
 ### Fixed
