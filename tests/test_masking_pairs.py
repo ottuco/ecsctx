@@ -286,3 +286,48 @@ class TestCardDetails:
             }
         )["pg_params"]["card_holder"]
         assert masked["verbose_name_ar"] == "[EMAIL-MASKED]"
+
+    def test_an_english_caption_the_pair_did_not_read_stays_masked(self):
+        # The pair judged `verbose_name_en` and found no field label in it. A
+        # caption reading through beside it must not overturn that.
+        masked = mask(
+            {
+                "pg_params": {
+                    "card_holder": {
+                        "verbose_name": "Card Holder Name",
+                        "verbose_name_en": "Nadia Example",
+                        "value": "Nadia Example",
+                    }
+                }
+            }
+        )["pg_params"]["card_holder"]
+        assert masked == {
+            "verbose_name": "Card Holder Name",
+            "verbose_name_en": "[NAME-MASKED]",
+            "value": "[NAME-MASKED]",
+        }
+
+    def test_a_translation_reads_through_only_beside_its_own_caption(self):
+        # `label` read through, which frees `label_ar`, not the other family's
+        # `verbose_name_ar`.
+        masked = mask(
+            {
+                "pg_params": {
+                    "card_holder": {
+                        "label": "Card Holder Name",
+                        "verbose_name_ar": "اسم حامل البطاقة",
+                        "value": "Nadia Example",
+                    }
+                }
+            }
+        )["pg_params"]["card_holder"]
+        assert masked == {"label": "Card Holder Name", "verbose_name_ar": "[NAME-MASKED]", "value": "[NAME-MASKED]"}
+
+    @pytest.mark.parametrize(("caption", "key"), [("label_en", "label_id"), ("verbose_name_en", "verbose_name_no")])
+    def test_only_a_locale_ottu_ships_is_a_translation(self, caption, key):
+        # Connect translates into en and ar only. `label_id` just shares the
+        # prefix, and is judged by its key.
+        masked = mask(
+            {"pg_params": {"card_holder": {caption: "Card Holder Name", key: "Nadia Example", "value": "Nadia Example"}}}
+        )["pg_params"]["card_holder"]
+        assert masked == {caption: "Card Holder Name", key: "[NAME-MASKED]", "value": "[NAME-MASKED]"}
