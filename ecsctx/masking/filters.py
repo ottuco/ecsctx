@@ -154,6 +154,13 @@ _PAIR_IDENTIFIERS = (
     "key", "field", "field_name", "fieldname", "name", "label", "label_en", "title",
     "verbose_name", "verbose_name_en", "param", "parameter", "attribute", "header",
 )
+# A caption's own translation -- Connect ships `verbose_name_ar` beside
+# `verbose_name_en`, the same fixed UI string in Arabic, not English. Once one
+# of these base identifiers reads through as a label, a locale sibling of it
+# (`verbose_name_ar`, `label_fr`, ...) is a caption too. `verbose_name_ar`
+# alone, with no English sibling classified, is not proof of one.
+_CAPTION_IDENTIFIERS = frozenset({"verbose_name", "verbose_name_en", "label", "label_en"})
+_CAPTION_SIBLING = re.compile(r"^(?:verbose_name|label)_[a-z]{2}$")
 # An identifier looks like a field label, not free text: bounded, few words.
 _IDENTIFIER_SHAPE = re.compile(r"[A-Za-z][A-Za-z0-9 _.\-/]{0,63}")
 _IDENTIFIER_MAX_WORDS = 5
@@ -210,6 +217,7 @@ def _pair(data: dict, ctx: _Pass, inherited: str | None) -> tuple[str | None, fr
     keys = {str(key).lower(): key for key in data}
     types = []
     readable = set()
+    caption = False
     for identifier in _PAIR_IDENTIFIERS:
         original = keys.get(identifier)
         if original is None:
@@ -230,6 +238,17 @@ def _pair(data: dict, ctx: _Pass, inherited: str | None) -> tuple[str | None, fr
         types.append(field_type)
         if identifier != "name" or len(words) == 1 or all(word in _FIELD_WORDS for word in words):
             readable.add(original)
+            if identifier in _CAPTION_IDENTIFIERS:
+                caption = True
+    if caption:
+        # A locale sibling is judged by its key alone, never `_classify_identifier`
+        # or the ASCII shape gate above: it is a caption, not a label whose text
+        # might be a person's name. `_mask_dict` still routes every readable key
+        # through content-only masking, so a sibling that holds a real email or
+        # phone number is masked by that, same as `value` would be.
+        readable.update(
+            original for lowered, original in keys.items() if _CAPTION_SIBLING.fullmatch(lowered)
+        )
     if not types:
         return None, frozenset(readable)
     if inherited is not None:
