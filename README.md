@@ -894,7 +894,8 @@ builds itself — is masked as the key it would sit under masks it:
   a placeholder another masker left (`[REDACTED]`, `[PII_REDACTED]`, `***`,
   `Bearer ****`), which would otherwise hash to one token shared by every
   record that carries it, and for a value in a token's exact shape with a card
-  number in it (`ptok:v1:` typed before one). With `pci` among the call's
+  number in it (`ptok:v1:` typed before one) — each judged as written and as a
+  URL or form encoding decodes it (`%224111…%22`, `4111+1111+…`). With `pci` among the call's
   packs — a `MaskPIIFilter`'s own `packs=` while it masks, else the
   process's — it is `[SECRET-MASKED]` too for any value that holds a
   card-number run (`abc4111111111111111xyz`), as under a credential key;

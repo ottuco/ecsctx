@@ -8,6 +8,7 @@ not configured, or tokenization fails for any reason, it returns
 from __future__ import annotations
 
 import re
+from urllib.parse import unquote_plus
 
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.pii import tokenize as _pii_tokenize
@@ -112,7 +113,8 @@ def mask_by_field_type(value: str, field_type: str) -> str:
     and is the label, in every pack. A credential is the label, never a token,
     when it is shaped like a card number (a saved card's sixteen-digit gateway
     token), since a keyed hash of what may be a PAN is what PCI DSS FAQ 1117
-    forbids, and when it is a placeholder another masker left. With `pci`
+    forbids, and when it is a placeholder another masker left -- judged as it
+    is written and as a URL or form encoding decodes it (``%22…%22``, ``+``). With `pci`
     among the call's packs -- a filter's own ``packs=`` for the call, else
     the process's (``config.packs_in_force``) -- a credential or payment id
     that holds a card-number run anywhere (``holds_pan_run``) is the label
@@ -136,17 +138,24 @@ def mask_by_field_type(value: str, field_type: str) -> str:
 
         # Judged as it would be hashed: tokenize() drops the surrounding
         # whitespace and one layer of matching quotes first, so '"4111…"'
-        # was a keyed hash of the bare card number.
-        bare = normalize_value(value, field_type)
+        # was a keyed hash of the bare card number. And as a URL or a form
+        # encoding decodes it, as redact_url and redact_body read it before
+        # they mask: `%224111…%22` in text was a keyed hash of a card number
+        # in quotes, `4111+1111+…` of one with its spaces encoded.
+        forms = [normalize_value(value, field_type)]
+        if "%" in value or "+" in value:
+            forms.append(normalize_value(unquote_plus(value), field_type))
         if field_type == "secret":
-            if already_masked(bare):
-                # Masking's own output in quotes (the credential text rule
-                # keeps a value's quotes around its label): hashed, every such
-                # label would be one token shared by every record.
-                return f"[{label}]" if holds_pan_run(bare) else value
-            if pan_shaped(bare) or _PLACEHOLDER.fullmatch(bare):
-                return f"[{label}]"
-        if _pci_in_force() and holds_pan_run(bare):
+            for bare in forms:
+                if already_masked(bare):
+                    # Masking's own output in quotes (the credential text
+                    # rule keeps a value's quotes around its label) or
+                    # encoded (redact_url's userinfo): hashed, every such
+                    # label would be one token shared by every record.
+                    return f"[{label}]" if holds_pan_run(bare) else value
+                if pan_shaped(bare) or _PLACEHOLDER.fullmatch(bare):
+                    return f"[{label}]"
+        if _pci_in_force() and any(holds_pan_run(bare) for bare in forms):
             # Without `pci` among the call's packs it is hashed: a
             # default-pack service receives no card numbers, and the label
             # would stand in for 7% of the 64-hex signatures Connect logs,

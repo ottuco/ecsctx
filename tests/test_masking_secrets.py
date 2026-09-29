@@ -313,6 +313,28 @@ QUOTED_CARDS = [
 QUOTED = [*QUOTED_CARDS, '"***"', "'[REDACTED]'", '"[PII_REDACTED]"', "'Bearer ****'"]
 
 
+# Encoded as a URL or a form encodes it, which redact_url and redact_body
+# decode before they mask: decoded, a card number or a placeholder.
+ENCODED = ["%224111111111111111%22", "4111+1111+1111+1111", "%5BREDACTED%5D", "Bearer+****"]
+
+
+@pytest.mark.parametrize("packs", [["default"], sorted(ALL_PACKS)], ids=["default", "every-pack"])
+class TestAnEncodedCardNumberOrPlaceholderIsTheLabel:
+    @pytest.mark.parametrize("value", ENCODED)
+    def test_mask_secret(self, packs, value):
+        configure_masking_packs(packs)
+        assert mask_secret(value) == LABEL
+
+    @pytest.mark.parametrize("value", ENCODED)
+    def test_a_credential_text_rule(self, packs, value):
+        configure_masking_packs(packs)
+        assert mask_by_patterns(f"password={value}&x=1", _TEXT_RULES) == f"password={LABEL}&x=1"
+
+    def test_a_label_encoded_in_a_url_is_left_as_written(self, packs):
+        configure_masking_packs(packs)
+        assert mask_secret("%5BSECRET-MASKED%5D") == "%5BSECRET-MASKED%5D"
+
+
 class TestAQuotedCardNumberOrPlaceholderIsTheLabel:
     @pytest.mark.parametrize("value", QUOTED)
     def test_mask_by_field_type(self, value):
@@ -672,25 +694,15 @@ def _pan_candidates(text: str) -> set[str]:
     }
 
 
-def _outputs(text: str, *, text_rules: bool = True) -> list[str]:
+def _outputs(text: str) -> list[str]:
     once = redact_body(text)
-    outputs = [
+    return [
         once,
         redact_body(once),
+        redact_body(mask_by_patterns(text, _TEXT_RULES)),
         mask_sensitive_data(None, "info", {"event": once})["event"],
         loggable_body(_Reply(text)),
     ]
-    if text_rules:
-        outputs.append(redact_body(mask_by_patterns(text, _TEXT_RULES)))
-    return outputs
-
-
-# Without `pci` among the call's packs a credential text rule hashes a value
-# that holds a card number, the accepted default-pack residual
-# (TestACredentialThatHoldsACardNumber). Of these shapes one puts the card
-# number in a credential value's own characters, since a value runs to its
-# delimiter: `%22` is part of it.
-_HASHED_WITHOUT_PCI = {f"password=%22{PAN}%22&x=1"}
 
 
 @pytest.mark.parametrize("packs", [["default"], sorted(ALL_PACKS)], ids=["default", "every-pack"])
@@ -699,8 +711,7 @@ def test_no_output_holds_the_card_number_or_a_hash_of_anything_holding_it(mode, 
     configure_masking_packs(packs)
     # Tokens exist only with a keyset; without one, the label stands in.
     candidates = _pan_candidates(shape) if mode == "keyset" else set()
-    text_rules = "pci" in packs or shape not in _HASHED_WITHOUT_PCI
-    for output in _outputs(shape, text_rules=text_rules):
+    for output in _outputs(shape):
         assert PAN not in output
         assert not candidates & set(re.findall(r"ptok:v1:[A-Za-z0-9_-]{43}", output))
 
@@ -777,13 +788,12 @@ class TestACredentialThatHoldsACardNumber:
         configure_masking_packs(["pci"])
         assert _every_path(A_UUID) == _as_masked(token_or_label(A_UUID))
 
-    def test_without_pci_a_percent_encoded_one_in_text_is_hashed_too(self):
-        # A value runs to its delimiter, `%22` and all: without `pci` it is
-        # hashed, as any credential that holds a card number is; with `pci`
-        # it is the label.
+    @pytest.mark.parametrize("packs", [["default"], ["pci"]])
+    def test_a_percent_encoded_one_in_text_is_the_label_in_every_pack(self, packs):
+        # A value runs to its delimiter, `%22` and all; decoded, as a URL or
+        # form encoding reads it, it is a card number in quotes.
+        configure_masking_packs(packs)
         text = "password=%224111111111111111%22&x=1"
-        assert mask_by_patterns(text, _DEFAULT_RULES) == f"password={token_or_label('%224111111111111111%22')}&x=1"
-        configure_masking_packs(["pci"])
         assert mask_by_patterns(text, _TEXT_RULES) == f"password={LABEL}&x=1"
 
     def test_masked_twice_it_is_masked_once(self):
