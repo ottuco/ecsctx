@@ -456,9 +456,10 @@ def _tail(text: str) -> str:
 
 
 # The structure a form value may open with: a quote or an escaped one, or a
-# run of them -- quotes doubled as CSV and SQL escape one (`password=""x`), as
-# the credential text rule reads them.
-_HEAD = re.compile(r'(?:\\?")*')
+# run of them -- quotes doubled as CSV and SQL escape one (`password=""x`,
+# `password=''x`), as the credential text rule reads them. A lone `'` is the
+# value's own: closed by another, it is a quoted value, normalized as one.
+_HEAD = re.compile(r'(?:\\?["\'])(?:\\?["\'])+|(?:\\?")*')
 
 
 def _split_form_value(value: str) -> tuple[str, str, str]:

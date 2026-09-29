@@ -614,6 +614,20 @@ class TestAFormValueRunsToItsEnd:
         # the token it gets there, and what the text rule wrote stays.
         assert redact_body('password=""abc123secret&x=1') == f'password=""{token_or_label("abc123secret")}&x=1'
         assert redact_body('password=""[SECRET-MASKED] x') == 'password=""[SECRET-MASKED] x'
+        assert redact_body("password=''abc123&x=1") == f"password=''{token_or_label('abc123')}&x=1"
+        assert redact_body("password=\"'abc123&x=1") == f"password=\"'{token_or_label('abc123')}&x=1"
+
+    @pytest.mark.parametrize("text", ['password=""abc123&x=1', "password=''abc123&x=1", "password=\"'abc123&x=1"])
+    def test_what_the_text_rule_wrote_after_doubled_quotes_stays(self, text):
+        # Read as a value with its quotes, the token was hashed again.
+        masked = mask_by_patterns(text, _TEXT_RULES)
+        assert redact_body(masked) == masked
+
+    def test_a_single_quote_before_a_form_value_is_its_own(self):
+        # Closed by another, it is a quoted value: normalized, it carries the
+        # token the key walk gives the value inside.
+        quoted = "'abc123'"
+        assert redact_body(f"password={quoted}&x=1") == f"password={mask_secret(quoted)}&x=1"
 
     def test_a_raw_form_value_is_never_unescaped(self):
         secret = "C:\\new\\tab"
@@ -729,6 +743,8 @@ def test_no_output_holds_the_card_number_or_a_hash_of_anything_holding_it(mode, 
         # Doubled quotes before a value, then more after it.
         'password=""s3cr3t code""x',
         'password=""paymentCvv%2Bu:p@card code""(payment_id',
+        "password=''abc123",
+        "password=''s3cr3t code''x",
     ],
 )
 def test_the_text_rule_then_redact_body_twice_is_once(shape):
