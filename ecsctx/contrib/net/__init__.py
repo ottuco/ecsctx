@@ -455,6 +455,12 @@ def _tail(text: str) -> str:
     return text[len(text) - _TAIL_REVERSED.match(text[::-1]).end() :]
 
 
+# The structure a form value may open with: a quote or an escaped one, or a
+# run of them -- quotes doubled as CSV and SQL escape one (`password=""x`), as
+# the credential text rule reads them.
+_HEAD = re.compile(r'(?:\\?")*')
+
+
 def _split_form_value(value: str) -> tuple[str, str, str]:
     """``value`` as the structure it opens with, the value itself, and the
     structure it ends in.
@@ -463,7 +469,7 @@ def _split_form_value(value: str) -> tuple[str, str, str]:
     is taken whole: `[SECRET-MASKED],` is the label and a comma, where the
     longest structural end alone would read `[SECRET-MASKED` and `],`.
     """
-    head = '\\"' if value.startswith('\\"') else '"' if value.startswith('"') else ""
+    head = _HEAD.match(value).group()
     body = value[len(head) :]
     for shape in (_MASKED_VALUE, _PLACEHOLDER):
         whole = shape.match(body)

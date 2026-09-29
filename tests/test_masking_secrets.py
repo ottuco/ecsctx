@@ -587,6 +587,12 @@ class TestAFormValueRunsToItsEnd:
         assert masked == f'{{"url": "https://x?secret={token_or_label("abc")}"}}'
         assert json.loads(masked)
 
+    def test_quotes_doubled_before_a_form_value_are_structure(self):
+        # As the credential text rule reads them: the value after them gets
+        # the token it gets there, and what the text rule wrote stays.
+        assert redact_body('password=""abc123secret&x=1') == f'password=""{token_or_label("abc123secret")}&x=1'
+        assert redact_body('password=""[SECRET-MASKED] x') == 'password=""[SECRET-MASKED] x'
+
     def test_a_raw_form_value_is_never_unescaped(self):
         secret = "C:\\new\\tab"
         assert redact_body(f"password={secret}&x=1") == f"password={mask_secret(secret)}&x=1"
@@ -709,6 +715,9 @@ def test_no_output_holds_the_card_number_or_a_hash_of_anything_holding_it(mode, 
         "password=:/>",
         # A form value redact_body labels, which the next text pass must not cut.
         "Basic CVV2=)card code<",
+        # Doubled quotes before a value, then more after it.
+        'password=""s3cr3t code""x',
+        'password=""paymentCvv%2Bu:p@card code""(payment_id',
     ],
 )
 def test_the_text_rule_then_redact_body_twice_is_once(shape):
