@@ -94,6 +94,14 @@ class TestRedactBody:
         masked = redact_body('{"url": "https://x?secret=abc"}')
         assert masked == '{"url": "https://x?secret=[SECRET-MASKED]"}'
 
+    def test_an_escaped_quote_does_not_end_a_form_value_inside_a_json_string(self):
+        # Only an unescaped quote ends the JSON string. Stopped at the escaped
+        # one, the capture kept its backslash, dropping it closed the string,
+        # and the rest of the secret shipped in clear.
+        masked = redact_body('{"note": "client_secret=a\\"b-tail&x=1"}')
+        assert "b-tail" not in masked
+        assert json.loads(masked) == {"note": "client_secret=[SECRET-MASKED]&x=1"}
+
 
 class TestLoggableBody:
     def test_non_textual_body_is_omitted(self):
@@ -113,6 +121,14 @@ class TestLoggableBody:
         logged = loggable_body(_FakeResponse(body, "application/json"))
         assert secret not in logged
         assert "[SECRET-MASKED]" in logged
+
+    def test_a_form_secret_with_a_quote_inside_a_json_field_is_masked_whole(self):
+        # The key walk's credential rule stops at the quote; redact_body must
+        # take the rest of the value, as 0.15.3's form rule did.
+        body = json.dumps({"note": 'client_secret=a"b-tail&x=1'})
+        logged = loggable_body(_FakeResponse(body, "application/json"))
+        assert "b-tail" not in logged
+        assert json.loads(logged) == {"note": "client_secret=[SECRET-MASKED]&x=1"}
 
 
 class TestRedactionConfig:

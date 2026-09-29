@@ -229,9 +229,12 @@ def _get_compiled() -> tuple:
     )
     # access_token=...  ->  access_token=<masked>  (form-encoded bodies)
     # `\b` cannot fire between "_" and "secret", so "client_secret=" is never half-matched.
-    # A value stops at a quote: a query inside a JSON string ends where the string does.
+    # A value stops at an unescaped quote: a query inside a JSON string ends
+    # where the string does, and an escaped one (`\"`) is part of the value --
+    # stopped there, the capture kept the backslash, dropping it closed the
+    # string early, and the rest of the value shipped in clear.
     form_re = re.compile(
-        r"\b(" + "|".join(keys) + r')=([^&\s"]*)',
+        r"\b(" + "|".join(keys) + r')=([^&\s"\\]*(?:\\.[^&\s"\\]*)*)',
         re.IGNORECASE,
     )
     _compiled_cache = (cache_key, (hint_re, json_re, form_re))
