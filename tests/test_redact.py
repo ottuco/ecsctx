@@ -118,16 +118,16 @@ class TestRedactBody:
         [
             (
                 '<Auth password="s3cr3tVALUE" authkey="k3yVALUE" apikey="ap1VALUE"/>',
-                '<Auth password=[SECRET-MASKED]" authkey=[SECRET-MASKED]" apikey=[SECRET-MASKED]',
+                '<Auth password="[SECRET-MASKED]" authkey="[SECRET-MASKED]" apikey="[SECRET-MASKED]"/>',
             ),
-            ('error: client_secret="s3cr3tVALUE" rejected', 'error: client_secret=[SECRET-MASKED]" rejected'),
-            ('password="s3cr3tVALUE"&x=1', "password=[SECRET-MASKED]&x=1"),
+            ('error: client_secret="s3cr3tVALUE" rejected', 'error: client_secret="[SECRET-MASKED]" rejected'),
+            ('password="s3cr3tVALUE"&x=1', 'password="[SECRET-MASKED]"&x=1'),
             ('status=error&password=ab"cd-TAIL&x=1', "status=error&password=[SECRET-MASKED]&x=1"),
         ],
     )
-    def test_a_quote_ends_a_form_value_only_where_it_could_close_a_json_string(self, body, masked):
-        # Ended at any quote, a value that starts with one masked nothing, and
-        # one with a quote inside it kept its tail. 0.15.3 masked all of these.
+    def test_a_quoted_form_value_is_masked_between_its_quotes(self, body, masked):
+        # A value runs to `&` or whitespace, as in 0.15.3; the quotes at its
+        # ends, and an element's `/>`, are structure and stay as written.
         assert redact_body(body) == masked
         assert redact_body(masked) == masked
 

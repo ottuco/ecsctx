@@ -21,6 +21,7 @@ by ecsctx under the same keyset, never written out.
 """
 
 import json
+import re
 from urllib.parse import quote
 
 import pytest
@@ -354,14 +355,14 @@ class TestAQuotedCardNumberOrPlaceholderIsTheLabel:
 
 class TestAFormValueInQuotes:
     """A form value that starts with a quote -- an XML attribute, `key="value"`
-    in an error message -- is masked with its quotes and hashed without them."""
+    in an error message -- is masked between its quotes, which stay."""
 
     def test_a_secret_is_its_token_or_the_label(self):
-        assert redact_body(f'password="{SECRET}"&x=1') == f"password={token_or_label(SECRET)}&x=1"
+        assert redact_body(f'password="{SECRET}"&x=1') == f'password="{token_or_label(SECRET)}"&x=1'
 
     @pytest.mark.parametrize("value", CARD_SHAPED)
     def test_a_secret_shaped_like_a_card_number_is_the_label(self, value):
-        assert redact_body(f'password="{value}"&x=1') == f"password={LABEL}&x=1"
+        assert redact_body(f'password="{value}"&x=1') == f'password="{LABEL}"&x=1'
 
     @pytest.mark.parametrize(
         "body",
@@ -469,19 +470,19 @@ class _Reply:
 
 
 class TestAFormValueInEscapedQuotes:
-    """`password=\\"…\\"` inside a JSON string. Unescaped, the value's quotes
-    are dropped before the checks and the hash, as plain quotes are; a value
-    masking already wrote is left as it is written."""
+    """`password=\\"…\\"` inside a JSON string. The escaped quotes stay as
+    structure, and the value between them is unescaped before the checks and
+    the hash; a value masking already wrote is left as it is written."""
 
     @pytest.mark.parametrize("value", [*CARD_SHAPED, "***"])
     def test_a_card_number_or_placeholder_is_the_label(self, value):
         masked = redact_body(_escaped_form_body(value))
-        assert json.loads(masked) == {"note": f"password={LABEL}&x=1"}
+        assert json.loads(masked) == {"note": f'password="{LABEL}"&x=1'}
         assert redact_body(masked) == masked
 
     def test_a_secret_is_its_token_or_the_label(self):
         masked = redact_body(_escaped_form_body(SECRET))
-        assert json.loads(masked) == {"note": f"password={token_or_label(SECRET)}&x=1"}
+        assert json.loads(masked) == {"note": f'password="{token_or_label(SECRET)}"&x=1'}
         assert redact_body(masked) == masked
 
     @pytest.mark.parametrize("value", [LABEL, "411111******1111"])
@@ -503,7 +504,7 @@ class TestAFormValueInEscapedQuotes:
 
     def test_through_loggable_body_a_placeholder_is_the_label(self):
         logged = loggable_body(_Reply(_escaped_form_body("***")))
-        assert json.loads(logged) == {"note": f"password={LABEL}&x=1"}
+        assert json.loads(logged) == {"note": f'password="{LABEL}"&x=1'}
         assert loggable_body(_Reply(logged)) == logged
 
     def test_through_loggable_body_a_secret_keeps_the_key_walks_token(self):
@@ -514,3 +515,157 @@ class TestAFormValueInEscapedQuotes:
     def test_through_loggable_body_a_masked_value_is_left_as_written(self):
         body = _escaped_form_body(LABEL)
         assert loggable_body(_Reply(body)) == body
+
+
+PAN = "4111111111111111"
+
+
+class TestAFormValueRunsToItsEnd:
+    """A form value is everything up to the next `&` or whitespace, as in
+    0.15.3. Only the structure at its two ends -- a quote or an escaped one,
+    and `}`, `]`, `,`, `>` or `/>` at the end -- stays outside the mask; the
+    rest is the value, however a quote inside it reads."""
+
+    @pytest.mark.parametrize(
+        ("body", "masked"),
+        [
+            ('<Auth password="4111111111111111" x="1"/>', f'<Auth password="{LABEL}" x="1"/>'),
+            ('error: client_secret="4111111111111111" rejected', f'error: client_secret="{LABEL}" rejected'),
+            ('<Auth apikey="4111111111111111"/>', f'<Auth apikey="{LABEL}"/>'),
+            ('<a href="/cb?password=4111111111111111">x</a>', f'<a href="/cb?password={LABEL}>'),
+            ("password=4111111111111111, status=ok", f"password={LABEL}, status=ok"),
+            ("password=4111111111111111;", f"password={LABEL}"),
+            ("password=4111111111111111'", f"password={LABEL}"),
+            ('password=ab",4111111111111111&x=1', f"password={LABEL}&x=1"),
+            ('password="***" x', f'password="{LABEL}" x'),
+            ('password="[REDACTED]" rejected', f'password="{LABEL}" rejected'),
+            # What the credential text rule writes is masked already.
+            ('password="[SECRET-MASKED]" rejected', 'password="[SECRET-MASKED]" rejected'),
+            ("password=[SECRET-MASKED], status=ok", "password=[SECRET-MASKED], status=ok"),
+            # A JSON value cut before its closing quote, run on to the end.
+            ('{"password": "4111111111111111}', f'{{"password": "{LABEL}"'),
+            ('{"id": 1, "password": "4111111111111111 x', f'{{"id": 1, "password": "{LABEL}"'),
+        ],
+    )
+    def test_a_card_number_or_placeholder_is_the_label(self, body, masked):
+        assert redact_body(body) == masked
+        assert redact_body(masked) == masked
+
+    def test_every_xml_attribute_is_masked_and_the_element_still_closes(self):
+        masked = redact_body('<Auth password="s3cr3tVALUE" authkey="k3yVALUE" apikey="ap1VALUE"/>')
+        t = token_or_label
+        assert masked == f'<Auth password="{t("s3cr3tVALUE")}" authkey="{t("k3yVALUE")}" apikey="{t("ap1VALUE")}"/>'
+        assert redact_body(masked) == masked
+
+    @pytest.mark.parametrize("glue", ['",', '":', '"}', '"]'])
+    def test_a_quote_inside_a_value_does_not_end_it(self, glue):
+        value = f"ab{glue}cd-TAIL"
+        masked = redact_body(f"password={value}&x=1")
+        assert masked == f"password={token_or_label(value)}&x=1"
+        assert redact_body(masked) == masked
+
+    def test_whitespace_ends_a_value_as_it_did(self):
+        # 0.15.3 stopped at the space too: what follows it is not the value.
+        assert redact_body('password=ab" cd-TAIL&x=1') == f'password={token_or_label("ab")}" cd-TAIL&x=1'
+
+    def test_a_query_in_a_json_string_keeps_the_strings_close(self):
+        masked = redact_body('{"url": "https://x?secret=abc"}')
+        assert masked == f'{{"url": "https://x?secret={token_or_label("abc")}"}}'
+        assert json.loads(masked)
+
+    def test_a_raw_form_value_is_never_unescaped(self):
+        secret = "C:\\new\\tab"
+        assert redact_body(f"password={secret}&x=1") == f"password={mask_secret(secret)}&x=1"
+
+    def test_an_unquoted_value_before_a_self_closing_tag_keeps_only_its_gt(self):
+        # A `/` right after a token reads to the credential text rule as more
+        # of the credential: left outside the mask, the next pass hashed the
+        # token again.
+        masked = redact_body("<Auth password=s3cr3t/>")
+        assert masked == f"<Auth password={token_or_label('s3cr3t/')}>"
+        assert redact_body(mask_by_patterns(masked, _TEXT_RULES)) == masked
+
+    def test_a_value_shaped_like_a_token_that_holds_a_card_number_is_the_label(self):
+        # The card-number check comes before the pass-through for masked values.
+        crafted = f"ptok:v1:{PAN}{'A' * 27}"
+        assert redact_body(f"password={crafted}&x=1") == f"password={LABEL}&x=1"
+        assert redact_body(f'{{"password": "{crafted}') == f'{{"password": "{LABEL}"'
+
+    def test_escaped_xml_in_a_json_field_keeps_what_the_key_walk_wrote(self):
+        logged = loggable_body(_Reply(json.dumps({"xml": f'<Auth apikey="{PAN}"/>'})))
+        assert json.loads(logged) == {"xml": f'<Auth apikey="{LABEL}"/>'}
+        assert loggable_body(_Reply(logged)) == logged
+
+
+# Every shape a card number was hashed in, or left beside, by some capture.
+PAN_SHAPES = [
+    f'<Auth password="{PAN}" x="1"/>',
+    f'error: client_secret="{PAN}" rejected',
+    f'<Auth apikey="{PAN}"/>',
+    f'<a href="/cb?password={PAN}">x</a>',
+    f'{{"password": "{PAN}}}',
+    f'{{"id": 1, "password": "{PAN} x',
+    f"password={PAN}, status=ok",
+    f"password={PAN};",
+    f"password={PAN}'",
+    f'password=ab",{PAN}&x=1',
+    f'password={PAN}":cd&x=1',
+    f'password="{PAN}"&x=1',
+    f"password=%22{PAN}%22&x=1",
+    json.dumps({"xml": f'<Auth apikey="{PAN}"/>'}),
+    json.dumps({"note": f'password="{PAN}"&x=1'}),
+    json.dumps({"note": f"password={PAN}&x=1"}),
+    json.dumps({"password": f'"{PAN}"'}),
+    json.dumps({"url": f"https://x?secret={PAN}"}),
+]
+
+
+def _pan_candidates(text: str) -> set[str]:
+    """The token of every stretch of ``text``, or of a JSON string in it, that
+    holds the card number: none of them may ever reach a log."""
+    texts = [text]
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        texts += [value for value in parsed.values() if isinstance(value, str)]
+    return {
+        tokenize(t[start:end], "secret")
+        for t in texts
+        for start in range(len(t))
+        for end in range(start + len(PAN), len(t) + 1)
+        if PAN in t[start:end]
+    }
+
+
+def _outputs(text: str) -> list[str]:
+    once = redact_body(text)
+    return [
+        once,
+        redact_body(once),
+        redact_body(mask_by_patterns(text, _TEXT_RULES)),
+        mask_sensitive_data(None, "info", {"event": once})["event"],
+        loggable_body(_Reply(text)),
+    ]
+
+
+@pytest.mark.parametrize("shape", PAN_SHAPES)
+def test_no_output_holds_the_card_number_or_a_hash_of_anything_holding_it(mode, shape):
+    # Tokens exist only with a keyset; without one, the label stands in.
+    candidates = _pan_candidates(shape) if mode == "keyset" else set()
+    for output in _outputs(shape):
+        assert PAN not in output
+        assert not candidates & set(re.findall(r"ptok:v1:[A-Za-z0-9_-]{43}", output))
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [*PAN_SHAPES, 'password="s3cr3tVALUE" rejected', 'password=ab",cd-TAIL&x=1', "<Auth password=s3cr3t/>", "password=:/>"],
+)
+def test_the_text_rule_then_redact_body_twice_is_once(shape):
+    def mask(text):
+        return redact_body(mask_by_patterns(text, _TEXT_RULES))
+
+    once = mask(shape)
+    assert mask(once) == once

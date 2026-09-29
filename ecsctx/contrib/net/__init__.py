@@ -27,7 +27,10 @@ from typing import Any
 from urllib.parse import unquote_plus, urlparse, urlsplit, urlunsplit
 
 from ecsctx.masking.filters import MaskPIIFilter
-from ecsctx.masking.patterns import mask_secret
+from ecsctx.masking.patterns import holds_pan_run, mask_secret
+from ecsctx.masking.tokens import _MASKED_VALUE, _PLACEHOLDER, make_label
+
+_SECRET_LABEL = f"[{make_label('secret')}]"
 
 # Masks a body by its keys before it is serialised (see _masked_json). The
 # filter's defaults describe a log record: service/project/log and the
@@ -234,15 +237,12 @@ def _get_compiled() -> tuple:
     )
     # access_token=...  ->  access_token=<masked>  (form-encoded bodies)
     # `\b` cannot fire between "_" and "secret", so "client_secret=" is never half-matched.
-    # A quote ends a value only where it could close a JSON string -- before
-    # whitespace, `,`, `:`, `}`, `]` or the end -- so a query inside a JSON
-    # string keeps the string's closing quote. Any other quote is the value's:
-    # `password="…"` and an XML attribute start with one, and ended there they
-    # masked nothing. An escaped quote (`\"`) is the value's too: stopped
-    # there, the capture kept the backslash, dropping it closed the string,
-    # and the rest of the value shipped in clear.
+    # A value runs to the next `&` or whitespace, as it always did: every
+    # reading that ended it at a quote left the rest of some secret in clear.
+    # Only the structure at its two ends stays outside the mask
+    # (_split_form_value).
     form_re = re.compile(
-        r"\b(" + "|".join(keys) + r')=([^&\s"\\]*(?:(?:\\.|"(?![\s,:}\]]|$))[^&\s"\\]*)*)',
+        r"\b(" + "|".join(keys) + r")=([^&\s]*)",
         re.IGNORECASE,
     )
     _compiled_cache = (cache_key, (hint_re, json_re, form_re))
@@ -318,6 +318,12 @@ def redact_body(text: str) -> str:
     as what it decodes to -- a JSON string unescaped, a form value unquoted --
     so it carries the token the same value gets under a key; one already
     masked passes through.
+
+    A form value runs to the next ``&`` or whitespace. Only the structure at
+    its two ends -- a quote or an escaped one, and ``}``, ``]``, ``,``, a
+    JSON key's ``":``, ``>`` or ``/>`` -- stays as written; the rest is the
+    value, the label if it holds a card-number run, unescaped first only
+    when it sits between escaped quotes in a JSON string.
     """
     hint_re, json_re, form_re = _get_compiled()
     if not hint_re.search(text):
@@ -332,28 +338,71 @@ def _mask_json_value(match: re.Match) -> str:
         value = json.loads(f'"{raw}"')
     except ValueError:
         value = raw  # an escape JSON does not know: masked as it is written
-    masked = json.dumps(mask_secret(value))
-    if match.end() < len(match.string):
-        # The value's closing quote is still in the text: write only the rest.
-        masked = masked[:-1]
-    return match.group(1) + masked
+    closed = match.end() < len(match.string)
+    if not closed and holds_pan_run(value):
+        # With no closing quote the value ran on to the end of the text, so it
+        # may hold more than itself: judged as a form value is.
+        masked = _SECRET_LABEL
+    else:
+        masked = mask_secret(value)
+    dumped = json.dumps(masked)
+    # A closed value's quote is still in the text: write only the rest.
+    return match.group(1) + (dumped[:-1] if closed else dumped)
+
+
+# The structure a form value may end in -- a quote or an escaped one, a JSON
+# key's `":`, `}`, `]`, `,`, `>`, and `/>` after a quote -- written backwards,
+# so one match from the start of the reversed value finds the longest such
+# end. After an unquoted value only the `>` is structure: a `/` right after a
+# token reads to the credential text rule as more of the credential, so the
+# next pass hashed the token again.
+_TAIL_REVERSED = re.compile(r'(?:"\\?|:"\\?|[}\],]|>/(?=")|>)*')
+
+
+def _tail(text: str) -> str:
+    """The longest end of ``text`` that is structure only."""
+    return text[len(text) - _TAIL_REVERSED.match(text[::-1]).end() :]
+
+
+def _split_form_value(value: str) -> tuple[str, str, str]:
+    """``value`` as the structure it opens with, the value itself, and the
+    structure it ends in.
+
+    A label, token, truncation or placeholder with only structure after it
+    is taken whole: `[SECRET-MASKED],` is the label and a comma, where the
+    longest structural end alone would read `[SECRET-MASKED` and `],`.
+    """
+    head = '\\"' if value.startswith('\\"') else '"' if value.startswith('"') else ""
+    body = value[len(head) :]
+    for shape in (_MASKED_VALUE, _PLACEHOLDER):
+        whole = shape.match(body)
+        if whole and _tail(rest := body[whole.end() :]) == rest:
+            return head, whole.group(), rest
+    tail = _tail(body)
+    return head, body[: len(body) - len(tail)], tail
 
 
 def _mask_form_value(match: re.Match) -> str:
-    raw = match.group(2)
-    if "\\" in raw:
-        # A form body inside a JSON string: its value's own quotes arrive
-        # escaped (`\"…\"`). Unescaped, they are dropped before the checks
-        # and the hash, as plain quotes are.
+    head, inner, tail = _split_form_value(match.group(2))
+    value = inner
+    if head == '\\"' and tail.startswith('\\"'):
+        # Between escaped quotes it sits in a JSON string, so it is JSON text:
+        # unescaped, it carries the token the same value gets under a key. A
+        # raw form body is never unescaped -- its backslashes are its own.
         with contextlib.suppress(ValueError):
-            raw = json.loads(f'"{raw}"')
-    value = unquote_plus(raw)
-    masked = mask_secret(value)
-    if masked == value:
-        # Empty, or masked already: left exactly as written, so what sits
-        # in a JSON string stays escaped.
-        return match.group(0)
-    return f"{match.group(1)}={masked}"
+            value = json.loads(f'"{inner}"')
+    value = unquote_plus(value)
+    if holds_pan_run(value):
+        # Asked before the pass-through below: a value shaped like a token can
+        # carry a card number too.
+        masked = _SECRET_LABEL
+    else:
+        masked = mask_secret(value)
+        if masked == value:
+            # Empty, or masked already once its quotes are dropped: left
+            # exactly as written.
+            return match.group(0)
+    return f"{match.group(1)}={head}{masked}{tail}"
 
 
 def _masked_json(body: Any) -> str:

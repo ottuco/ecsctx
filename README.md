@@ -917,9 +917,12 @@ from ecsctx.contrib.net import (
 - `redact_body(text)` — masks credential values (`access_token`,
   `client_secret`, …) in JSON and form-encoded bodies. A value is masked as
   what it decodes to (a JSON escape, a form encoding), and one already masked
-  passes through. A bare `token` key is deliberately left alone: gateways
-  reuse it for non-secret payment/session identifiers that log readers rely
-  on.
+  passes through. A form value runs to the next `&` or whitespace; the
+  quotes and closing brackets at its ends stay as written (`<Auth
+  password="[SECRET-MASKED]"/>`), and one holding a card-number run is
+  `[SECRET-MASKED]` either way. A bare `token` key is deliberately left alone:
+  gateways reuse it for non-secret payment/session identifiers that log
+  readers rely on.
 - `redact_url(url, secrets=[token])` also masks literal values anywhere in
   the URL, longest first — a saved-card token in a path such as
   `/card/<token>/`.
