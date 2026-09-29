@@ -246,29 +246,37 @@ class TestACardKeysValueIsMaskedOnce:
 
 # Below twelve digits a value cannot be a card number as written, but its stars
 # can stand for the rest of one: a group of digits and stars long enough to be
-# a card number is shown only in a truncation's shape -- the first six at most,
-# four stars or more, the last four at most.
+# a card number is shown only in a truncation's shape -- the first six digits
+# at most, four stars or more, the last four at most. Groups of four one space
+# apart, as a card number is written 4-4-4-4, are read as one group.
 STARRED_REFUSED = [
-    # Eleven digits of fifteen.
+    # The last six of fifteen.
     "45087****001019",
-    # Eight of twelve, beside another number: a truncation keeps the first six
-    # or none.
-    "4508****1019 12",
-    "4111********1111",
+    # Seven leading digits, read as one group: `4508750*****1019`.
+    "4508 750* **** 1019",
+    # The last eight of sixteen.
+    "**** **** 1111 1111",
 ]
 STARRED_KEPT = [
     "411111******1111",
     "**********1234",
     "[CARD-MASKED:411111******1111]",
-    # An upstream system's truncation, as test_masking_bare_pan pins it.
+    # An upstream system's truncation, as test_masking_bare_pan pins it, and
+    # masks keeping the first four: fewer digits than a truncation keeps.
     "411111****1111",
+    "4508****1019 12",
+    "4111********1111",
+    "4111****1111",
     # The card rule's own output, read again.
     "411111******1111 x5",
     "****623691**********1234",
-    # Too short to be a card number, or no group holding both.
+    # Groups of four read as one: the first six and last four, or the last four.
+    "4111 11** **** 1111",
+    "**** **** **** 1111",
+    # Too short to be a card number: `****1111` beside an expiry.
+    "**** 1111 12 25",
     "****1234",
     "12**34",
-    "**** **** **** 1111",
 ]
 PLAIN_SHORT = ["12345678901", "4111"]
 

@@ -821,10 +821,14 @@ def _holds_a_written_run(text: str) -> bool:
 _MARK_GROUP = re.compile(r"[\d*]+")
 _WRITTEN_TRUNCATION = re.compile(r"\d{6}\*{5,}\d{4}|\*{8,}\d{4}")
 # What any truncation may show, the card rule's or an upstream system's: the
-# first six at most, four stars or more, the last four at most; stars before or
-# after hide more (test_masking_bare_pan pins an upstream `123456****7890`).
-# Written so each run of stars has one reading: a long one never backtracks.
-_TRUNCATION_SHAPE = re.compile(r"(?:\**\d{6})?\*{4,}(?:\d{1,4}\**)?")
+# first six digits at most, four stars or more, the last four at most -- no
+# more than PCI DSS 3.5.1 lets anyone keep -- with stars before or after hiding
+# more (test_masking_bare_pan pins an upstream `123456****7890`). Written so
+# each run of stars has one reading: a long one never backtracks.
+_TRUNCATION_SHAPE = re.compile(r"(?:\**\d{1,6})?\*{4,}(?:\d{1,4}\**)?")
+# Groups of exactly four digits or stars, one space apart, as a card number is
+# written 4-4-4-4.
+_GROUPS_OF_FOUR = re.compile(r"(?<![\d*])[\d*]{4}(?: [\d*]{4})+(?![\d*])")
 
 
 def _hides_as_truncations(masked: str) -> bool:
@@ -835,13 +839,15 @@ def _hides_as_truncations(masked: str) -> bool:
     a short one completes a card number (another masker's `4508750****001019`
     shows thirteen digits of seventeen, and `****1111 1234 5670` twelve of
     sixteen). Where fewer show, a group long enough to stand for a card number
-    has a truncation's shape (`_TRUNCATION_SHAPE`): another masker's
-    `45087****001019` shows eleven digits of fifteen, while `****1234`
-    completes none."""
+    has a truncation's shape (`_TRUNCATION_SHAPE`), groups of four written
+    4-4-4-4 read as one: another masker's `45087****001019` shows the last six
+    of fifteen and `4508 750* **** 1019` the first seven of sixteen, while
+    `****1234` completes none."""
     if sum(character.isdigit() for character in masked) >= _MIN_PAN_DIGITS:
         shape, shortest = _WRITTEN_TRUNCATION, 1
     else:
         shape, shortest = _TRUNCATION_SHAPE, _MIN_PAN_DIGITS
+        masked = _GROUPS_OF_FOUR.sub(lambda groups: groups.group().replace(" ", ""), masked)
     return all(
         shape.fullmatch(group)
         for group in _MARK_GROUP.findall(masked)
