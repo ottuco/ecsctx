@@ -234,8 +234,9 @@ def key_field_type(key: str) -> str | None:
     reads as the same field would: its token, or ``[SECRET-MASKED]`` without a
     keyset, and ``[SECRET-MASKED]`` either way where it is shaped like a card
     number (an MPGS token is sixteen digits), is a placeholder another masker
-    left, or is in a token's shape with a card number in it. A value known to
-    be a credential needs no lookup:
+    left, or is in a token's shape with a card number in it -- and, with the
+    ``pci`` pack, where it holds a card-number run anywhere, as a payment id
+    does too. A value known to be a credential needs no lookup:
     ``mask_secret(value)``. A card key's value is truncated, not labelled:
     ``mask_card_value(value)``.
     """

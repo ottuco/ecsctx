@@ -7,6 +7,8 @@ stands where a token can.
 | a secret shaped like a card number           | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
 | a placeholder (`[REDACTED]`, `***`)          | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
 | a token's shape with a card number in it     | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
+| a secret holding a card number, `pci` pack   | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
+| a secret holding a card number, without it   | its token              | `[SECRET-MASKED]` |
 | empty                                        | empty                  | empty             |
 
 A secret shaped like a card number -- a saved card's sixteen-digit gateway
@@ -636,8 +638,9 @@ PAN_SHAPES = [
     json.dumps({"password": f'"{PAN}"'}),
     json.dumps({"url": f"https://x?secret={PAN}"}),
     # Not `{"password": "<card number>*"}`: redact_body gives it the label
-    # (test above), but the key walk under default packs and credential text
-    # rule 2 hash it first -- a follow-up, outside redact_body.
+    # (test above), but without `pci` the key walk and the credential text
+    # rules hash it first -- the accepted residual for a default-pack service,
+    # which receives no card numbers (TestACredentialThatHoldsACardNumber).
     json.dumps({"password": f"ptok:v1:{PAN}{'A' * 27}"}),
 ]
 
@@ -693,8 +696,11 @@ def test_the_text_rule_then_redact_body_twice_is_once(shape):
     assert mask(once) == once
 
 
-# `ptok:v1:` typed before a card number, in a token's exact shape.
+# A value that holds a card number among other text, and `ptok:v1:` typed
+# before one in a token's exact shape.
+HOLDS_A_PAN = "abc4111111111111111xyz"
 CRAFTED_TOKEN = f"ptok:v1:{PAN}{'A' * 27}"
+A_UUID = "26888535-1296-4273-8ba1-c634e90bf52f"
 
 
 def _every_path(value: str) -> dict[str, str]:
@@ -703,10 +709,7 @@ def _every_path(value: str) -> dict[str, str]:
     return {
         "key walk": _walk({"password": value})["password"],
         "mask_secret": mask_secret(value),
-        **{
-            text: mask_by_patterns(text % value, _TEXT_RULES)
-            for text in CREDENTIAL_TEXTS
-        },
+        **{text: mask_by_patterns(text % value, _TEXT_RULES) for text in CREDENTIAL_TEXTS},
         "query param": redact_url(f"https://h/pay?password={value}&order_id=42"),
         "route param": _loggable_path(f"/v1/cards/{value}/"),
     }
@@ -721,6 +724,66 @@ def _as_masked(masked: str) -> dict[str, str]:
         "query param": f"https://h/pay?password={masked}&order_id=42",
         "route param": f"/v1/cards/{masked}/",
     }
+
+
+class TestACredentialThatHoldsACardNumber:
+    """With the `pci` pack, a credential holding a card-number run is its
+    label on every path -- as the key walk's own `pci` branch already made it
+    under a key -- since its hash is a keyed hash of a card number. Without
+    `pci` it keeps its token: a default-pack service receives no card
+    numbers, and labelling such values would label 7% of 64-hex signatures."""
+
+    def test_with_pci_it_is_the_label_on_every_path(self):
+        configure_masking_packs(["pci"])
+        assert _every_path(HOLDS_A_PAN) == _as_masked(LABEL)
+
+    def test_without_pci_it_keeps_its_token(self):
+        assert _every_path(HOLDS_A_PAN) == _as_masked(token_or_label(HOLDS_A_PAN))
+
+    def test_with_pci_a_uuid_keeps_its_token(self):
+        configure_masking_packs(["pci"])
+        assert _every_path(A_UUID) == _as_masked(token_or_label(A_UUID))
+
+    def test_masked_twice_it_is_masked_once(self):
+        configure_masking_packs(["pci"])
+        for text in CREDENTIAL_TEXTS:
+            once = mask_by_patterns(text % HOLDS_A_PAN, _TEXT_RULES)
+            assert mask_by_patterns(once, _TEXT_RULES) == once
+
+
+def _payment_id(value: str) -> str:
+    return tokenize(value, "payment_id") if is_configured() else "[PAYMENT-ID-MASKED]"
+
+
+PAYMENT_ID_TEXTS = ["payment_id=%s", "transaction_id: %s done", "'auth_id': '%s'", "auth_id %s"]
+
+
+class TestAPaymentIdThatHoldsACardNumber:
+    """A payment id was `tokenize(<card number>, "payment_id")`: a keyed hash
+    of the bare card number. With `pci` it is the label, as a credential is."""
+
+    @pytest.mark.parametrize("value", [PAN, HOLDS_A_PAN])
+    @pytest.mark.parametrize("text", PAYMENT_ID_TEXTS)
+    def test_with_pci_it_is_the_label(self, text, value):
+        configure_masking_packs(["pci", "financial_ids"])
+        masked = mask_by_patterns(text % value, rules_for(ALL_PACKS))
+        assert masked == text % "[PAYMENT-ID-MASKED]"
+        assert mask_by_patterns(masked, rules_for(ALL_PACKS)) == masked
+
+    @pytest.mark.parametrize("text", PAYMENT_ID_TEXTS)
+    def test_without_pci_it_keeps_its_token(self, text):
+        configure_masking_packs(["financial_ids"])
+        rules = rules_for(frozenset({"default", "financial_ids"}))
+        assert mask_by_patterns(text % PAN, rules) == text % _payment_id(PAN)
+
+    def test_under_its_key_with_pci_it_is_the_label_too(self):
+        configure_masking_packs(["pci", "financial_ids"])
+        assert _walk({"payment_id": HOLDS_A_PAN}) == {"payment_id": "[PAYMENT-ID-MASKED]"}
+
+    @pytest.mark.parametrize("text", PAYMENT_ID_TEXTS)
+    def test_with_pci_a_uuid_keeps_its_token(self, text):
+        configure_masking_packs(["pci", "financial_ids"])
+        assert mask_by_patterns(text % A_UUID, rules_for(ALL_PACKS)) == text % _payment_id(A_UUID)
 
 
 @pytest.mark.parametrize("packs", [["default"], sorted(ALL_PACKS)], ids=["default", "every-pack"])

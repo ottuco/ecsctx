@@ -90,6 +90,13 @@ def already_masked(text: str) -> bool:
     return _MASKED_VALUE.fullmatch(text) is not None
 
 
+# The types judged here for a card number inside the value, with the `pci`
+# pack: every path a credential or a payment id takes into a log ends in
+# mask_by_field_type, as the key walk's own `pci` branch judges a PII leaf
+# (filters._mask_pii_leaf).
+_PAN_CHECKED_TYPES = frozenset({"secret", "payment_id"})
+
+
 def mask_by_field_type(value: str, field_type: str) -> str:
     """The token for ``value``, bare (``ptok:v1:…``), as a reader searches for
     it; ``[LABEL]`` where no token can stand: a type that is never tokenized,
@@ -103,8 +110,10 @@ def mask_by_field_type(value: str, field_type: str) -> str:
     and is the label, in every pack. A credential is the label, never a token,
     when it is shaped like a card number (a saved card's sixteen-digit gateway
     token), since a keyed hash of what may be a PAN is what PCI DSS FAQ 1117
-    forbids, and when it is a placeholder another masker left. Applied here,
-    where every caller passes -- the key walk, the credential text rules, a
+    forbids, and when it is a placeholder another masker left. With the `pci`
+    pack in force, a credential or payment id that holds a card-number run
+    anywhere (``holds_pan_run``) is the label too. Applied here, where every
+    caller passes -- the key walk, the credential and payment-id text rules, a
     route parameter, ``ecsctx.contrib.net`` -- rather than by each of them.
     """
     field_rule = get_field_rule(field_type)
@@ -117,20 +126,26 @@ def mask_by_field_type(value: str, field_type: str) -> str:
         return f"[{label}]"
     if already_masked(value):
         return f"[{label}]" if _holds_a_card_number(value) else value
-    if field_type == "secret":
+    if field_type in _PAN_CHECKED_TYPES:
         # Imported here: patterns imports this module as it loads.
-        from ecsctx.masking.patterns import pan_shaped
+        from ecsctx.masking.patterns import holds_pan_run, pan_shaped
 
         # Judged as it would be hashed: tokenize() drops the surrounding
         # whitespace and one layer of matching quotes first, so '"4111…"'
         # was a keyed hash of the bare card number.
-        bare = normalize_value(value, "secret")
-        if already_masked(bare):
-            # Masking's own output in quotes (the credential text rule keeps
-            # a value's quotes around its label): hashed, every such label
-            # would be one token shared by every record.
-            return f"[{label}]" if _holds_a_card_number(bare) else value
-        if pan_shaped(bare) or _PLACEHOLDER.fullmatch(bare):
+        bare = normalize_value(value, field_type)
+        if field_type == "secret":
+            if already_masked(bare):
+                # Masking's own output in quotes (the credential text rule
+                # keeps a value's quotes around its label): hashed, every such
+                # label would be one token shared by every record.
+                return f"[{label}]" if holds_pan_run(bare) else value
+            if pan_shaped(bare) or _PLACEHOLDER.fullmatch(bare):
+                return f"[{label}]"
+        if _pci_in_force() and holds_pan_run(bare):
+            # Without `pci` it is hashed: a default-pack service receives no
+            # card numbers, and the label would stand in for 7% of the 64-hex
+            # signatures Connect logs, where a token can stand.
             return f"[{label}]"
     token = safe_tokenize(value, field_rule.field_type)
     if token == _REDACTED:
@@ -143,3 +158,11 @@ def _holds_a_card_number(text: str) -> bool:
     from ecsctx.masking.patterns import holds_pan_run
 
     return holds_pan_run(text)
+
+
+def _pci_in_force() -> bool:
+    """Whether this process masks with the `pci` pack. Imported here: config
+    imports patterns, which imports this module as it loads."""
+    from ecsctx.masking.config import get_masking_packs
+
+    return "pci" in get_masking_packs()
