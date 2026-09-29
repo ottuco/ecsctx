@@ -504,9 +504,12 @@ A regex route (`re_path()`, DRF's routers) reads as its pattern:
 `url.path` is the path, with each segment a route parameter fills masked by
 `mask_by_field_type(value, key_field_type(name))` when the masking engine
 classifies the parameter's name: `/v1/cards/[SECRET-MASKED]/` above (the bare
-`ptok:` token where PII tokenization is configured). A parameter it leaves
-alone (`pk`, `uid`) stays readable. A value that shares its segment with other
-text (a regex route's `(?P<token>[^/.]+)\.pdf`) is masked wherever it appears.
+`ptok:` token where PII tokenization is configured — but `[SECRET-MASKED]`
+either way for a token shaped like a card number, such as MPGS's sixteen
+digits, since a keyed hash of what may be a PAN is what PCI DSS FAQ 1117
+forbids). A parameter it leaves alone (`pk`, `uid`) stays readable. A value
+that shares its segment with other text (a regex route's
+`(?P<token>[^/.]+)\.pdf`) is masked wherever it appears.
 `LoggingContextMiddleware`'s `unhandled_exception` line masks its `url.path`
 the same way. Django's own `django.request` lines ("Internal Server Error:
 <path>") are not ecsctx's, and still carry the path.
@@ -873,6 +876,25 @@ or hash is emitted beside a truncated PAN (FAQ 1117). `mask_pan` returns the
 same bare core for call sites that must mask a PAN before logging:
 `from ecsctx import mask_pan`.
 
+### Masking a value with no key beside it (`mask_card_value`, `mask_secret`)
+
+A value that reaches a log outside a mapping — a URL segment, a body a service
+builds itself — is masked as the key it would sit under masks it:
+
+- `mask_card_value(value)` — a card key's value: a PAN truncated
+  (`411111******1111`), anything that is not one left readable, and a value
+  that could still hide one refused as `[CARD-MASKED]`.
+- `mask_secret(value)` — a credential key's value: the bare token
+  (`ptok:v1:…`) where PII tokenization is configured, `[SECRET-MASKED]` where
+  it is not. It is `[SECRET-MASKED]` either way for a value shaped like a card
+  number (a saved card's sixteen-digit gateway token: FAQ 1117 again) and for
+  a placeholder another masker left (`[REDACTED]`, `[PII_REDACTED]`, `***`,
+  `Bearer ****`), which would otherwise hash to one token shared by every
+  record that carries it. An empty value stays empty; `None` and booleans come
+  back as they are.
+
+Both are `from ecsctx import mask_card_value, mask_secret`.
+
 ### Network-boundary redaction (`ecsctx.contrib.net`)
 
 `mask_sensitive_data` covers PII in `payload`/`args`/`kwargs`/http bodies, but
@@ -887,14 +909,20 @@ from ecsctx.contrib.net import (
 
 - `redact_url(url)` — masks credential-looking query params (`password`,
   `api_key`, `access_code`, … incl. single-letter legacy keys) before logging.
+  A credential param's value is replaced in place, unencoded; every other
+  param is left exactly as written, an empty value stays empty, and a URL
+  that cannot be parsed is masked whole.
   Call it **before** shaping the URL for ECS: `ecs_url(redact_url(full_url))`,
   otherwise the raw query survives in `url.full`.
 - `redact_body(text)` — masks credential values (`access_token`,
-  `client_secret`, …) in JSON and form-encoded bodies. A bare `token` key is
-  deliberately left alone: gateways reuse it for non-secret payment/session
-  identifiers that log readers rely on.
+  `client_secret`, …) in JSON and form-encoded bodies. A value is masked as
+  what it decodes to (a JSON escape, a form encoding), and one already masked
+  passes through. A bare `token` key is deliberately left alone: gateways
+  reuse it for non-secret payment/session identifiers that log readers rely
+  on.
 - `redact_url(url, secrets=[token])` also masks literal values anywhere in
-  the URL — a saved-card token in a path such as `/card/<token>/`.
+  the URL, longest first — a saved-card token in a path such as
+  `/card/<token>/`.
 - `url_host(url)` — the host to name in a log *message*; the full URL belongs
   in `url.full`, because a message is a grouping key.
 - `loggable_body(response)` — the response body to log, or `None`. A
@@ -907,6 +935,12 @@ from ecsctx.contrib.net import (
   landing mid-value cannot leave a token head exposed.
 - `loggable_request_body(data, json_body)` — the same for the outbound half
   (`json_body` wins over form `data`); never raises.
+
+Every credential these helpers mask is masked as `mask_secret` masks one: its
+token where PII tokenization is configured, `[SECRET-MASKED]` where it is not
+(and for a card-shaped value or a placeholder), so it carries the token the
+same value gets under a key. Before 0.15.4 they wrote a fixed `[REDACTED]`,
+whatever the keyset.
 
 Configure per deploy without code changes. Precedence: explicit call >
 Django settings > env vars > defaults (same lazy pattern as the masking
@@ -972,7 +1006,7 @@ Card and expiry keys are matched precisely.
 
 | Type | Key names | Content rule (pack) | Output |
 |------|-----------|---------------------|--------|
-| **Secrets** | ending in `token`, `secret`, `password`, `passwd`, `passphrase`, `passcode`, `pwd`; `authorization` (also `HTTP_AUTHORIZATION`, `Proxy-Authorization`), `cookie`, `bearer`, `basic`, `digest`, `credential(s)`, an `api`/`access`/`secret`/`private`/`hmac`/`merchant`/… `_key(s)`, `access_code` | credential forms (`default`) | `[SECRET-MASKED…]`; a PAN-shaped credential is always the label, never truncated |
+| **Secrets** | ending in `token`, `secret`, `password`, `passwd`, `passphrase`, `passcode`, `pwd`; `authorization` (also `HTTP_AUTHORIZATION`, `Proxy-Authorization`), `cookie`, `bearer`, `basic`, `digest`, `credential(s)`, an `api`/`access`/`secret`/`private`/`hmac`/`merchant`/… `_key(s)`, `access_code` | credential forms (`default`) | `[SECRET-MASKED…]`; always the label for a PAN-shaped credential (never truncated, never hashed) and for a placeholder another masker left (`[REDACTED]`, `***`) |
 | **Emails / phones** | containing `email`; `phone`, `mobile`, `tel` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]` |
 | **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `card_details` (the whole key); `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
 | **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no` | 12–19 digit runs (`pci`) | `411111******1111` |

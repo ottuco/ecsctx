@@ -230,8 +230,13 @@ def key_field_type(key: str) -> str | None:
     For a value that reaches a log outside a mapping, where no key sits next
     to it: a URL path segment such as the card token in
     `DELETE /v1/pbl/card/token/<token>/`. Mask it with
-    ``mask_by_field_type(value, key_field_type("token"))`` and it reads as the
-    same field would.
+    ``mask_by_field_type(value, key_field_type("token"))`` and a credential
+    reads as the same field would: its token, or ``[SECRET-MASKED]`` without a
+    keyset, and ``[SECRET-MASKED]`` either way where it is shaped like a card
+    number (an MPGS token is sixteen digits) or is a placeholder another
+    masker left. A value known to be a credential needs no lookup:
+    ``mask_secret(value)``. A card key's value is truncated, not labelled:
+    ``mask_card_value(value)``.
     """
     return classify_key(key, get_masking_packs(), get_masking_safe_keys())
 
