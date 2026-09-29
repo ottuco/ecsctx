@@ -12,6 +12,7 @@ import re
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.pii import tokenize as _pii_tokenize
 from ecsctx.pii.crypto import TOKEN_PREFIX, TOKEN_VERSION
+from ecsctx.pii.normalize import normalize_value
 
 # The one shape ecsctx.pii.tokenize emits (hmac_tokenize): prefix, version, and
 # an HMAC-SHA-256 digest in unpadded base64url, 43 characters. Anything else
@@ -112,7 +113,11 @@ def mask_by_field_type(value: str, field_type: str) -> str:
         # Imported here: patterns imports this module as it loads.
         from ecsctx.masking.patterns import pan_shaped
 
-        if pan_shaped(value) or _PLACEHOLDER.fullmatch(value.strip()):
+        # Judged as it would be hashed: tokenize() drops the surrounding
+        # whitespace and one layer of matching quotes first, so '"4111…"'
+        # was a keyed hash of the bare card number.
+        bare = normalize_value(value, "secret")
+        if pan_shaped(bare) or _PLACEHOLDER.fullmatch(bare):
             return f"[{label}]"
     token = safe_tokenize(value, field_rule.field_type)
     if token == _REDACTED:

@@ -21,6 +21,7 @@ by ecsctx under the same keyset, never written out.
 """
 
 import json
+from urllib.parse import quote
 
 import pytest
 from django.test import RequestFactory
@@ -284,3 +285,68 @@ def test_every_path_gives_a_secret_the_same_token():
     assert mask_by_patterns(f"password={SECRET}", _TEXT_RULES) == f"password={expected}"
     assert redact_url(f"https://h/pay?password={SECRET}") == f"https://h/pay?password={expected}"
     assert redact_body(f'{{"password": "{SECRET}"}}') == f'{{"password": "{expected}"}}'
+
+
+# The tokenizer hashes a value without its surrounding whitespace and one layer
+# of matching quotes (ecsctx.pii.normalize), so a card number or a placeholder
+# in quotes was hashed bare: the checks must run on what is hashed.
+QUOTED_CARDS = [
+    *(f'"{card}"' for card in CARD_SHAPED),
+    *(f"'{card}'" for card in CARD_SHAPED),
+    '" 4111111111111111 "',
+]
+QUOTED = [*QUOTED_CARDS, '"***"', "'[REDACTED]'", '"[PII_REDACTED]"', "'Bearer ****'"]
+
+
+class TestAQuotedCardNumberOrPlaceholderIsTheLabel:
+    @pytest.mark.parametrize("value", QUOTED)
+    def test_mask_by_field_type(self, value):
+        assert mask_by_field_type(value, "secret") == LABEL
+
+    @pytest.mark.parametrize("value", QUOTED)
+    def test_mask_secret(self, value):
+        assert mask_secret(value) == LABEL
+
+    @pytest.mark.parametrize("value", QUOTED)
+    def test_the_key_walk(self, value):
+        assert _walk({"password": value})["password"] == LABEL
+
+    @pytest.mark.parametrize("value", QUOTED_CARDS)
+    def test_a_credential_text_rule(self, value):
+        # The rule's value takes no quote -- they stay in its prefix -- so it
+        # never hashed them.
+        text = f"login with password={value} failed"
+        assert mask_by_patterns(text, _TEXT_RULES) == text.replace(value.strip("\"' "), LABEL)
+
+    @pytest.mark.parametrize("value", QUOTED)
+    def test_a_route_parameter(self, value):
+        assert _loggable_path(f"/v1/cards/{value}/") == f"/v1/cards/{LABEL}/"
+
+    @pytest.mark.parametrize("value", QUOTED)
+    def test_a_literal_secret_in_a_url(self, value):
+        assert redact_url(f"https://h/pbl/card/{value}/", secrets=[value]) == f"https://h/pbl/card/{LABEL}/"
+
+    @pytest.mark.parametrize("key", ["password", "api_key"])
+    @pytest.mark.parametrize("value", QUOTED)
+    def test_a_credential_query_param(self, key, value):
+        url = redact_url(f"https://h/pay?{key}={quote(value, safe='')}&order_id=42")
+        assert url == f"https://h/pay?{key}={LABEL}&order_id=42"
+        assert redact_url(url) == url
+
+    @pytest.mark.parametrize("value", QUOTED)
+    def test_a_json_body(self, value):
+        masked = redact_body(json.dumps({"password": value, "status": "ok"}))
+        assert json.loads(masked) == {"password": LABEL, "status": "ok"}
+        assert redact_body(masked) == masked
+
+    def test_a_json_body_with_unicode_escapes(self):
+        masked = redact_body('{"password": "\\u00224111111111111111\\u0022"}')
+        assert masked == f'{{"password": "{LABEL}"}}'
+
+    @pytest.mark.parametrize(
+        "value", ["'4111111111111111'", "%224111111111111111%22", "%279923960000004314%27", "'***'"]
+    )
+    def test_a_form_body(self, value):
+        masked = redact_body(f"password={value}&grant_type=x")
+        assert masked == f"password={LABEL}&grant_type=x"
+        assert redact_body(masked) == masked
