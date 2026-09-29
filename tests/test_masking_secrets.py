@@ -84,8 +84,14 @@ class TestMaskByFieldType:
         assert mask_by_field_type("", "secret") == ""
 
     def test_a_value_masking_produced_passes_through(self):
-        for value in (token_or_label(SECRET), LABEL, "411111******1111"):
+        for value in (token_or_label(SECRET), LABEL):
             assert mask_by_field_type(value, "secret") == value
+
+    @pytest.mark.parametrize("value", ["411111******1111", '"411111******1111"', "411111%2A%2A%2A%2A%2A%2A1111"])
+    def test_a_truncation_is_the_label(self, value):
+        # Ten digits of a saved card's sixteen-digit gateway token: a
+        # credential the card rule truncated shows too much of itself.
+        assert mask_by_field_type(value, "secret") == LABEL
 
 
 class TestMaskSecret:
@@ -277,8 +283,11 @@ class TestACredentialInABody:
         assert redact_body(body % "") == body % ""
 
     def test_a_value_masking_produced_passes_through(self, body):
-        for value in (token_or_label(SECRET), LABEL, "411111******1111"):
+        for value in (token_or_label(SECRET), LABEL):
             assert redact_body(body % value) == body % value
+
+    def test_a_truncation_is_the_label(self, body):
+        assert redact_body(body % "411111******1111") == body % LABEL
 
 
 class TestABodyValueIsMaskedAsWhatItDecodesTo:
@@ -467,7 +476,7 @@ class TestAdjacentJsonMembers:
 # What masking itself wrote, in quotes: the credential text rule keeps a
 # value's quotes around its label (`password="[SECRET-MASKED]"`), and a JSON
 # string escapes them.
-QUOTED_MARKERS = ['"[SECRET-MASKED]"', "'[SECRET-MASKED]'", '"411111******1111"', '" [CARD-MASKED] "']
+QUOTED_MARKERS = ['"[SECRET-MASKED]"', "'[SECRET-MASKED]'", '" [CARD-MASKED] "']
 
 
 class TestAMarkerInQuotesIsMaskedAlready:
@@ -521,7 +530,11 @@ class TestAFormValueInEscapedQuotes:
         assert json.loads(masked) == {"note": f'password="{token_or_label(SECRET)}"&x=1'}
         assert redact_body(masked) == masked
 
-    @pytest.mark.parametrize("value", [LABEL, "411111******1111"])
+    def test_a_truncation_is_the_label(self):
+        masked = redact_body(_escaped_form_body("411111******1111"))
+        assert json.loads(masked) == {"note": f'password="{LABEL}"&x=1'}
+
+    @pytest.mark.parametrize("value", [LABEL])
     def test_a_masked_value_is_left_as_written(self, value):
         body = _escaped_form_body(value)
         assert redact_body(body) == body
@@ -1450,3 +1463,29 @@ class TestARecordThatWouldNotRender:
         record = logging.LogRecord("t", logging.INFO, __file__, 0, _Lazy("login password=%s"), ("hunter2",), None)
         MaskPIIFilter().filter(record)
         assert (record.msg, record.args) == (f"login password={token_or_label('hunter2')}", ())
+
+
+class TestACredentialThatIsATruncation:
+    """A saved card's gateway token passed as an argument: the pci card rule
+    truncated it before the credential rule read it, and ten of its digits
+    showed where the key walk and the same text written out give the label."""
+
+    @pytest.mark.parametrize("packs", ["default", "pci"])
+    def test_rendered_from_its_argument_it_is_the_label(self, packs, capsys, logging_state):
+        import io
+        import logging
+        import logging.config
+
+        from ecsctx.contrib.django import get_logging_config
+
+        out = io.StringIO()
+        cfg = get_logging_config(use_cid_filter=False, masking_packs=() if packs == "default" else ("pci", "financial_ids"))
+        cfg["handlers"]["console"]["stream"] = out
+        logging.config.dictConfig(cfg)
+        logging.getLogger("app.token").info("token=%s", "9923960000004314")
+        assert [json.loads(line)["message"] for line in out.getvalue().splitlines()] == [f"token={LABEL}"]
+        assert capsys.readouterr().err == ""
+
+    @pytest.mark.parametrize("text", ["password=411111******1111", 'token: "411111******1111"'])
+    def test_in_text_it_is_the_label(self, text):
+        assert "******" not in mask_by_patterns(text, _TEXT_RULES)

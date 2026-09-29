@@ -98,6 +98,9 @@ def already_masked(text: str) -> bool:
 # mask_by_field_type, as the key walk's own `pci` branch judges a PII leaf
 # (filters._mask_pii_leaf).
 _PAN_CHECKED_TYPES = frozenset({"secret", "payment_id"})
+# A truncation the card rule writes, its first six and last four showing. As a
+# credential it is ten digits of a saved card's sixteen-digit gateway token.
+_SHOWN_TRUNCATION = re.compile(r"\d{6}\*{4,}\d{4}")
 
 
 def mask_by_field_type(value: str, field_type: str) -> str:
@@ -130,12 +133,7 @@ def mask_by_field_type(value: str, field_type: str) -> str:
         return value
     if not field_rule.tokenizable:
         return f"[{label}]"
-    if already_masked(value):
-        return f"[{label}]" if _holds_a_card_number(value) else value
     if field_type in _PAN_CHECKED_TYPES:
-        # Imported here: patterns imports this module as it loads.
-        from ecsctx.masking.patterns import holds_pan_run, pan_shaped
-
         # Judged as it would be hashed: tokenize() drops the surrounding
         # whitespace and one layer of matching quotes first, so '"4111…"'
         # was a keyed hash of the bare card number. And as a URL or a form
@@ -145,6 +143,17 @@ def mask_by_field_type(value: str, field_type: str) -> str:
         forms = [normalize_value(value, field_type)]
         if "%" in value or "+" in value:
             forms.append(normalize_value(unquote_plus(value), field_type))
+        if field_type == "secret" and any(_SHOWN_TRUNCATION.fullmatch(bare) for bare in forms):
+            # Never passed through as masking's own output: rendered from its
+            # argument, a gateway token the card rule truncated showed ten
+            # of its digits where the key walk gives the label.
+            return f"[{label}]"
+    if already_masked(value):
+        return f"[{label}]" if _holds_a_card_number(value) else value
+    if field_type in _PAN_CHECKED_TYPES:
+        # Imported here: patterns imports this module as it loads.
+        from ecsctx.masking.patterns import holds_pan_run, pan_shaped
+
         if field_type == "secret":
             for bare in forms:
                 if already_masked(bare):
