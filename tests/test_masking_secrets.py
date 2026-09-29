@@ -591,6 +591,14 @@ class TestAFormValueRunsToItsEnd:
         assert redact_body(f"password={crafted}&x=1") == f"password={LABEL}&x=1"
         assert redact_body(f'{{"password": "{crafted}') == f'{{"password": "{LABEL}"'
 
+    @pytest.mark.parametrize("value", [f"{PAN}*", f"ptok:v1:{PAN}{'A' * 27}"])
+    def test_a_closed_json_value_that_holds_a_card_number_is_the_label(self, value):
+        # Closed or not: a keyed hash of it was a keyed hash of a card number,
+        # and a value shaped like a token passed through with one in it.
+        masked = redact_body(f'{{"password": "{value}", "status": "ok"}}')
+        assert masked == f'{{"password": "{LABEL}", "status": "ok"}}'
+        assert redact_body(masked) == masked
+
     def test_escaped_xml_in_a_json_field_keeps_what_the_key_walk_wrote(self):
         logged = loggable_body(_Reply(json.dumps({"xml": f'<Auth apikey="{PAN}"/>'})))
         assert json.loads(logged) == {"xml": f'<Auth apikey="{LABEL}"/>'}
@@ -617,6 +625,10 @@ PAN_SHAPES = [
     json.dumps({"note": f"password={PAN}&x=1"}),
     json.dumps({"password": f'"{PAN}"'}),
     json.dumps({"url": f"https://x?secret={PAN}"}),
+    # Not `{"password": "<card number>*"}`: redact_body gives it the label
+    # (test above), but the key walk under default packs and credential text
+    # rule 2 hash it first -- a follow-up, outside redact_body.
+    json.dumps({"password": f"ptok:v1:{PAN}{'A' * 27}"}),
 ]
 
 

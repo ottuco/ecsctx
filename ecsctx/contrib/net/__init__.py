@@ -322,8 +322,9 @@ def redact_body(text: str) -> str:
     A form value runs to the next ``&`` or whitespace. Only the structure at
     its two ends -- a quote or an escaped one, and ``}``, ``]``, ``,``, a
     JSON key's ``":``, ``>`` or ``/>`` -- stays as written; the rest is the
-    value, the label if it holds a card-number run, unescaped first only
-    when it sits between escaped quotes in a JSON string.
+    value, unescaped first only when it sits between escaped quotes in a
+    JSON string. A value, JSON or form, that holds a card-number run is the
+    label.
     """
     hint_re, json_re, form_re = _get_compiled()
     if not hint_re.search(text):
@@ -339,9 +340,10 @@ def _mask_json_value(match: re.Match) -> str:
     except ValueError:
         value = raw  # an escape JSON does not know: masked as it is written
     closed = match.end() < len(match.string)
-    if not closed and holds_pan_run(value):
-        # With no closing quote the value ran on to the end of the text, so it
-        # may hold more than itself: judged as a form value is.
+    if holds_pan_run(value):
+        # Closed or run on to the end of the text, judged as a form value is:
+        # hashed, it was a keyed hash of a card number, and a value shaped
+        # like a token passed through with one in it.
         masked = _SECRET_LABEL
     else:
         masked = mask_secret(value)
