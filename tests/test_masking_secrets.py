@@ -863,6 +863,9 @@ TAILS = [
     ("Bearer abc123\\def456-TAIL9", "Bearer %s", "abc123\\def456-TAIL9"),
     ('{"password": "it\'s-a-secret-TAIL"}', '{"password": "%s"}', "it's-a-secret-TAIL"),
     ("password=p@ss-TAIL", "password=%s", "p@ss-TAIL"),
+    # Doubled quotes, as CSV and SQL escape one: no empty quoted value.
+    ('password=""abc123secret', 'password=""%s', "abc123secret"),
+    ('7,"password=""s3cret-X9"""', '7,"password=""%s"""', "s3cret-X9"),
 ]
 # Where an unquoted value ends, and what stays inside one.
 DELIMITED = [
@@ -929,8 +932,14 @@ class TestACredentialValueRunsToItsDelimiter:
         masked = mask_by_patterns('{"password": "ab\\"cd-TAIL5"}', rules)
         assert json.loads(masked) == _walk({"password": 'ab"cd-TAIL5'})
 
-    @pytest.mark.parametrize("text", ['password=""', "password=''", 'password=\\"\\"', "password=", 'password: "" x'])
+    @pytest.mark.parametrize(
+        "text", ['password=""', "password=''", 'password=\\"\\"', "password=", 'password: "" x', '{"password": ""}']
+    )
     def test_an_empty_value_stays_empty(self, rules, text):
+        assert mask_by_patterns(text, rules) == text
+
+    def test_a_token_in_doubled_quotes_is_left_as_it_is(self, rules):
+        text = f'password=""{token_or_label(SECRET)}""'
         assert mask_by_patterns(text, rules) == text
 
     @pytest.mark.parametrize("text", ['password="abc', 'password: "abc def', "password='abc x"])

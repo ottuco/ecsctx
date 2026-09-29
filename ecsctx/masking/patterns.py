@@ -1328,7 +1328,9 @@ _RULE_TABLE = (
     ),
     # 3. Credential — ":" / "=" (secret_key=abc123). A value that opens with a
     # quote a closing one matches runs to it (`quote`); any other, to its
-    # delimiter. The quotes around a JSON-escaped key are the key's. After
+    # delimiter. An empty quoted value is none: quotes doubled as CSV and SQL
+    # escape one (`password=""s3cret`) are structure before the value. The
+    # quotes around a JSON-escaped key are the key's. After
     # Authorization (`auth`) the scheme is part of the value, as it is of the
     # header under its key -- `Authorization: Bearer x` masks `Bearer x`, the
     # token `mask_secret` gives it -- and is never the whole value while more
@@ -1336,8 +1338,8 @@ _RULE_TABLE = (
     _rule(
         "default",
         rf"\b(?P<prefix>(?:(?P<auth>{_AUTH_KEYWORD})|{_OTHER_CRED_KEYWORD})(?:\\?[\"']|\s)*[:=]\s*"
-        rf"(?:(?P<quote>(?<!\\)[\"'])(?={_quoted_body('quote')}*(?P=quote))|\\?[\"'])?)"
-        rf"(?P<value>(?(quote){_quoted_body('quote')}*|(?!{_WHOLE_TOKEN})"
+        rf"(?:(?P<quote>(?<!\\)[\"'])(?={_quoted_body('quote')}+(?P=quote))|(?:\\?[\"'])+)?)"
+        rf"(?P<value>(?(quote){_quoted_body('quote')}+|(?!{_WHOLE_TOKEN})"
         rf"(?(auth)(?:{_AUTH_SCHEME}[ \t]+(?={_VALUE_START}))?(?!{_AUTH_SCHEME}[ \t]+\S)){_UNQUOTED_VALUE}))",
         _cred_kv,
         _has_credential,
