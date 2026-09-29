@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.15.3 (2026-09-29)
+
+### Fixes
+- Merge pull request #67 from ottuco/fix/pair-locale-captions (9041d6e)
+- fix(masking): a caption's translation reads through only beside its own caption (e069127)
+- fix(masking): a pair's captions in other languages read through (8e1b046)
+
+
 ## v0.15.2 (2026-09-27)
 
 ### Fixes
