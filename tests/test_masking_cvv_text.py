@@ -217,6 +217,18 @@ REFUSED_WITH_STARS = [
 ]
 
 
+# Twelve digits or more left showing beside the truncations, joined in ways the
+# checks do not read as one number: a card number in double-spaced or comma
+# groups, another masker's `X`s. 354f70f and 0.15.4 refused these.
+REFUSED_BESIDE_A_TRUNCATION = [
+    "411111******1111 6011  0903  6490  1962",
+    "411111******1111, 4111,1111,1111,1111",
+    "4508750XXX001019 ************1111",
+    # And on the first pass, where 0.15.4 already showed it.
+    "4111111111111111 6011  0903  6490  1962",
+]
+
+
 class TestACardKeysValueIsMaskedOnce:
     """mask_card_value refused its own output: a value holding a truncation
     beside other digits, twelve in all, was `[CARD-MASKED]` on the next pass
@@ -240,6 +252,11 @@ class TestACardKeysValueIsMaskedOnce:
 
     @pytest.mark.parametrize("value", REFUSED_WITH_STARS)
     def test_digits_and_stars_another_masker_left_are_refused(self, value):
+        assert mask_card_value(value) == CARD_LABEL
+        assert MaskPIIFilter()._mask_dict({"card_number": value}) == {"card_number": CARD_LABEL}
+
+    @pytest.mark.parametrize("value", REFUSED_BESIDE_A_TRUNCATION)
+    def test_a_card_numbers_digits_beside_a_truncation_are_refused(self, value):
         assert mask_card_value(value) == CARD_LABEL
         assert MaskPIIFilter()._mask_dict({"card_number": value}) == {"card_number": CARD_LABEL}
 

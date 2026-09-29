@@ -1157,8 +1157,14 @@ check digits and a bank code with letters, makes exactly that country's IBAN
 length with check digits that hold (one time in 97) is read as the IBAN. Under a
 card key those values are refused (`[CARD-MASKED]`): a card key shows its scan
 only when no Luhn-valid reading in the value shows more than its first six and
-last four, and no run of card-number length is left beside the truncations, dots
-and slashes joining it too (`4111.1111.1111.1111`).
+last four, no run of card-number length is left beside the truncations, dots
+and slashes joining it too (`4111.1111.1111.1111`), and fewer than twelve
+digits show outside the truncations however they are joined — double spaces,
+commas, another masker's `X`s (`411111******1111, 4111,1111,1111,1111` is
+refused). One residual remains: a value already in the card rule's output
+shape reads as its own output and is shown, whoever wrote it —
+`450875******1019 000` could, in theory, be a 19-digit number another masker
+cut oddly.
 
 ### Structural fields (never scanned)
 
