@@ -38,6 +38,13 @@ _MASKED_VALUE = re.compile(
     rf"|{_TRUNCATED_PAN}|\[CARD-MASKED:{_TRUNCATED_PAN}\]"
 )
 
+# A credential some other masker already replaced: `[REDACTED]`
+# (ecsctx.contrib.net until 0.15.4), `[PII_REDACTED]` (safe_tokenize without a
+# keyset), stars, or stars after an auth scheme (`Bearer ****`). Hashed, each
+# is one token shared by every record that carries it: a credential that was
+# never there.
+_PLACEHOLDER = re.compile(r"\[(?:PII_)?REDACTED\]|(?:[A-Za-z][\w-]*\s+)?\*+")
+
 
 def already_tokenized(text: str) -> bool:
     return _TOKEN_SHAPE.fullmatch(text) is not None
@@ -83,6 +90,13 @@ def mask_by_field_type(value: str, field_type: str) -> str:
 
     Brackets mean nothing survived. Where something real is carried -- a token,
     or a PAN's BIN and last four -- it is carried bare.
+
+    A credential is the label, never a token, in two cases: shaped like a card
+    number (a saved card's sixteen-digit gateway token), since a keyed hash of
+    what may be a PAN is what PCI DSS FAQ 1117 forbids; and a placeholder
+    another masker left. Applied here, where every caller passes -- the key
+    walk, the credential text rules, a route parameter, ``ecsctx.contrib.net``
+    -- rather than by each of them.
     """
     field_rule = get_field_rule(field_type)
     label = make_label(field_rule.field_type)
@@ -94,6 +108,12 @@ def mask_by_field_type(value: str, field_type: str) -> str:
         return f"[{label}]"
     if already_masked(value):
         return value
+    if field_type == "secret":
+        # Imported here: patterns imports this module as it loads.
+        from ecsctx.masking.patterns import pan_shaped
+
+        if pan_shaped(value) or _PLACEHOLDER.fullmatch(value.strip()):
+            return f"[{label}]"
     token = safe_tokenize(value, field_rule.field_type)
     if token == _REDACTED:
         return f"[{label}]"
