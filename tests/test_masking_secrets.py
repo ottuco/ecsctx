@@ -1,12 +1,13 @@
 """A credential masks alike on every path into a log, and a fixed marker never
 stands where a token can.
 
-| Value                               | With a keyset          | Without           |
-|-------------------------------------|------------------------|-------------------|
-| a secret                            | its token (`ptok:v1:`) | `[SECRET-MASKED]` |
-| a secret shaped like a card number  | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
-| a placeholder (`[REDACTED]`, `***`) | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
-| empty                               | empty                  | empty             |
+| Value                                        | With a keyset          | Without           |
+|----------------------------------------------|------------------------|-------------------|
+| a secret                                     | its token (`ptok:v1:`) | `[SECRET-MASKED]` |
+| a secret shaped like a card number           | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
+| a placeholder (`[REDACTED]`, `***`)          | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
+| a token's shape with a card number in it     | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
+| empty                                        | empty                  | empty             |
 
 A secret shaped like a card number -- a saved card's sixteen-digit gateway
 token, Luhn-valid or not -- was the label under a credential key only: the
@@ -34,7 +35,9 @@ from ecsctx.contrib.django.routes import loggable_path
 from ecsctx.contrib.net import loggable_body, redact_body, redact_url
 from ecsctx.masking import mask_by_field_type, mask_secret
 from ecsctx.masking import patterns as masking_patterns
+from ecsctx.masking.config import configure_masking_packs
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
+from ecsctx.masking.tokens import make_label
 from ecsctx.pii import configure_pii, is_configured, tokenize
 from ecsctx.processors import mask_sensitive_data
 
@@ -688,3 +691,63 @@ def test_the_text_rule_then_redact_body_twice_is_once(shape):
 
     once = mask(shape)
     assert mask(once) == once
+
+
+# `ptok:v1:` typed before a card number, in a token's exact shape.
+CRAFTED_TOKEN = f"ptok:v1:{PAN}{'A' * 27}"
+
+
+def _every_path(value: str) -> dict[str, str]:
+    """What ``value`` becomes as a credential on every path into a log, each
+    reduced to the value it was masked to."""
+    return {
+        "key walk": _walk({"password": value})["password"],
+        "mask_secret": mask_secret(value),
+        **{
+            text: mask_by_patterns(text % value, _TEXT_RULES)
+            for text in CREDENTIAL_TEXTS
+        },
+        "query param": redact_url(f"https://h/pay?password={value}&order_id=42"),
+        "route param": _loggable_path(f"/v1/cards/{value}/"),
+    }
+
+
+def _as_masked(masked: str) -> dict[str, str]:
+    """What every path gives when the value is masked to ``masked``."""
+    return {
+        "key walk": masked,
+        "mask_secret": masked,
+        **{text: text % masked for text in CREDENTIAL_TEXTS},
+        "query param": f"https://h/pay?password={masked}&order_id=42",
+        "route param": f"/v1/cards/{masked}/",
+    }
+
+
+@pytest.mark.parametrize("packs", [["default"], sorted(ALL_PACKS)], ids=["default", "every-pack"])
+class TestATokenShapedValueThatHoldsACardNumber:
+    """`ptok:v1:` typed before a card number, in a token's exact shape, passed
+    every check for masking's own output: in clear, card number and all, in
+    every pack. It is the label, in every pack."""
+
+    def test_on_every_path_it_is_the_label(self, packs):
+        configure_masking_packs(packs)
+        assert _every_path(CRAFTED_TOKEN) == _as_masked(LABEL)
+
+    @pytest.mark.parametrize("field_type", ["secret", "payment_id", "email", "name", "generic"])
+    def test_under_any_type_it_is_the_types_label(self, packs, field_type):
+        configure_masking_packs(packs)
+        assert mask_by_field_type(CRAFTED_TOKEN, field_type) == f"[{make_label(field_type)}]"
+
+    def test_in_quotes_or_a_legacy_marker_it_is_the_label(self, packs):
+        configure_masking_packs(packs)
+        assert mask_secret(f'"{CRAFTED_TOKEN}"') == LABEL
+        assert mask_by_field_type(f"[EMAIL-MASKED:{CRAFTED_TOKEN}]", "email") == "[EMAIL-MASKED]"
+
+    def test_under_a_pii_key_it_is_the_label(self, packs):
+        configure_masking_packs(packs)
+        assert _walk({"customer_email": CRAFTED_TOKEN}) == {"customer_email": "[EMAIL-MASKED]"}
+
+    def test_a_real_token_still_passes_through(self, packs):
+        configure_masking_packs(packs)
+        real = tokenize(SECRET, "secret") if is_configured() else LABEL
+        assert _every_path(real) == _as_masked(real)

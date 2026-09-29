@@ -33,7 +33,7 @@ from heapq import merge
 from itertools import accumulate, pairwise
 from typing import Any, NamedTuple
 
-from ecsctx.masking.tokens import _TOKEN, _TRUNCATED_PAN, make_label, mask_by_field_type
+from ecsctx.masking.tokens import _CARDLESS_TOKEN, _TOKEN, _TRUNCATED_PAN, make_label, mask_by_field_type
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -167,7 +167,9 @@ _CRED_VALUE = rf"[{_CRED_CHARS}]"
 # earlier pass put there: masking it again would tokenize "ptok" and break it.
 # Only the exact shape, all of it (case-sensitive, as ecsctx emits it), though
 # a sentence may go on after it: "password=ptok:v1:…." ends at the full stop.
-_WHOLE_TOKEN = rf"(?-i:{_TOKEN})(?=[.,;)]*(?![{_CRED_CHARS}:]))"
+# Not one with a card-number run in it: that is `ptok:v1:` typed before a card
+# number, and the rule masks it as any other value (mask_by_field_type).
+_WHOLE_TOKEN = rf"(?-i:{_CARDLESS_TOKEN})(?=[.,;)]*(?![{_CRED_CHARS}:]))"
 # Any other value typed after "ptok:" is the credential, up to its end, colons
 # and all: "ptok:v1:hunter2" is one value. The characters after the prefix:
 _AFTER_PTOK = rf"[{_CRED_CHARS}:]"
@@ -824,7 +826,8 @@ def mask_secret(value: Any) -> Any:
     """A credential masked as a credential key's value is: its bare token
     (``ptok:v1:…``) where PII tokenization is configured, ``[SECRET-MASKED]``
     where it is not, and ``[SECRET-MASKED]`` either way for a value shaped
-    like a card number or a placeholder another masker left.
+    like a card number, a placeholder another masker left, or a value in a
+    token's shape with a card number in it (``ptok:v1:`` typed before one).
 
     For a credential that reaches a log outside a mapping, where no key sits
     next to it: a URL's path or query, a body masked before it is logged, a

@@ -887,11 +887,12 @@ builds itself — is masked as the key it would sit under masks it:
 - `mask_secret(value)` — a credential key's value: the bare token
   (`ptok:v1:…`) where PII tokenization is configured, `[SECRET-MASKED]` where
   it is not. It is `[SECRET-MASKED]` either way for a value shaped like a card
-  number (a saved card's sixteen-digit gateway token: FAQ 1117 again) and for
+  number (a saved card's sixteen-digit gateway token: FAQ 1117 again), for
   a placeholder another masker left (`[REDACTED]`, `[PII_REDACTED]`, `***`,
   `Bearer ****`), which would otherwise hash to one token shared by every
-  record that carries it. An empty value stays empty; `None` and booleans come
-  back as they are.
+  record that carries it, and for a value in a token's exact shape with a card
+  number in it (`ptok:v1:` typed before one). An empty value stays empty;
+  `None` and booleans come back as they are.
 
 Both are `from ecsctx import mask_card_value, mask_secret`.
 
@@ -1009,7 +1010,7 @@ Card and expiry keys are matched precisely.
 
 | Type | Key names | Content rule (pack) | Output |
 |------|-----------|---------------------|--------|
-| **Secrets** | ending in `token`, `secret`, `password`, `passwd`, `passphrase`, `passcode`, `pwd`; `authorization` (also `HTTP_AUTHORIZATION`, `Proxy-Authorization`), `cookie`, `bearer`, `basic`, `digest`, `credential(s)`, an `api`/`access`/`secret`/`private`/`hmac`/`merchant`/… `_key(s)`, `access_code` | credential forms (`default`) | `[SECRET-MASKED…]`; always the label for a PAN-shaped credential (never truncated, never hashed) and for a placeholder another masker left (`[REDACTED]`, `***`) |
+| **Secrets** | ending in `token`, `secret`, `password`, `passwd`, `passphrase`, `passcode`, `pwd`; `authorization` (also `HTTP_AUTHORIZATION`, `Proxy-Authorization`), `cookie`, `bearer`, `basic`, `digest`, `credential(s)`, an `api`/`access`/`secret`/`private`/`hmac`/`merchant`/… `_key(s)`, `access_code` | credential forms (`default`) | `[SECRET-MASKED…]`; always the label for a PAN-shaped credential (never truncated, never hashed), for a placeholder another masker left (`[REDACTED]`, `***`) and for a token-shaped value with a card number in it |
 | **Emails / phones** | containing `email`; `phone`, `mobile`, `tel` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]` |
 | **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `card_details` (the whole key); `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
 | **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no` | 12–19 digit runs (`pci`) | `411111******1111` |
