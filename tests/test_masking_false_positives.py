@@ -55,9 +55,10 @@ class TestScalarFieldValuesKeepTheirDigits:
     # Deferred, deliberately: a 12-19 digit string still masks as a card
     # whatever key it sits under, so an epoch-millisecond timestamp sent as a
     # string ("1727394279301") still comes out as the truncation *********9301.
-    # Narrowing that means gating rule 15 on a card IIN, which changes a
-    # fail-safe PCI contract ("any 12-19 digit run is a card") that 75 corpus
-    # cases encode. Its own change, with its own review. Note a Luhn check is
+    # Narrowing that means gating the card rule on a card IIN, which changes a
+    # fail-safe PCI contract ("any 12-19 digit run is a card", a canonical UUID
+    # its one exception: test_masking_uuids.py) that 75 corpus cases encode.
+    # Its own change, with its own review. Note a Luhn check is
     # NOT the answer: 4508750000001019 is a card in live test use and fails
     # Luhn, while the timestamp 1727394280470 passes it.
 

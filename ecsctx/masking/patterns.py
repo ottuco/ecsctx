@@ -580,22 +580,71 @@ class _CardRun:
                 yield queue[0], stop
 
 
+# A canonical UUID: 8-4-4-4-12 hex digits, with a hex letter among them, and
+# nothing alphanumeric touching it. Its hyphens join digit groups as a card
+# number's separators do, and 3.4% of random ones hold a run of twelve digits
+# or more; it is an id, never a card number. An all-digit string in that shape
+# gets no exemption: it is read as any other run of digits.
+_UUID = re.compile(
+    r"(?<![0-9A-Za-z])(?=[0-9-]{0,35}[A-Fa-f])"
+    r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
+    r"(?![0-9A-Za-z])"
+)
+# How far before a run a UUID holding its first digit can start, and how far
+# past its end a UUID's closing boundary is read.
+_UUID_LENGTH = 36
+
+
+def _truncated(text: str, start: int, end: int) -> str:
+    """``text[start:end]``, one run the card rule reads, with each card number
+    in it truncated and the rest as written."""
+    spans = _CardRun(text, start, end).spans()
+    parts, copied = [], start
+    for first, last in spans:
+        parts.append(text[copied:first])
+        parts.append(_truncate_pan(_digits_only(text[first:last])))
+        copied = last
+    parts.append(text[copied:end])
+    return "".join(parts)
+
+
+def _truncated_outside(text: str, start: int, end: int) -> str:
+    """``text[start:end]`` with every run in it truncated: the runs are read
+    again within these bounds only, so none reaches into a UUID beside them."""
+    parts, copied = [], start
+    for run in _RUN.finditer(text, start, end):
+        parts.append(text[copied : run.start()])
+        parts.append(_truncated(text, run.start(), run.end()))
+        copied = run.end()
+    parts.append(text[copied:end])
+    return "".join(parts)
+
+
 def _mask_card_run(match: re.Match) -> str:
     """The card rule's replacement: each card number in the run truncated, the
     rest as written. Deliberately not mask_by_field_type: that would tokenize
     (or, with PII unconfigured, collapse to a bare label), losing the
     truncation. Emitted bare: the truncation IS the value, and the stars alone
     make it a fixed point -- they break the digit run, and a later pass leaves
-    a truncation's first six and last four alone."""
-    spans = _CardRun(match.string, match.start(), match.end()).spans()
-    if not spans:
-        return match.group(0)
-    text, parts, copied = match.string, [], match.start()
-    for first, last in spans:
-        parts.append(text[copied:first])
-        parts.append(_truncate_pan(_digits_only(text[first:last])))
-        copied = last
-    parts.append(text[copied : match.end()])
+    a truncation's first six and last four alone.
+
+    The digits of a canonical UUID are left as written, and the rest of the
+    run is read without them: a card number beside a UUID is still truncated,
+    and never reads on into it."""
+    text, start, end = match.string, match.start(), match.end()
+    uuids = [
+        found.span()
+        for found in _UUID.finditer(text, max(0, start - _UUID_LENGTH + 1), end + _UUID_LENGTH)
+        if found.start() < end and found.end() > start
+    ]
+    if not uuids:
+        return _truncated(text, start, end)
+    parts, copied = [], start
+    for first, last in uuids:
+        parts.append(_truncated_outside(text, copied, max(copied, first)))
+        parts.append(text[max(copied, first) : min(last, end)])
+        copied = min(last, end)
+    parts.append(_truncated_outside(text, copied, end))
     return "".join(parts)
 
 
@@ -662,7 +711,12 @@ def holds_pan_run(text: str, *, phone: bool = False) -> bool:
     longer than E.164 allows -- a PAN, or a phone number with a PAN after it.
     Anywhere else "+" changes nothing: in an email address it is
     plus-addressing.
+
+    A value that is a canonical UUID holds none: its hyphens join digits as a
+    card number's separators do, but it is an id (see ``_UUID``).
     """
+    if _UUID.fullmatch(text.strip()):
+        return False
     for run in _DIGIT_RUN.findall(text):
         digits = sum(character.isdigit() for character in run)
         if phone and run.startswith("+") and digits <= _PHONE_MAX_DIGITS:

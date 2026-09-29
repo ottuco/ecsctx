@@ -341,9 +341,12 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     A PAN inside a longer value -- a card summary's number, a card number typed
     beside a name -- would be hashed with the rest of it, so that value gets
     the label instead. A value shaped like a token gets no pass: `ptok:` typed
-    before a PAN would carry it out whole. The cost is a real token that
-    happens to hold such a run, about one in 10^8, which a second pass turns
-    into the label.
+    before a PAN would carry it out whole. The check fails closed, and not
+    only on card numbers: a real token's body holds such a run about once in
+    10^8 (a second pass turns it into the label), but a random hex id far more
+    often -- about 2% of 24-digit ones, 3% at 32, 4% at 40 and 7% at 64 --
+    and each of those is its label, not its token. A canonical UUID is exempt
+    (`holds_pan_run`).
 
     A credential is the exception: shaped like a PAN it is masked whole, in
     every pack. Truncation shows ten digits of it -- the saved card's

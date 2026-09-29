@@ -828,7 +828,7 @@ strings already known clean are not scanned twice.
 **Log processor path** (automatic via `mask_sensitive_data`):
 - When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`), for fraud correlation. Same input always produces the same token. Where no token can be made (PII not configured, or tokenization failing) the value becomes its type's label, `[EMAIL-MASKED]`; CVV is never tokenized and carries nothing, so it keeps a bracketed label (`[CVV-MASKED]`); a card number is never tokenized either, but its truncation IS carried, so it is bare (`411111******1111`) — under a card key, and with the `pci` pack under any key, including a name or email field. Expiry is not masked at all. A null stays null, and an empty value stays empty.
 - When PII is not configured: detected values become the bare label (`[EMAIL-MASKED]`) — raw PII never appears in logs.
-- Cardholder data is never tokenized: PANs are truncated to `411111******1111` whatever key they sit under — including, with the `pci` pack, a name or email field, because a keyed hash beside a truncation of the same PAN is the correlation PCI DSS FAQ 1117 warns about. With `pci`, a value that a PII, secret or id key would tokenize becomes its label instead when it holds a run of 12 or more digits among other text: a PAN typed beside a name, and also a long reference number, since the check fails closed. In a phone field, a number written after `+` with at most 15 digits (E.164) is the phone number and keeps its token. CVV is always `[CVV-MASKED]`. **Expiry is not masked**: it is Cardholder Data rather than Sensitive Authentication Data, so PCI permits storing it, and masking it only cost the ability to read an expired-card decline. The rule to remember: **brackets mean nothing survived**.
+- Cardholder data is never tokenized: PANs are truncated to `411111******1111` whatever key they sit under — including, with the `pci` pack, a name or email field, because a keyed hash beside a truncation of the same PAN is the correlation PCI DSS FAQ 1117 warns about. With `pci`, a value that a PII, secret or id key would tokenize becomes its label instead when it holds a run of 12 or more digits among other text: a PAN typed beside a name, and also a long reference number or hex id, since the check fails closed. A value that is a canonical UUID (8-4-4-4-12 hex digits with a hex letter) holds none and keeps its token. In a phone field, a number written after `+` with at most 15 digits (E.164) is the phone number and keeps its token. CVV is always `[CVV-MASKED]`. **Expiry is not masked**: it is Cardholder Data rather than Sensitive Authentication Data, so PCI permits storing it, and masking it only cost the ability to read an expired-card decline. The rule to remember: **brackets mean nothing survived**.
 
 **Explicit encryption API** (standalone, NOT part of the log processor pipeline):
 - `protect()` / `reveal()` use **AES-256-GCM** for randomized ciphertext (`penc:v1:<kid>:...`) when reversible encryption is needed. Requires `PII_ACCESS=full`.
@@ -1072,11 +1072,16 @@ after a bank code with letters (`GB33 BUKB 2020 1555 5555 55`,
 `IT60 X054 2811 1010 0000 0123 456`) the digits are the IBAN's only when the
 IBAN ends where their run does. An unbroken 12–19-digit run after an IBAN's
 check digits is still a card number (`DE89 370400440532013000` →
-`DE89 370400********3000`).
+`DE89 370400********3000`). A canonical UUID — 8-4-4-4-12 hex digits with a hex
+letter among them, nothing alphanumeric touching it — is left whole
+(`request 26888535-1296-4273-8ba1-c634e90bf52f failed`), and a card number
+beside one is still truncated; an all-digit string in that shape is read as any
+other digits.
 
 Accepted residuals: a card number in groups that are not card-style, glued to a
 word or to a truncation's stars, or split by a range's dash, shows what the rule
-reads of it; the phone rule, which runs first, takes phone-shaped digits at a
+reads of it; one typed into a UUID's own groups
+(`41111111-1111-1111-abcd-ef0123456789`) stays whole; the phone rule, which runs first, takes phone-shaped digits at a
 card number's end — ten unbroken digits before a Unicode dash
 (`4731592604–8–7311` → `[PHONE-MASKED]–8–7311`), or a card's last digits with
 those after them (`2026-09-26 7112\t1817\t9153\t4791\t968 433 4111` →
