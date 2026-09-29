@@ -170,10 +170,14 @@ def call_packs(packs: frozenset[str]) -> _CallPacks:
 
 
 def packs_in_force() -> frozenset[str]:
-    """The packs of the masking call in progress, else the process's
-    (get_masking_packs). Never raises."""
+    """The packs of the masking call in progress and the process's
+    (get_masking_packs), together: in a pci-configured process every filter
+    labels a value that holds a card number, and a filter built with pci
+    labels it in any process. A default handler ahead of a pci one masks the
+    record in place, so what it hashes the pci handler logs. Never raises."""
     packs = _CALL_PACKS.get()
-    return get_masking_packs() if packs is None else packs
+    process = get_masking_packs()
+    return process if packs is None else packs | process
 
 
 def _safe_names(keys: Iterable[str] | str) -> frozenset[str]:
@@ -270,10 +274,10 @@ def key_field_type(key: str) -> str | None:
     keyset, and ``[SECRET-MASKED]`` either way where it is shaped like a card
     number (an MPGS token is sixteen digits), is a placeholder another masker
     left, or is in a token's shape with a card number in it -- and, with
-    ``pci`` among the call's packs (``packs_in_force``), where it holds a
-    card-number run anywhere, as a payment id does too. A value known to be a
-    credential needs no lookup: ``mask_secret(value)``. A card key's value is
-    truncated, not labelled: ``mask_card_value(value)``.
+    ``pci`` among the call's packs and the process's (``packs_in_force``),
+    where it holds a card-number run anywhere, as a payment id does too. A
+    value known to be a credential needs no lookup: ``mask_secret(value)``.
+    A card key's value is truncated, not labelled: ``mask_card_value(value)``.
     """
     return classify_key(key, get_masking_packs(), get_masking_safe_keys())
 

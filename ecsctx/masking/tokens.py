@@ -115,12 +115,12 @@ def mask_by_field_type(value: str, field_type: str) -> str:
     token), since a keyed hash of what may be a PAN is what PCI DSS FAQ 1117
     forbids, and when it is a placeholder another masker left -- judged as it
     is written and as a URL or form encoding decodes it (``%22…%22``, ``+``).
-    With `pci` among the call's packs -- a filter's own ``packs=`` for the
-    call, else the process's (``config.packs_in_force``) -- a credential or
-    payment id that holds a card-number run anywhere (``holds_pan_run``) is
-    the label too. Applied here, where every caller passes -- the key walk,
-    the credential and payment-id text rules, a route parameter,
-    ``ecsctx.contrib.net`` -- rather than by each of them.
+    With `pci` among the call's packs, and the process's -- a filter's own
+    ``packs=`` for the call, with the process's (``config.packs_in_force``)
+    -- a credential or payment id that holds a card-number run anywhere
+    (``holds_pan_run``) is the label too. Applied here, where every caller
+    passes -- the key walk, the credential and payment-id text rules, a
+    route parameter, ``ecsctx.contrib.net`` -- rather than by each of them.
     """
     field_rule = get_field_rule(field_type)
     label = make_label(field_rule.field_type)
@@ -156,10 +156,10 @@ def mask_by_field_type(value: str, field_type: str) -> str:
                 if pan_shaped(bare) or _PLACEHOLDER.fullmatch(bare):
                     return f"[{label}]"
         if _pci_in_force() and any(holds_pan_run(bare) for bare in forms):
-            # Without `pci` among the call's packs it is hashed: a
-            # default-pack service receives no card numbers, and the label
-            # would stand in for 7% of the 64-hex signatures Connect logs,
-            # where a token can stand.
+            # Without `pci` among the call's packs and the process's it is
+            # hashed: a default-pack service receives no card numbers, and
+            # the label would stand in for 7% of the 64-hex signatures
+            # Connect logs, where a token can stand.
             return f"[{label}]"
     token = safe_tokenize(value, field_rule.field_type)
     if token == _REDACTED:
@@ -175,9 +175,10 @@ def _holds_a_card_number(text: str) -> bool:
 
 
 def _pci_in_force() -> bool:
-    """Whether `pci` is among the call's packs: those of the masking call in
-    progress -- a MaskPIIFilter's own -- else the process's. Imported here:
-    config imports patterns, which imports this module as it loads."""
+    """Whether `pci` is among the call's packs, and the process's: those of
+    the masking call in progress -- a MaskPIIFilter's own -- with the
+    process's. Imported here: config imports patterns, which imports this
+    module as it loads."""
     from ecsctx.masking.config import packs_in_force
 
     return "pci" in packs_in_force()

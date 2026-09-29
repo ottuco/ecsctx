@@ -1182,8 +1182,10 @@ CARD_IN_A_CREDENTIAL = [
 class TestTheCallsPacksDecide:
     """"`pci` in force" is the masking call's packs -- a filter built with its
     own `packs=`, as a PCI handler beside a default one is -- and the
-    process's only outside one. Read from the process alone, a pci filter in
-    a default-configured process hashed a credential holding a card number."""
+    process's, together. Read from the process alone, a pci filter in a
+    default-configured process hashed a credential holding a card number;
+    read from the call alone, a default handler ahead of a pci one masked the
+    record in place with a hash, and the pci handler logged it."""
 
     @pytest.mark.parametrize(("text", "masked"), CARD_IN_A_CREDENTIAL)
     def test_a_pci_filter_labels_it_in_a_default_process(self, text, masked):
@@ -1198,11 +1200,27 @@ class TestTheCallsPacksDecide:
         MaskPIIFilter(packs=ALL_PACKS)._mask_string("password=p@ss4111111111111111")
         assert mask_secret(HOLDS_A_PAN) == token_or_label(HOLDS_A_PAN)
 
-    def test_a_default_filter_in_a_pci_process_hashes_it(self):
-        # Its own packs, the call's: no card rule and no card check.
+    def test_a_default_filter_in_a_pci_process_labels_it_too(self):
         configure_masking_packs(["pci"])
         text = f"password={HOLDS_A_PAN}"
-        assert MaskPIIFilter(packs=("default",))._mask_string(text) == f"password={token_or_label(HOLDS_A_PAN)}"
+        assert MaskPIIFilter(packs=("default",))._mask_string(text) == f"password={LABEL}"
+
+    def test_a_default_handler_ahead_of_a_pci_one_leaves_it_the_label(self, logging_state):
+        import io
+        import logging
+
+        configure_masking_packs(["pci", "financial_ids"])
+        logger = logging.getLogger("handlers.in.order")
+        logger.propagate = False
+        streams = []
+        for packs in (("default",), ALL_PACKS):
+            stream = io.StringIO()
+            handler = logging.StreamHandler(stream)
+            handler.addFilter(MaskPIIFilter(packs=packs))
+            logger.addHandler(handler)
+            streams.append(stream)
+        logger.warning("login password=%s", HOLDS_A_PAN)
+        assert [stream.getvalue() for stream in streams] == [f"login password={LABEL}\n"] * 2
 
 
 JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnop"

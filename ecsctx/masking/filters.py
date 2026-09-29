@@ -420,7 +420,7 @@ class MaskPIIFilter(logging.Filter):
         """What one masking call needs. Every call that builds it -- filter(),
         and a method called with no context -- then masks with this filter's
         packs in force (config.call_packs), so the card check
-        mask_by_field_type makes follows them, not the process's."""
+        mask_by_field_type makes follows them as well as the process's."""
         packs = self._packs_in_force()
         return _Pass(packs, rules_for(packs), _get_exempt_patterns(), get_masking_safe_keys())
 
