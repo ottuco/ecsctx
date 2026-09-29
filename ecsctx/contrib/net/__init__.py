@@ -293,8 +293,9 @@ def redact_url(url: str, *, secrets: Collection[str] | None = None) -> str:
     The userinfo's user and password are masked each as it decodes
     (``https://<user>:<password>@host``), the host and port kept; an empty
     part stays empty, and a label's brackets there are percent-encoded
-    (``%5BSECRET-MASKED%5D``), which a netloc must be to parse. The fragment's ``key=value`` params are read as the
-    query's are (an OAuth implicit grant returns ``#access_token=…``).
+    (``%5BSECRET-MASKED%5D``), as a netloc must be to parse. The fragment's
+    ``key=value`` params are read as the query's are (an OAuth implicit grant
+    returns ``#access_token=…``).
     ``secrets`` holds literal values (e.g. a saved-card token carried in the
     URL path) to mask wherever they occur in the URL, longest first, so one
     that contains another is masked whole. The path is otherwise left alone,
