@@ -229,12 +229,15 @@ def _get_compiled() -> tuple:
     )
     # access_token=...  ->  access_token=<masked>  (form-encoded bodies)
     # `\b` cannot fire between "_" and "secret", so "client_secret=" is never half-matched.
-    # A value stops at an unescaped quote: a query inside a JSON string ends
-    # where the string does, and an escaped one (`\"`) is part of the value --
-    # stopped there, the capture kept the backslash, dropping it closed the
-    # string early, and the rest of the value shipped in clear.
+    # A quote ends a value only where it could close a JSON string -- before
+    # whitespace, `,`, `:`, `}`, `]` or the end -- so a query inside a JSON
+    # string keeps the string's closing quote. Any other quote is the value's:
+    # `password="…"` and an XML attribute start with one, and ended there they
+    # masked nothing. An escaped quote (`\"`) is the value's too: stopped
+    # there, the capture kept the backslash, dropping it closed the string,
+    # and the rest of the value shipped in clear.
     form_re = re.compile(
-        r"\b(" + "|".join(keys) + r')=([^&\s"\\]*(?:\\.[^&\s"\\]*)*)',
+        r"\b(" + "|".join(keys) + r')=([^&\s"\\]*(?:(?:\\.|"(?![\s,:}\]]|$))[^&\s"\\]*)*)',
         re.IGNORECASE,
     )
     _compiled_cache = (cache_key, (hint_re, json_re, form_re))

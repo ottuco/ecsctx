@@ -350,3 +350,29 @@ class TestAQuotedCardNumberOrPlaceholderIsTheLabel:
         masked = redact_body(f"password={value}&grant_type=x")
         assert masked == f"password={LABEL}&grant_type=x"
         assert redact_body(masked) == masked
+
+
+class TestAFormValueInQuotes:
+    """A form value that starts with a quote -- an XML attribute, `key="value"`
+    in an error message -- is masked with its quotes and hashed without them."""
+
+    def test_a_secret_is_its_token_or_the_label(self):
+        assert redact_body(f'password="{SECRET}"&x=1') == f"password={token_or_label(SECRET)}&x=1"
+
+    @pytest.mark.parametrize("value", CARD_SHAPED)
+    def test_a_secret_shaped_like_a_card_number_is_the_label(self, value):
+        assert redact_body(f'password="{value}"&x=1') == f"password={LABEL}&x=1"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '<Auth password="s3cr3tVALUE" authkey="k3yVALUE" apikey="ap1VALUE"/>',
+            'error: client_secret="s3cr3tVALUE" rejected',
+            'status=error&password=ab"cd-TAIL&x=1',
+        ],
+    )
+    def test_every_value_is_masked_once(self, body):
+        masked = redact_body(body)
+        assert "VALUE" not in masked
+        assert "TAIL" not in masked
+        assert redact_body(masked) == masked

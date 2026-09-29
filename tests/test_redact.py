@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from django.test import override_settings
 
 from ecsctx.contrib.net import (
@@ -89,10 +90,19 @@ class TestRedactBody:
         assert json.loads(masked) == {"password": "[SECRET-MASKED]", "status": "ok"}
         assert "tail" not in masked
 
-    def test_a_form_value_inside_a_json_string_ends_with_the_string(self):
+    @pytest.mark.parametrize(
+        ("body", "masked"),
+        [
+            ('{"url": "https://x?secret=abc"}', '{"url": "https://x?secret=[SECRET-MASKED]"}'),
+            # An empty value stays empty, and the string still closes.
+            ('{"url": "https://x?secret=", "b": "c"}', '{"url": "https://x?secret=", "b": "c"}'),
+        ],
+    )
+    def test_a_form_value_inside_a_json_string_ends_with_the_string(self, body, masked):
         # `[^&\s]*` ran on through the closing quote and brace.
-        masked = redact_body('{"url": "https://x?secret=abc"}')
-        assert masked == '{"url": "https://x?secret=[SECRET-MASKED]"}'
+        assert redact_body(body) == masked
+        assert json.loads(masked)
+        assert redact_body(masked) == masked
 
     def test_an_escaped_quote_does_not_end_a_form_value_inside_a_json_string(self):
         # Only an unescaped quote ends the JSON string. Stopped at the escaped
@@ -101,6 +111,25 @@ class TestRedactBody:
         masked = redact_body('{"note": "client_secret=a\\"b-tail&x=1"}')
         assert "b-tail" not in masked
         assert json.loads(masked) == {"note": "client_secret=[SECRET-MASKED]&x=1"}
+        assert redact_body(masked) == masked
+
+    @pytest.mark.parametrize(
+        ("body", "masked"),
+        [
+            (
+                '<Auth password="s3cr3tVALUE" authkey="k3yVALUE" apikey="ap1VALUE"/>',
+                '<Auth password=[SECRET-MASKED]" authkey=[SECRET-MASKED]" apikey=[SECRET-MASKED]',
+            ),
+            ('error: client_secret="s3cr3tVALUE" rejected', 'error: client_secret=[SECRET-MASKED]" rejected'),
+            ('password="s3cr3tVALUE"&x=1', "password=[SECRET-MASKED]&x=1"),
+            ('status=error&password=ab"cd-TAIL&x=1', "status=error&password=[SECRET-MASKED]&x=1"),
+        ],
+    )
+    def test_a_quote_ends_a_form_value_only_where_it_could_close_a_json_string(self, body, masked):
+        # Ended at any quote, a value that starts with one masked nothing, and
+        # one with a quote inside it kept its tail. 0.15.3 masked all of these.
+        assert redact_body(body) == masked
+        assert redact_body(masked) == masked
 
 
 class TestLoggableBody:
