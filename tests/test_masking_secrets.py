@@ -211,6 +211,13 @@ class TestALiteralSecretInAUrl:
     def test_an_empty_secret_masks_nothing(self):
         assert redact_url("https://h/pbl/card/x/", secrets=[""]) == "https://h/pbl/card/x/"
 
+    @pytest.mark.parametrize("short", ["SECRET", "ptok", "v1"])
+    def test_a_short_secret_never_matches_inside_what_a_longer_one_became(self, short):
+        # Masked one after another, a short secret was found again inside the
+        # label or token the longer one had just become, and mangled it.
+        url = redact_url(f"https://h/pbl/card/{SECRET}/", secrets=[SECRET, short])
+        assert url == f"https://h/pbl/card/{token_or_label(SECRET)}/"
+
 
 class TestACredentialQueryParam:
     def test_a_secret_is_its_token_or_the_label(self):

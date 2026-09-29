@@ -270,10 +270,14 @@ def redact_url(url: str, *, secrets: Collection[str] | None = None) -> str:
         return url  # None/empty/non-str: nothing to redact, never raise on a log path
     if isinstance(secrets, str):
         secrets = (secrets,)  # a bare string is one secret, not a char collection
-    # Longest first: a shorter secret inside a longer one, masked first, left
-    # the rest of the longer one in clear.
-    for secret in sorted((str(s) for s in secrets or () if s), key=len, reverse=True):
-        url = url.replace(secret, mask_secret(secret))
+    # One pass, longest first: a shorter secret inside a longer one, masked
+    # first, left the rest of the longer one in clear; and masked one after
+    # another, a short secret was found again inside the token or label a
+    # longer one had just become.
+    literals = sorted({str(s) for s in secrets or () if s}, key=len, reverse=True)
+    if literals:
+        literal_re = re.compile("|".join(map(re.escape, literals)))
+        url = literal_re.sub(lambda match: mask_secret(match.group()), url)
     try:
         parts = urlsplit(url)
     except ValueError:
