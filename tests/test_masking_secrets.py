@@ -1256,6 +1256,27 @@ class TestTheCallsPacksDecide:
         text = f"password={HOLDS_A_PAN}"
         assert MaskPIIFilter(packs=("default",))._mask_string(text) == f"password={LABEL}"
 
+    @pytest.mark.parametrize("template", ["password=%s ref%s", "password=%s card %s"])
+    def test_a_default_handler_ahead_of_a_pci_one_renders_no_card_number(self, template, logging_state):
+        # The default handler renders `password=%s`, and the record keeps
+        # what it rendered: its arguments masked with its own packs only, the
+        # pci handler got `ref4111111111111111` whole, glued to a word.
+        import io
+        import logging
+
+        configure_masking_packs(["pci", "financial_ids"])
+        logger = logging.getLogger("handlers.render." + template.split()[1][:3])
+        logger.propagate = False
+        streams = []
+        for packs in (("default",), ALL_PACKS):
+            stream = io.StringIO()
+            handler = logging.StreamHandler(stream)
+            handler.addFilter(MaskPIIFilter(packs=packs))
+            logger.addHandler(handler)
+            streams.append(stream)
+        logger.warning(template, "pw-1", PAN)
+        assert [PAN in stream.getvalue() for stream in streams] == [False, False]
+
     def test_a_default_handler_ahead_of_a_pci_one_leaves_it_the_label(self, logging_state):
         import io
         import logging

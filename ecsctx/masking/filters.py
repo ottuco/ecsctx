@@ -843,6 +843,13 @@ class MaskPIIFilter(logging.Filter):
                         # still mask it) and masked whole, or is the marker. A
                         # template masking leaves as it is, and that renders,
                         # keeps its arguments, and Sentry's grouping by it.
+                        # Rendered, the record keeps no arguments for a later
+                        # handler to mask with more packs, so they are masked
+                        # with the process's packs too: a default handler
+                        # ahead of a pci one rendered `ref4111…` whole.
+                        if not get_masking_packs() <= ctx.packs:
+                            packs = ctx.packs | get_masking_packs()
+                            args = self._mask_args(record.args, ctx._replace(packs=packs, rules=rules_for(packs)))
                         msg, args = self._mask_rendered(template, record.args, args, ctx), ()
                     record.msg, record.args = msg, args
                 except Exception as error:  # noqa: BLE001 -- nothing here may reach the caller
