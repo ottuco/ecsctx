@@ -154,6 +154,19 @@ _PAIR_IDENTIFIERS = (
     "key", "field", "field_name", "fieldname", "name", "label", "label_en", "title",
     "verbose_name", "verbose_name_en", "param", "parameter", "attribute", "header",
 )
+# A caption's own translation -- Connect ships `verbose_name_ar` beside
+# `verbose_name_en`, the same fixed UI string in Arabic, not English. Once one
+# of these base identifiers reads through as a label, its translation is a
+# caption too: its own family's only, and only into Arabic, the one language
+# besides English that Connect translates into. `label_id` merely shares the
+# prefix. `verbose_name_ar` alone, with no English sibling classified, is not
+# proof of one.
+_CAPTION_TRANSLATIONS = {
+    "verbose_name": "verbose_name_ar",
+    "verbose_name_en": "verbose_name_ar",
+    "label": "label_ar",
+    "label_en": "label_ar",
+}
 # An identifier looks like a field label, not free text: bounded, few words.
 _IDENTIFIER_SHAPE = re.compile(r"[A-Za-z][A-Za-z0-9 _.\-/]{0,63}")
 _IDENTIFIER_MAX_WORDS = 5
@@ -230,6 +243,14 @@ def _pair(data: dict, ctx: _Pass, inherited: str | None) -> tuple[str | None, fr
         types.append(field_type)
         if identifier != "name" or len(words) == 1 or all(word in _FIELD_WORDS for word in words):
             readable.add(original)
+            # Its translation is judged by its key alone, never
+            # `_classify_identifier` or the ASCII shape gate above: it is a
+            # caption, not a label whose text might be a person's name.
+            # `_mask_dict` still routes every readable key through content-only
+            # masking, so one that holds a real email or phone number is masked
+            # by that, same as `value` would be.
+            if (translation := _CAPTION_TRANSLATIONS.get(identifier)) in keys:
+                readable.add(keys[translation])
     if not types:
         return None, frozenset(readable)
     if inherited is not None:

@@ -125,9 +125,24 @@ class TestANameThatIsAPerson:
 # Brand, holder's name, masked number and expiry, in one string.
 CARD_DETAILS = "Mastercard Jane Payer 512345******0008 01/39"
 CARD_DETAILS_PAIR = {"verbose_name_en": "Card Details", "verbose_name_ar": "تفاصيل البطاقة", "value": CARD_DETAILS}
-# The Arabic label is no identifier the pair rule reads, so inside the name
-# container it is masked with the value, as under `card_holder`.
-MASKED_CARD_DETAILS_PAIR = {"verbose_name_en": "Card Details", "verbose_name_ar": "[NAME-MASKED]", "value": "[NAME-MASKED]"}
+# verbose_name_ar is a locale sibling of verbose_name_en: once the English
+# caption reads through as a field label, the Arabic one does too -- both are
+# the same fixed UI string, never the free text `value` is judged to be.
+MASKED_CARD_DETAILS_PAIR = {"verbose_name_en": "Card Details", "verbose_name_ar": "تفاصيل البطاقة", "value": "[NAME-MASKED]"}
+
+# The same shape under the two other containers the bug hit: `card_holder`
+# (a name) and `cardholder_email` (an email) -- both fall through
+# `_mask_dict`'s inherited branch when the caption sibling is not readable.
+CARD_HOLDER_PAIR = {
+    "verbose_name_en": "Card Holder Name",
+    "verbose_name_ar": "اسم حامل البطاقة",
+    "value": "Nadia Example",
+}
+CARDHOLDER_EMAIL_PAIR = {
+    "verbose_name_en": "Customer Email",
+    "verbose_name_ar": "البريد الإلكتروني للعميل",
+    "value": "nadia.example@example.test",
+}
 
 
 class TestCardDetails:
@@ -209,3 +224,110 @@ class TestCardDetails:
     )
     def test_a_longer_key_is_not_one(self, key, value):
         assert mask({key: value}) == {key: value}
+
+    def test_a_card_holder_pair_without_a_keyset(self):
+        masked = mask({"pg_params": {"card_holder": dict(CARD_HOLDER_PAIR)}})["pg_params"]["card_holder"]
+        assert masked == {
+            "verbose_name_en": "Card Holder Name",
+            "verbose_name_ar": "اسم حامل البطاقة",
+            "value": "[NAME-MASKED]",
+        }
+
+    def test_a_card_holder_pair_with_a_keyset(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = mask({"pg_params": {"card_holder": dict(CARD_HOLDER_PAIR)}})["pg_params"]["card_holder"]
+        assert masked["verbose_name_en"] == "Card Holder Name"
+        assert masked["verbose_name_ar"] == "اسم حامل البطاقة"
+        assert masked["value"] == tokenize(CARD_HOLDER_PAIR["value"], "name")
+
+    def test_a_cardholder_email_pair_without_a_keyset(self):
+        masked = mask({"pg_params": {"cardholder_email": dict(CARDHOLDER_EMAIL_PAIR)}})["pg_params"]["cardholder_email"]
+        assert masked == {
+            "verbose_name_en": "Customer Email",
+            "verbose_name_ar": "البريد الإلكتروني للعميل",
+            "value": "[EMAIL-MASKED]",
+        }
+
+    def test_a_cardholder_email_pair_with_a_keyset(self, token_keyset_path):
+        configure_pii(token_keyset_path=token_keyset_path, env="test")
+        masked = mask({"pg_params": {"cardholder_email": dict(CARDHOLDER_EMAIL_PAIR)}})["pg_params"]["cardholder_email"]
+        assert masked["verbose_name_en"] == "Customer Email"
+        assert masked["verbose_name_ar"] == "البريد الإلكتروني للعميل"
+        assert masked["value"] == tokenize(CARDHOLDER_EMAIL_PAIR["value"], "email")
+
+    def test_a_label_ar_sibling_reads_through(self):
+        # Same rule, the `label` family instead of `verbose_name`.
+        masked = mask(
+            {
+                "pg_params": {
+                    "card_holder": {
+                        "label_en": "Card Holder Name",
+                        "label_ar": "اسم حامل البطاقة",
+                        "value": "Nadia Example",
+                    }
+                }
+            }
+        )["pg_params"]["card_holder"]
+        assert masked["label_en"] == "Card Holder Name"
+        assert masked["label_ar"] == "اسم حامل البطاقة"
+
+    def test_a_caption_holding_an_email_is_still_content_masked(self):
+        # Freeing a caption from key-based classification must not free it
+        # from content rules: real PII typed into one is still masked.
+        masked = mask(
+            {
+                "pg_params": {
+                    "card_holder": {
+                        "verbose_name_en": "Card Holder Name",
+                        "verbose_name_ar": "nadia.example@example.test",
+                        "value": "Nadia Example",
+                    }
+                }
+            }
+        )["pg_params"]["card_holder"]
+        assert masked["verbose_name_ar"] == "[EMAIL-MASKED]"
+
+    def test_an_english_caption_the_pair_did_not_read_stays_masked(self):
+        # The pair judged `verbose_name_en` and found no field label in it. A
+        # caption reading through beside it must not overturn that.
+        masked = mask(
+            {
+                "pg_params": {
+                    "card_holder": {
+                        "verbose_name": "Card Holder Name",
+                        "verbose_name_en": "Nadia Example",
+                        "value": "Nadia Example",
+                    }
+                }
+            }
+        )["pg_params"]["card_holder"]
+        assert masked == {
+            "verbose_name": "Card Holder Name",
+            "verbose_name_en": "[NAME-MASKED]",
+            "value": "[NAME-MASKED]",
+        }
+
+    def test_a_translation_reads_through_only_beside_its_own_caption(self):
+        # `label` read through, which frees `label_ar`, not the other family's
+        # `verbose_name_ar`.
+        masked = mask(
+            {
+                "pg_params": {
+                    "card_holder": {
+                        "label": "Card Holder Name",
+                        "verbose_name_ar": "اسم حامل البطاقة",
+                        "value": "Nadia Example",
+                    }
+                }
+            }
+        )["pg_params"]["card_holder"]
+        assert masked == {"label": "Card Holder Name", "verbose_name_ar": "[NAME-MASKED]", "value": "[NAME-MASKED]"}
+
+    @pytest.mark.parametrize(("caption", "key"), [("label_en", "label_id"), ("verbose_name_en", "verbose_name_no")])
+    def test_only_a_locale_ottu_ships_is_a_translation(self, caption, key):
+        # Connect translates into en and ar only. `label_id` just shares the
+        # prefix, and is judged by its key.
+        masked = mask(
+            {"pg_params": {"card_holder": {caption: "Card Holder Name", key: "Nadia Example", "value": "Nadia Example"}}}
+        )["pg_params"]["card_holder"]
+        assert masked == {caption: "Card Holder Name", key: "[NAME-MASKED]", "value": "[NAME-MASKED]"}
