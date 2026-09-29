@@ -114,13 +114,13 @@ def mask_by_field_type(value: str, field_type: str) -> str:
     when it is shaped like a card number (a saved card's sixteen-digit gateway
     token), since a keyed hash of what may be a PAN is what PCI DSS FAQ 1117
     forbids, and when it is a placeholder another masker left -- judged as it
-    is written and as a URL or form encoding decodes it (``%22…%22``, ``+``). With `pci`
-    among the call's packs -- a filter's own ``packs=`` for the call, else
-    the process's (``config.packs_in_force``) -- a credential or payment id
-    that holds a card-number run anywhere (``holds_pan_run``) is the label
-    too. Applied here, where every
-    caller passes -- the key walk, the credential and payment-id text rules, a
-    route parameter, ``ecsctx.contrib.net`` -- rather than by each of them.
+    is written and as a URL or form encoding decodes it (``%22…%22``, ``+``).
+    With `pci` among the call's packs -- a filter's own ``packs=`` for the
+    call, else the process's (``config.packs_in_force``) -- a credential or
+    payment id that holds a card-number run anywhere (``holds_pan_run``) is
+    the label too. Applied here, where every caller passes -- the key walk,
+    the credential and payment-id text rules, a route parameter,
+    ``ecsctx.contrib.net`` -- rather than by each of them.
     """
     field_rule = get_field_rule(field_type)
     label = make_label(field_rule.field_type)

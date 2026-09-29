@@ -271,9 +271,9 @@ def key_field_type(key: str) -> str | None:
     number (an MPGS token is sixteen digits), is a placeholder another masker
     left, or is in a token's shape with a card number in it -- and, with
     ``pci`` among the call's packs (``packs_in_force``), where it holds a
-    card-number run anywhere, as a payment id does too. A value known to be a credential needs no lookup:
-    ``mask_secret(value)``. A card key's value is truncated, not labelled:
-    ``mask_card_value(value)``.
+    card-number run anywhere, as a payment id does too. A value known to be a
+    credential needs no lookup: ``mask_secret(value)``. A card key's value is
+    truncated, not labelled: ``mask_card_value(value)``.
     """
     return classify_key(key, get_masking_packs(), get_masking_safe_keys())
 

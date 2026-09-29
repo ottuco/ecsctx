@@ -223,7 +223,7 @@ _USERINFO_PART = r"[^\s/?#\"'<>]"
 
 
 # A character of a value between escaped quotes -- JSON in a JSON string,
-# `{\\"password\\": \\"a b\\"}` -- read as the inner string reads it: an
+# `{\"password\": \"a b\"}` -- read as the inner string reads it: an
 # escaped backslash with the (escaped) character it escapes, another escape, or
 # a plain character. The value ends at an escaped quote no inner backslash
 # escapes.
@@ -1304,7 +1304,9 @@ _CRED_REACH = 130
 _CVV_REACH = 72
 
 
-def _near_words(word_starts: Callable[[str], list[int]], reach: int) -> Callable[[re.Pattern, Callable, str], str]:
+def _near_words(
+    word_starts: Callable[[str], list[int]], reach: int
+) -> Callable[[re.Pattern, Callable, str], str]:
     """A Rule.scan for rules whose every match holds one of the words
     ``word_starts`` finds, starting inside the run of word characters and
     hyphens holding it -- at most ``reach`` characters before it -- or on the
@@ -1406,13 +1408,12 @@ _RULE_TABLE = (
     # escape one (`password=""s3cret`) are structure before the value. The
     # quotes around a JSON-escaped key are the key's, and a value between
     # escaped quotes (`escaped`: JSON in a JSON string) runs to its matching
-    # one. After
-    # Authorization (`auth`) the scheme is part of the value, as it is of the
-    # header under its key -- `Authorization: Bearer x` masks `Bearer x`, the
-    # token `mask_secret` gives it -- and is never the whole value while more
-    # follows it: then pass 2 would read `Bearer` off `Bearer [REDACTED]`.
-    # Nor is a token after the scheme (what masking the credential alone
-    # left) hashed again with it.
+    # one. After Authorization (`auth`) the scheme is part of the value, as it
+    # is of the header under its key -- `Authorization: Bearer x` masks
+    # `Bearer x`, the token `mask_secret` gives it -- and is never the whole
+    # value while more follows it: then pass 2 would read `Bearer` off
+    # `Bearer [REDACTED]`. Nor is a token after the scheme (what masking the
+    # credential alone left) hashed again with it.
     _rule(
         "default",
         rf"\b(?P<prefix>(?P<key>(?P<auth>{_AUTH_KEYWORD})|{_OTHER_CRED_KEYWORD})(?:\\?[\"']|\s)*[:=]\s*"

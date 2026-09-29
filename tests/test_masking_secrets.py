@@ -1015,7 +1015,9 @@ class TestAnAuthorizationHeaderInText:
         expected = text if text.endswith("]") else f"Authorization: {mask_secret('Bearer')}"
         assert mask_by_patterns(text, _TEXT_RULES) == expected
 
-    @pytest.mark.parametrize("text", ["Authorization: Bearer %s", "Authorization=Basic %s", "Proxy-Authorization: Token %s"])
+    @pytest.mark.parametrize(
+        "text", ["Authorization: Bearer %s", "Authorization=Basic %s", "Proxy-Authorization: Token %s"]
+    )
     def test_a_token_after_the_scheme_is_left_as_it_is(self, text):
         # What masked the credential alone left: hashed with its scheme, it
         # was a second token for the same credential.
@@ -1188,7 +1190,8 @@ class TestTheCallsPacksDecide:
         assert MaskPIIFilter(packs=ALL_PACKS)._mask_string(text) == masked
 
     def test_a_pci_filters_key_walk_labels_it_too(self):
-        out = MaskPIIFilter(packs=ALL_PACKS)._mask_dict({"password": HOLDS_A_PAN, "note": "password=p@ss4111111111111111"})
+        text = "password=p@ss4111111111111111"
+        out = MaskPIIFilter(packs=ALL_PACKS)._mask_dict({"password": HOLDS_A_PAN, "note": text})
         assert out == {"password": LABEL, "note": "password=[SECRET-MASKED]"}
 
     def test_outside_the_call_the_process_packs_decide_again(self):
