@@ -34,7 +34,7 @@ from django.urls import path, re_path, resolve
 import ecsctx
 import ecsctx.masking
 from ecsctx.contrib.django.routes import loggable_path
-from ecsctx.contrib.net import loggable_body, redact_body, redact_url
+from ecsctx.contrib.net import configure_redaction, loggable_body, redact_body, redact_url
 from ecsctx.masking import mask_by_field_type, mask_secret
 from ecsctx.masking import patterns as masking_patterns
 from ecsctx.masking.config import configure_masking_packs
@@ -911,3 +911,54 @@ class TestACredentialValueRunsToItsDelimiter:
         masked = mask_by_patterns(text, rules)
         assert "abc" not in masked
         assert mask_by_patterns(masked, rules) == masked
+
+
+AUTHORIZATIONS = [
+    "Bearer abc123def456ghi789",
+    "Basic dXNlcjpwYXNzd29yZA==",
+    "Digest dXNlcjpwYXNz",
+    "Token abc123def456",
+    "Negotiate YIIBhwYGKwYBBQUC",
+    "Api-Key 1a2b3c4d5e6f",
+]
+
+
+class TestAnAuthorizationHeaderInText:
+    """`Authorization: <scheme> <credential>` is one value, as the header is
+    under its key: the text rule took the scheme for the value, so without a
+    keyset the credential after it shipped in clear unless another rule
+    caught it (`Basic dXNlcjpwYXNz` has no digit for the bare-space rule), and
+    with one every record shared the scheme's token."""
+
+    @pytest.mark.parametrize("header", AUTHORIZATIONS)
+    @pytest.mark.parametrize(
+        "text", ["Authorization: %s", "Proxy-Authorization: %s", "authorization=%s", "Authorization= %s", "authorisation_header: %s"]
+    )
+    def test_scheme_and_credential_are_one_token(self, text, header):
+        masked = mask_by_patterns(text % header, _TEXT_RULES)
+        assert masked == text % mask_secret(header)
+        assert mask_by_patterns(masked, _TEXT_RULES) == masked
+
+    def test_every_path_gives_the_header_the_same_token(self):
+        header = "Bearer abc123def456ghi789"
+        expected = mask_secret(header)
+        configure_redaction(extra_secret_keys=["authorization"])
+        assert _walk({"Authorization": header})["Authorization"] == expected
+        assert mask_by_patterns(f"Authorization: {header}", _TEXT_RULES) == f"Authorization: {expected}"
+        assert redact_url(f"https://h/pay?authorization={quote(header)}") == f"https://h/pay?authorization={expected}"
+        assert redact_body(f'{{"Authorization": "{header}"}}') == f'{{"Authorization": "{expected}"}}'
+
+    @pytest.mark.parametrize("text", ["Authorization: Bearer [REDACTED]", "Authorization: Bearer"])
+    def test_a_scheme_alone_is_never_the_value_beside_a_placeholder(self, text):
+        # `Bearer [REDACTED]` holds nothing to mask; the scheme alone, when
+        # nothing follows it, is the header's whole value, as under its key.
+        expected = text if text.endswith("]") else f"Authorization: {mask_secret('Bearer')}"
+        assert mask_by_patterns(text, _TEXT_RULES) == expected
+
+    def test_a_starred_credential_is_the_label(self):
+        assert mask_by_patterns("Authorization: Bearer ****", _TEXT_RULES) == f"Authorization: {LABEL}"
+
+    def test_only_an_authorization_key_takes_a_scheme(self):
+        # `password=basic more words` is a password, `basic`, and prose.
+        masked = mask_by_patterns("password=basic more words", _TEXT_RULES)
+        assert masked == f"password={token_or_label('basic')} more words"

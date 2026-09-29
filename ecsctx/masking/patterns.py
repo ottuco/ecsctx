@@ -119,13 +119,18 @@ SAFE_KEYS = frozenset({
     "cardexpiry",
 })
 
-# Sensitive credential keywords / auth schemes. Matched case-insensitively.
-# Bare "key" is intentionally excluded — only sensitive *_key compounds — so
-# cache_key / sort_key / primary_key are not over-masked.
-_CRED_KEYWORD = (
+# Authorization / Authorisation (+ _header). Apart from the other keywords:
+# its value is a scheme and a credential, one value (rule 3).
+_AUTH_KEYWORD = r"authori[sz]ation(?:[_-]?header)?"
+# The HTTP authentication schemes an Authorization header's credential
+# follows (RFC 9110 11.4), and the one Ottu's API names `Api-Key`.
+_AUTH_SCHEME = r"(?:bearer|basic|digest|token|negotiate|api[_-]?key)"
+# Sensitive credential keywords / auth schemes, but Authorization. Matched
+# case-insensitively. Bare "key" is intentionally excluded — only sensitive
+# *_key compounds — so cache_key / sort_key / primary_key are not over-masked.
+_OTHER_CRED_KEYWORD = (
     r"(?:"
     r"bearer|basic|digest|credentials?"  # auth schemes
-    r"|authori[sz]ation(?:[_-]?header)?"  # Authorization / Authorisation (+ _header)
     r"|(?:[\w-]{0,128}[_-])?(?:token|secret|password|passwd)"  # *_token / *_secret / *_password
     r"|(?:secret|private|public|encryption|decryption|signing|"  # sensitive *_key compounds only
     r"access|master|root|session|api)[_-]?key"
@@ -137,6 +142,7 @@ _CRED_KEYWORD = (
     r"|(?:secret|private|public)[_-]?key[_-]?(?:pem|der|hex|base64|b64)"
     r")"
 )
+_CRED_KEYWORD = rf"(?:{_AUTH_KEYWORD}|{_OTHER_CRED_KEYWORD})"
 
 # Card verification code keywords — cvv/cvc/security code are all the same
 # thing under different names depending on card scheme/vendor terminology.
@@ -1226,12 +1232,17 @@ _RULE_TABLE = (
     ),
     # 3. Credential — ":" / "=" (secret_key=abc123). A value that opens with a
     # quote a closing one matches runs to it (`quote`); any other, to its
-    # delimiter. The quotes around a JSON-escaped key are the key's.
+    # delimiter. The quotes around a JSON-escaped key are the key's. After
+    # Authorization (`auth`) the scheme is part of the value, as it is of the
+    # header under its key -- `Authorization: Bearer x` masks `Bearer x`, the
+    # token `mask_secret` gives it -- and is never the whole value while more
+    # follows it: then pass 2 would read `Bearer` off `Bearer [REDACTED]`.
     _rule(
         "default",
-        rf"\b(?P<prefix>{_CRED_KEYWORD}(?:\\?[\"']|\s)*[:=]\s*"
+        rf"\b(?P<prefix>(?:(?P<auth>{_AUTH_KEYWORD})|{_OTHER_CRED_KEYWORD})(?:\\?[\"']|\s)*[:=]\s*"
         rf"(?:(?P<quote>(?<!\\)[\"'])(?={_quoted_body('quote')}*(?P=quote))|\\?[\"'])?)"
-        rf"(?P<value>(?(quote){_quoted_body('quote')}*|(?!{_WHOLE_TOKEN}){_UNQUOTED_VALUE}))",
+        rf"(?P<value>(?(quote){_quoted_body('quote')}*|(?!{_WHOLE_TOKEN})"
+        rf"(?(auth)(?:{_AUTH_SCHEME}[ \t]+(?={_VALUE_START}))?(?!{_AUTH_SCHEME}[ \t]+\S)){_UNQUOTED_VALUE}))",
         _cred_kv,
         _has_credential,
         _sub_near_credential_words,
