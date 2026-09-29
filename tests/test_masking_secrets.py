@@ -25,7 +25,7 @@ by ecsctx under the same keyset, never written out.
 
 import json
 import re
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import pytest
 from django.test import RequestFactory
@@ -41,6 +41,7 @@ from ecsctx.masking.config import configure_masking_packs
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
 from ecsctx.masking.tokens import make_label
 from ecsctx.pii import configure_pii, is_configured, tokenize
+from ecsctx.pii.crypto import hmac_tokenize
 from ecsctx.processors import mask_sensitive_data
 
 SECRET = "s3cr3t-Hunter2"
@@ -965,7 +966,7 @@ class TestAnAuthorizationHeaderInText:
 
 
 def _part(value: str) -> str:
-    """A userinfo part as it must read: empty stays empty."""
+    """A userinfo part as it must read in text: empty stays empty."""
     return token_or_label(value) if value else value
 
 
@@ -1021,9 +1022,10 @@ class TestAUrlsUserinfoAndFragmentInRedactUrl:
             "https://h/cb#access_token=abc123&state=xyz",
         ],
     )
-    def test_masked_twice_it_is_masked_once(self, url):
+    def test_masked_twice_or_by_the_text_rules_it_is_masked_once(self, url):
         once = redact_url(url)
         assert redact_url(once) == once
+        assert mask_by_patterns(once, _TEXT_RULES) == once
         assert "ptok:v1:ptok:v1:" not in once
 
     def test_ecs_url_masks_them_and_keeps_the_domain(self):
@@ -1034,3 +1036,63 @@ class TestAUrlsUserinfoAndFragmentInRedactUrl:
             "domain": "api.host.example",
             "path": "/v1/pay",
         }
+
+
+# A URL's userinfo in free text -- a DSN in an exception message. (text, the
+# text around the masked user and password, user, password.)
+USERINFO_TEXTS = [
+    ("could not connect postgresql://u:p@localhost:5432/db", "could not connect postgresql://%s:%s@localhost:5432/db", "u", "p"),
+    ("amqp://u:p@10.0.0.5//", "amqp://%s:%s@10.0.0.5//", "u", "p"),
+    ("GET https://key:@api.host/ failed", "GET https://%s:%s@api.host/ failed", "key", ""),
+    ("redis://:s3cret@cache:6379/0 refused", "redis://%s:%s@cache:6379/0 refused", "", "s3cret"),
+    ('{"dsn": "mongodb+srv://admin:s3cr3t@cluster0.example.net/app"}', '{"dsn": "mongodb+srv://%s:%s@cluster0.example.net/app"}', "admin", "s3cr3t"),
+    ("fetch https://user:pa55word@api.host.example/v1/pay", "fetch https://%s:%s@api.host.example/v1/pay", "user", "pa55word"),
+    ("amqp://u%40corp:p%3Ass@mq:5672/", "amqp://%s:%s@mq:5672/", "u@corp", "p:ss"),
+    ("amqp://guest:5551234567@mq:5672/", "amqp://%s:%s@mq:5672/", "guest", "5551234567"),
+]
+
+
+class TestAUrlsUserinfoInText:
+    """A URL's userinfo in free text is masked part by part, as redact_url
+    masks it, keeping the scheme, host and port. Before, a DSN in exception
+    text shipped whole, and `user:pw@host.tld` was masked, if at all, as an
+    email -- the host with it."""
+
+    @pytest.mark.parametrize(("text", "around", "user", "password"), USERINFO_TEXTS)
+    def test_the_parts_are_masked_and_the_host_kept(self, text, around, user, password):
+        masked = mask_by_patterns(text, _TEXT_RULES)
+        assert masked == around % (_part(user), _part(password))
+        assert mask_by_patterns(masked, _TEXT_RULES) == masked
+        assert "ptok:v1:ptok:v1:" not in masked
+
+    def test_it_gives_the_parts_the_tokens_redact_url_does(self):
+        url = "https://user:pa55word@api.host.example/v1/pay"
+        assert mask_by_patterns(url, _TEXT_RULES) == unquote(redact_url(url))
+
+    def test_a_user_alone_is_left_to_the_other_rules(self):
+        # No password, no credential: `ssh://git@host` names an account.
+        text = "clone ssh://git@10.0.0.5/repo.git"
+        assert mask_by_patterns(text, _TEXT_RULES) == text
+
+    def test_without_a_scheme_the_email_rule_still_masks_what_it_did(self):
+        text = "login user:pw@host.tld failed"
+        email = tokenize("pw@host.tld", "email") if is_configured() else "[EMAIL-MASKED]"
+        assert mask_by_patterns(text, _TEXT_RULES) == f"login user:{email} failed"
+
+    def test_the_email_rule_never_starts_inside_a_token(self):
+        # What redact_url leaves for a user alone: the host after it is no
+        # email, and the token is kept whole.
+        token = token_or_label("user")
+        text = f"GET https://{token}@api.host.example/v1/pay"
+        assert mask_by_patterns(text, _TEXT_RULES) == text
+
+    def test_an_email_glued_after_a_token_is_still_masked(self):
+        token = hmac_tokenize("user", bytes(32), "secret", "test")
+        email = tokenize("jane@example.com", "email") if is_configured() else "[EMAIL-MASKED]"
+        assert mask_by_patterns(f"x {token}jane@example.com y", _TEXT_RULES) == f"x {token}{email} y"
+
+    def test_a_user_alone_before_a_host_is_still_masked_as_an_email(self):
+        # No password: the userinfo rule leaves it, and the email rule masks
+        # `john@example.com` as it did -- the host with it.
+        email = tokenize("john@example.com", "email") if is_configured() else "[EMAIL-MASKED]"
+        assert mask_by_patterns("GET https://john@example.com/v1", _TEXT_RULES) == f"GET https://{email}/v1"

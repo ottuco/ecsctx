@@ -3,7 +3,7 @@
 Ported from ottu_pg's MaskPIIFilter (utils/log/filters.py), merged with
 ecsctx's own PII key-name list. Two independent detection strategies:
 
-1. Content-based (RULES): 17 ordered regexes in three packs — `default`
+1. Content-based (RULES): 18 ordered regexes in three packs — `default`
    always on, `pci` and `financial_ids` opt-in (ecsctx.masking.config) — each
    behind a literal pre-check, applied to every string the filter reaches.
    Rule order is load-bearing — see the comments on each rule and the
@@ -39,7 +39,9 @@ from urllib.parse import unquote
 from ecsctx.masking.tokens import (
     _CARDLESS_TOKEN,
     _TOKEN,
+    _TOKEN_LENGTH,
     _TOKEN_SHAPE,
+    _TOKEN_START,
     _TRUNCATED_PAN,
     make_label,
     mask_by_field_type,
@@ -198,6 +200,11 @@ _VALUE_UNIT = rf"(?:{_PLAIN}|{_ESCAPED}|{_INNER_QUOTES})"
 # key walk re-serialised), `[` also a label masking already wrote.
 _VALUE_START = rf"(?:[^{_VALUE_END}\"'\\\[{{(<]|{_ESCAPED})"
 _UNQUOTED_VALUE = rf"{_VALUE_START}{_VALUE_UNIT}*"
+
+
+# A character of a URL's userinfo in text: the netloc ends at a path, query,
+# fragment, whitespace or a quote or angle bracket around the URL.
+_USERINFO_PART = r"[^\s/?#\"'<>]"
 
 
 def _quoted_body(quote: str) -> str:
@@ -896,9 +903,9 @@ def _mask_url_part(part: str) -> str:
 
 def _mask_userinfo(userinfo: str) -> str:
     """A URL's userinfo -- ``user`` or ``user:password`` -- with each part
-    masked, for ``contrib.net.redact_url``. A token at its head is the user
-    whole: split at its first colon, a masked user was read as ``ptok`` and
-    masked again (`ptok:v1:ptok:v1:…`)."""
+    masked, for ``contrib.net.redact_url`` and the userinfo text rule alike. A
+    token at its head is the user whole: split at its first colon, a masked
+    user was read as ``ptok`` and masked again (`ptok:v1:ptok:v1:…`)."""
     head = _TOKEN_SHAPE.match(userinfo)
     if head is not None and userinfo[head.end() : head.end() + 1] in ("", ":"):
         user, rest = userinfo[: head.end()], userinfo[head.end() :]
@@ -1018,7 +1025,37 @@ def _phone(m: re.Match) -> str:
     return mask_by_field_type(m.group(0), "phone")
 
 
+def _userinfo(m: re.Match) -> str:
+    return f"{m.group(1)}{_mask_userinfo(m.group(2))}@"
+
+
+# How far before an email's local part a URL's scheme can end when what is
+# between them is a userinfo masking wrote: two tokens and their colon.
+_MASKED_USERINFO_REACH = 2 * _TOKEN_LENGTH + 8
+_USERINFO_TEXT = re.compile(rf"{_USERINFO_PART}*")
+
+
 def _email(m: re.Match) -> str:
+    """An email -- never one that starts inside masking's own output: a
+    token's body, or a label percent-encoded in a URL's userinfo
+    (redact_url's `%5BSECRET-MASKED%5D`), before an `@` is the user or password
+    of a URL masking wrote, and the host after it is no email. Only what
+    follows a token can be one."""
+    text, start = m.string, m.start()
+    at = text.index("@", start)
+    head = text.rfind(_TOKEN_START, max(0, start - _TOKEN_LENGTH + 1), start)
+    if head != -1:
+        token = text[head : head + _TOKEN_LENGTH]
+        if _TOKEN_SHAPE.fullmatch(token) and not holds_pan_run(token):
+            token_end = head + _TOKEN_LENGTH
+            if token_end >= at:
+                return m.group(0)
+            return text[start:token_end] + mask_by_field_type(text[token_end : m.end()], "email")
+    scheme = text.rfind("://", max(0, start - _MASKED_USERINFO_REACH), start)
+    if scheme != -1:
+        userinfo = text[scheme + 3 : at]
+        if _USERINFO_TEXT.fullmatch(userinfo) and _mask_userinfo(userinfo) == userinfo:
+            return m.group(0)
     return mask_by_field_type(m.group(0), "email")
 
 
@@ -1109,6 +1146,10 @@ def _has_at(text: str, _lowered: str) -> bool:
     return "@" in text
 
 
+def _has_userinfo(text: str, _lowered: str) -> bool:
+    return "://" in text and "@" in text
+
+
 def _has_jwt_prefix(_text: str, lowered: str) -> bool:
     # The rules compile with IGNORECASE, so the JWT rule matches "EYJ…" too.
     return "eyj" in lowered
@@ -1126,7 +1167,7 @@ def _has_three_digits(text: str, _lowered: str) -> bool:
     return _THREE_DIGITS.search(text) is not None
 
 
-# Rules 15 and 16 have already run by the time rule 17 does, so a PAN in the
+# Rules 16 and 17 have already run by the time rule 18 does, so a PAN in the
 # text is now a bare truncation rather than a digit run. _TRUNCATED_PAN_RE
 # below is what recognises it; these words cover a "card"/"pan" key name
 # serialised into the text, and the prose cases.
@@ -1141,13 +1182,13 @@ def _text_has_card_context(text: str, lowered: str) -> bool:
     """Whether this text holds anything a CVV could belong to.
 
     A 3-4 digit group with no card anywhere near it is a status code, a count
-    or an amount, and a CVV is worth nothing without its PAN. Rules 15 and 16
+    or an amount, and a CVV is worth nothing without its PAN. Rules 16 and 17
     have already run, so a PAN is a bare truncation by now -- the star run is
     what recognises it, as the words cover a card-named key in the text.
     """
     if any(word in lowered for word in _CARD_CONTEXT):
         return True
-    # A PAN the card rule has already truncated: rule 15 runs first, so by now
+    # A PAN the card rule has already truncated: rule 16 runs first, so by now
     # the digit run _CARD_SHAPE looks for is gone and the truncation is the
     # only card context left in the text. Without this, a CVV sitting beside a
     # masked PAN stops being masked -- which is a leak, not a formatting bug.
@@ -1226,7 +1267,7 @@ def _rule(pack, regex, repl, gate, scan=None, prose_only=False, precondition=Non
 
 
 # ---------------------------------------------------------------------------
-# The 17 content rules, in execution order. DO NOT REORDER — several rules
+# The 18 content rules, in execution order. DO NOT REORDER — several rules
 # only behave correctly because a more specific rule ran first:
 #   1. Credential/CVV/payment-id keyword rules before all shape rules —
 #      otherwise a numeric secret in the card-digit range gets masked as a
@@ -1243,6 +1284,9 @@ def _rule(pack, regex, repl, gate, scan=None, prose_only=False, precondition=Non
 #   7. Standalone-CVV last — it is the loosest rule in the file (any bare
 #      3-4 digit group); widening its boundary set beyond whitespace/string-
 #      boundary over-masks.
+#   8. URL userinfo before phone and email — a password is a credential,
+#      not a phone number, and `user:pw@host.tld` keeps its host rather than
+#      masking as an email.
 # ---------------------------------------------------------------------------
 
 _RULE_TABLE = (
@@ -1341,7 +1385,20 @@ _RULE_TABLE = (
         _iban,
         _has_iban_shape,
     ),
-    # 12. Phone — international E.164-style or a bare local number. Union of
+    # 12. URL userinfo (postgresql://user:password@host), each part masked as
+    # redact_url masks it, the scheme, host and port kept: a DSN in exception
+    # text. Only with a password, empty or not (`https://key:@host`), or a
+    # token alone, as masking left a user: `ssh://git@host` names an account.
+    # Bounded: a scheme is at most 32 characters and starts no longer run of
+    # scheme characters, so a long run is read once.
+    _rule(
+        "default",
+        rf"(?<![A-Za-z0-9+.\-])([A-Za-z][A-Za-z0-9+.\-]{{0,31}}://)"
+        rf"((?-i:{_TOKEN})(?::{_USERINFO_PART}*)?|[^\s/?#:\"'<>]*:{_USERINFO_PART}*)@",
+        _userinfo,
+        _has_userinfo,
+    ),
+    # 13. Phone — international E.164-style or a bare local number. Union of
     # ecsctx's and the ported filter's patterns: dash/space/dot all count as
     # separators, since real phone numbers appear with all three and neither
     # source pattern alone caught every real case.
@@ -1355,7 +1412,7 @@ _RULE_TABLE = (
         _phone,
         _has_phone_shape,
     ),
-    # 13. Email (user@example.com).
+    # 14. Email (user@example.com).
     _rule(
         "default",
         # Bounded by RFC 5321's limits (64-char local part, 255-char domain):
@@ -1365,14 +1422,14 @@ _RULE_TABLE = (
         _email,
         _has_at,
     ),
-    # 14. JWT (eyJhbGciOi....).
+    # 15. JWT (eyJhbGciOi....).
     _rule(
         "default",
         r"\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{3,}\.[A-Za-z0-9_\-]{3,}",
         _jwt,
         _has_jwt_prefix,
     ),
-    # 15. Card number — truncated, bare (411111******1111; last 4
+    # 16. Card number — truncated, bare (411111******1111; last 4
     # only below 15 digits, see _truncate_pan); the middle never survives,
     # starred or not. A whole run of digit groups is read at once, and Luhn
     # decides between its readings: _CardRun.
@@ -1385,14 +1442,14 @@ _RULE_TABLE = (
         _mask_card_run,
         _has_card_shape,
     ),
-    # 16. SSN (123-45-6789).
+    # 17. SSN (123-45-6789).
     _rule(
         "financial_ids",
         r"(?=\d)" + _CARD_LEAD_GUARD + r"\d{3}[-\s]?\d{2}[-\s]?\d{4}\b",
         _ssn,
         _has_ssn_shape,
     ),
-    # 17. CVV standalone — bare 3-4 digit group, no keyword (call 123 now).
+    # 18. CVV standalone — bare 3-4 digit group, no keyword (call 123 now).
     # The loosest rule in the file, and now doubly fenced. It never sees a
     # whole scalar field value (prose_only): there, "000" is a PSP response
     # code, not a CVV, and the key says which. In prose it fires only when the

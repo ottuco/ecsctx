@@ -18,9 +18,11 @@ from ecsctx.pii.normalize import normalize_value
 # an HMAC-SHA-256 digest in unpadded base64url, 43 characters. Anything else
 # that starts "ptok:" was typed that way: it is no token, and is masked like
 # any other value of its type.
-_TOKEN_HEAD = rf"{TOKEN_PREFIX}:v{TOKEN_VERSION}:"
+_TOKEN_START = f"{TOKEN_PREFIX}:v{TOKEN_VERSION}:"
+_TOKEN_HEAD = re.escape(_TOKEN_START)
 _TOKEN = rf"{_TOKEN_HEAD}[A-Za-z0-9_-]{{43}}"
 _TOKEN_SHAPE = re.compile(_TOKEN)
+_TOKEN_LENGTH = len(_TOKEN_START) + 43
 # ...and in that shape with a card-number run in its body -- twelve digits,
 # joined by single hyphens at most, as patterns.holds_pan_run reads one -- it
 # is `ptok:v1:` typed before a card number: nothing takes it for a token. A

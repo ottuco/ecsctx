@@ -844,7 +844,7 @@ as a phone number to a careless rule).
 
 | Pack | Content rules | On by default |
 |------|---------------|---------------|
-| `default` | PEM keys, credentials (`token=…`, `"secret": …`, `Bearer …`), phone numbers, emails, JWTs | always |
+| `default` | PEM keys, credentials (`token=…`, `"secret": …`, `Bearer …`), a URL's userinfo, phone numbers, emails, JWTs | always |
 | `pci` | PANs (truncated), CVV — keyed (`cvv=123`, `"securityCode": "123"`, `CVV 123`) and bare 3–4 digit groups | no |
 | `financial_ids` | IBANs, SSNs, payment/transaction/auth ids (content and key names) | no |
 
@@ -902,8 +902,8 @@ Both are `from ecsctx import mask_card_value, mask_secret`.
 ### Network-boundary redaction (`ecsctx.contrib.net`)
 
 `mask_sensitive_data` masks a credential its rules name wherever it appears in a
-record — `password=…` in a URL's query, `"access_token": "…"` in body text —
-but these helpers know their input: a query param whose name
+record — `password=…` in a URL's query, `"access_token": "…"` in body text, a
+URL's userinfo — but these helpers know their input: a query param whose name
 only hints at a credential (`username`, `P`, `sign`), a literal secret in a
 URL's path, a body masked by its keys before it is serialised and capped.
 Import them instead of copying them per service:
@@ -1066,6 +1066,13 @@ or an opening bracket (`{`, `[`, `(`, `<`). After `Authorization:` (or
 `Proxy-Authorization:`, `authorization=`) the scheme and the credential are one
 value — `Authorization: Bearer abc…` carries the token the header gets under its
 key, not one for `Bearer` with the credential beside it.
+
+A URL's userinfo in text — a DSN in an exception,
+`postgresql://user:password@db:5432/app` — is masked part by part as
+`redact_url` masks it, keeping the scheme, host and port: with a password,
+empty or not (`https://key:@host`); a user alone (`ssh://git@host`) is left to
+the other rules. The email rule never starts inside masking's own output, so a
+token or label in a URL's userinfo keeps the host after it.
 
 A digit run that touches a letter is never a phone number — it is part of an
 id. The card rule still matches a PAN followed by a letter, because Track 2

@@ -149,7 +149,7 @@ class TestAValueAlreadyTruncatedUpstreamPassesThrough:
 
 class TestTheCvvBesideAMaskedPanStillMasks:
     """The leak this change opens if `_text_has_card_context` is not taught the
-    bare shape. Rule 15 runs before rule 17, so by the time the CVV rule looks
+    bare shape. The card rule runs before the standalone CVV rule, so by the time the CVV rule looks
     at the text the PAN is already truncated and `_CARD_SHAPE` no longer
     matches — the truncation itself is the only card context left.
     """

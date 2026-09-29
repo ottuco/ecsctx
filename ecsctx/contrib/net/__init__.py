@@ -6,8 +6,8 @@ bodies of every outbound call. Legacy providers send
 carries a password in its userinfo, and OAuth-style secrets come back as body
 values, so all of them are masked before logging. ``mask_sensitive_data``
 masks what its credential rules name wherever it appears -- ``password=`` in a
-query, ``"access_token": …`` in body text -- but these helpers know their
-input: a param whose name only hints at a credential
+query, ``"access_token": …`` in body text, a URL's userinfo -- but these
+helpers know their input: a param whose name only hints at a credential
 (``user``, ``P``, ``sign``), a literal secret in a URL's path, a body masked by
 its keys before it is serialised and capped. Each value found is masked as
 ``mask_secret`` masks a credential, so it carries the token the same value gets
