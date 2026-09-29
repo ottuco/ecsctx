@@ -1091,14 +1091,19 @@ no value: doubled as CSV and SQL escape a quote (`password=""s3cret`), they
 are structure before it. A value between escaped quotes — JSON in a JSON
 string, `{\"password\": \"correct horse\"}` — runs to its matching escaped
 quote too. A backslash, `@`, `#` or an
-apostrophe inside a value no longer ends it early, leaving the rest in clear. A
+apostrophe inside a value no longer ends it early, leaving the rest in clear —
+except that a `#` right after a whole token opens a URL's fragment, so
+`redact_url`'s `?password=<token>#access_token=<token>` keeps both tokens. A
 double-quoted value is masked as the JSON string it decodes to, so it carries
 the token the same value gets under a key. A value never starts with a quote
 or an opening bracket (`{`, `[`, `(`, `<`), and never runs into a label masking
 already wrote (`abc[SECRET-MASKED]`). After `Authorization:` (or
 `Proxy-Authorization:`, `authorization=`) the scheme and the credential are one
 value — `Authorization: Bearer abc…` carries the token the header gets under its
-key, not one for `Bearer` with the credential beside it. A credential keyword that
+key, not one for `Bearer` with the credential beside it. A whole token right after
+the scheme — what masking the credential alone leaves,
+`Authorization: Bearer ptok:v1:…` — is left as it is, not hashed again with its
+scheme. A credential keyword that
 names a CVV or PIN (`cvv_token=123`, `pin_password=1234`) gives that label
 (`[CVV-MASKED]`, `[SAD-MASKED]`), as the key does, never a token.
 
