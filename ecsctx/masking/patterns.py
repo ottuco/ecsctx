@@ -1337,12 +1337,15 @@ _RULE_TABLE = (
     # header under its key -- `Authorization: Bearer x` masks `Bearer x`, the
     # token `mask_secret` gives it -- and is never the whole value while more
     # follows it: then pass 2 would read `Bearer` off `Bearer [REDACTED]`.
+    # Nor is a token after the scheme (what masking the credential alone
+    # left) hashed again with it.
     _rule(
         "default",
         rf"\b(?P<prefix>(?:(?P<auth>{_AUTH_KEYWORD})|{_OTHER_CRED_KEYWORD})(?:\\?[\"']|\s)*[:=]\s*"
         rf"(?:(?P<quote>(?<!\\)[\"'])(?={_quoted_body('quote')}+(?P=quote))|(?:\\?[\"'])+)?)"
         rf"(?P<value>(?(quote){_quoted_body('quote')}+|(?!{_WHOLE_TOKEN})"
-        rf"(?(auth)(?:{_AUTH_SCHEME}[ \t]+(?={_VALUE_START}))?(?!{_AUTH_SCHEME}[ \t]+\S)){_UNQUOTED_VALUE}))",
+        rf"(?(auth)(?:{_AUTH_SCHEME}[ \t]+(?={_VALUE_START})(?!{_WHOLE_TOKEN}))?(?!{_AUTH_SCHEME}[ \t]+\S))"
+        rf"{_UNQUOTED_VALUE}))",
         _cred_kv,
         _has_credential,
         _sub_near_credential_words,

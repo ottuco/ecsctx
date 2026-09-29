@@ -991,6 +991,13 @@ class TestAnAuthorizationHeaderInText:
         expected = text if text.endswith("]") else f"Authorization: {mask_secret('Bearer')}"
         assert mask_by_patterns(text, _TEXT_RULES) == expected
 
+    @pytest.mark.parametrize("text", ["Authorization: Bearer %s", "Authorization=Basic %s", "Proxy-Authorization: Token %s"])
+    def test_a_token_after_the_scheme_is_left_as_it_is(self, text):
+        # What masked the credential alone left: hashed with its scheme, it
+        # was a second token for the same credential.
+        text = text % token_or_label(SECRET)
+        assert mask_by_patterns(text, _TEXT_RULES) == text
+
     def test_a_starred_credential_is_the_label(self):
         assert mask_by_patterns("Authorization: Bearer ****", _TEXT_RULES) == f"Authorization: {LABEL}"
 
