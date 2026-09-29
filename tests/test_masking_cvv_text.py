@@ -6,7 +6,9 @@ receives the CVV a saved-card payment sends -- logged them in clear, though
 the same CVV under a key was `[CVV-MASKED]` everywhere. They knew three
 spellings (`cvv`, `cvc`, `security code`) where the key rule knows the rest
 (`CVV2`, `csc`, `cardCode`, `vpc_CardSecurityCode`, ...), and stopped at four
-digits: `cvv=482912` left `12`.
+digits: `cvv=482912` left `12`. `redact_url` and `redact_body` masked
+credential params only, so `vpc_CardSecurityCode=123` and a card number in a
+query or form body went out whole.
 
 The keyed rules now run in every pack; the bare 3-4 digit rule, which needs
 card context to fire, stays `pci`. A CVV is never tokenized: it is always
@@ -15,6 +17,7 @@ card context to fire, stays `pci`. A CVV is never tokenized: it is always
 
 import pytest
 
+from ecsctx.contrib.net import loggable_request_body, redact_body, redact_url
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
 from ecsctx.pii import configure_pii
@@ -92,3 +95,44 @@ def test_a_bare_group_still_needs_the_pci_pack():
     # "call 123 now" beside a card: the loose rule stays opt-in.
     text = "card 4111111111111111 call 123 now"
     assert mask_by_patterns(text, DEFAULT) == text
+
+
+class TestCardAndCvvParamsInAUrl:
+    def test_each_is_masked_by_its_keys_type(self):
+        url = redact_url(
+            "https://gw.example/pay?vpc_CardSecurityCode=123&card_number=4111111111111111&pin=1234&order_id=42"
+        )
+        assert url == (
+            "https://gw.example/pay?vpc_CardSecurityCode=[CVV-MASKED]"
+            "&card_number=411111******1111&pin=[SAD-MASKED]&order_id=42"
+        )
+        assert redact_url(url) == url
+
+    def test_the_fragment_is_read_as_the_query(self):
+        assert redact_url("https://h/cb#cvv=123&x=1") == "https://h/cb#cvv=[CVV-MASKED]&x=1"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://h/pay?cvv_required=true&shipping=1234",
+            "https://h/pay?card_number=n%2Fa&card=visa",
+            "https://h/pay?cvv=&pin=",
+        ],
+    )
+    def test_a_value_its_key_does_not_hide_is_left_as_written(self, url):
+        assert redact_url(url) == url
+
+
+class TestCardAndCvvFieldsInAFormBody:
+    BODY = "cvv=456&card_number=4111111111111111&pin=1234&shipping=1234&cvv_required=true"
+    MASKED = "cvv=[CVV-MASKED]&card_number=411111******1111&pin=[SAD-MASKED]&shipping=1234&cvv_required=true"
+
+    def test_redact_body_masks_each_by_its_keys_type(self):
+        assert redact_body(self.BODY) == self.MASKED
+        assert redact_body(self.MASKED) == self.MASKED
+
+    def test_a_form_body_logged_as_text_is_masked(self):
+        assert loggable_request_body(self.BODY, None) == self.MASKED
+
+    def test_in_a_json_string_the_strings_structure_stays(self):
+        assert redact_body('{"note": "cvv=456"}') == '{"note": "cvv=[CVV-MASKED]"}'

@@ -6,10 +6,11 @@ bodies of every outbound call. Legacy providers send
 carries a password in its userinfo, and OAuth-style secrets come back as body
 values, so all of them are masked before logging. ``mask_sensitive_data``
 masks what its credential rules name wherever it appears -- ``password=`` in a
-query, ``"access_token": …`` in body text, a URL's userinfo -- but these
-helpers know their input: a param whose name only hints at a credential
-(``user``, ``P``, ``sign``), a literal secret in a URL's path, a body masked by
-its keys before it is serialised and capped. Each value found is masked as
+query, ``"access_token": …`` in body text, a URL's userinfo, ``cvv=123`` --
+but these helpers know their input: a param whose name only hints at a
+credential (``user``, ``P``, ``sign``), a card number under its key in a query
+or form body, a literal secret in a URL's path, a body masked by its keys
+before it is serialised and capped. Each value found is masked as
 ``mask_secret`` masks a credential, so it carries the token the same value gets
 under a key.
 
@@ -31,8 +32,15 @@ from typing import Any
 from urllib.parse import unquote_plus, urlparse, urlsplit, urlunsplit
 
 from ecsctx.masking.filters import MaskPIIFilter
-from ecsctx.masking.patterns import _mask_userinfo, holds_pan_run, mask_secret
-from ecsctx.masking.tokens import _MASKED_VALUE, _PLACEHOLDER, make_label
+from ecsctx.masking.patterns import (
+    ALL_PACKS,
+    _mask_userinfo,
+    classify_key,
+    holds_pan_run,
+    mask_card_value,
+    mask_secret,
+)
+from ecsctx.masking.tokens import _MASKED_VALUE, _PLACEHOLDER, make_label, mask_by_field_type
 
 _SECRET_LABEL = f"[{make_label('secret')}]"
 
@@ -258,10 +266,29 @@ def _is_credential_key(key: str) -> bool:
     return k in _CREDENTIAL_EXACT or any(hint in k for hint in _CREDENTIAL_HINTS)
 
 
+# What a query or form key names that is masked by its type, whatever the
+# value looks like: a CVV and the rest of Sensitive Authentication Data as
+# their labels, never a token, and a card number truncated. Classified as the
+# key walk classifies a key, every pack on: MIGS's `vpc_CardSecurityCode`, a
+# form's `card_number`, `pin`.
+_CARD_TYPES = frozenset({"cvv", "sad", "card"})
+
+
+def _card_field_type(key: str) -> str | None:
+    field_type = classify_key(key, ALL_PACKS)
+    return field_type if field_type in _CARD_TYPES else None
+
+
+def _mask_card_field(value: str, field_type: str) -> str:
+    return mask_card_value(value) if field_type == "card" else mask_by_field_type(value, field_type)
+
+
 def redact_url(url: str, *, secrets: Collection[str] | None = None) -> str:
     """Return ``url`` with its userinfo and credential-looking query and
     fragment params masked, each as ``mask_secret`` masks a credential: its
-    token, or ``[SECRET-MASKED]``.
+    token, or ``[SECRET-MASKED]``. A param whose key the key rules call a
+    card, CVV or other SAD is masked by that type instead: a card number
+    truncated, a CVV ``[CVV-MASKED]``, never a token.
 
     The userinfo's user and password are masked each as it decodes
     (``https://<user>:<password>@host``), the host and port kept; an empty
@@ -315,12 +342,20 @@ def _mask_params(params: str) -> str:
 
 
 def _mask_query_field(field: str) -> str:
-    """One ``key=value`` of a query: a credential's value masked, written
-    unencoded so it reads as the token or label it is; anything else byte for
-    byte, since re-encoding it changed what a reader searches for."""
+    """One ``key=value`` of a query or fragment: a card, CVV or SAD key's value
+    masked as its type is, a credential's as ``mask_secret`` masks one, each
+    written unencoded so it reads as the truncation, label or token it is;
+    anything else byte for byte, since re-encoding it changed what a reader
+    searches for."""
     key, equals, value = field.partition("=")
-    if equals and _is_credential_key(unquote_plus(key)):
-        return f"{key}={mask_secret(unquote_plus(value))}"
+    if not equals:
+        return field
+    name, decoded = unquote_plus(key), unquote_plus(value)
+    if field_type := _card_field_type(name):
+        masked = _mask_card_field(decoded, field_type)
+        return field if masked == decoded else f"{key}={masked}"
+    if _is_credential_key(name):
+        return f"{key}={mask_secret(decoded)}"
     return field
 
 
@@ -353,13 +388,37 @@ def redact_body(text: str) -> str:
     JSON key's ``":``, ``>`` or ``/>`` -- stays as written; the rest is the
     value, unescaped first only when it sits between escaped quotes in a
     JSON string. A value, JSON or form, that holds a card-number run is the
-    label.
+    label. A form field whose key the key rules call a card, CVV or other
+    SAD is masked by that type, whatever the credential keys: a card number
+    truncated, a CVV ``[CVV-MASKED]``.
     """
+    if "=" in text:
+        text = _FORM_FIELD.sub(_mask_card_form_field, text)
     hint_re, json_re, form_re = _get_compiled()
     if not hint_re.search(text):
         return text
     text = json_re.sub(_mask_json_value, text)
     return form_re.sub(_mask_form_value, text)
+
+
+# Any form field: its key as a form writes one (`card[number]` too), not
+# glued to more of one, and its value up to the next `&` or whitespace.
+_FORM_FIELD = re.compile(r"(?<![\w.\-\[\]%])([\w.\-\[\]%]+)=([^&\s]*)")
+
+
+def _mask_card_form_field(match: re.Match) -> str:
+    """A form field whose key names a card, a CVV or other SAD, masked by that
+    type (a JSON string's structure at its ends kept, as ``_mask_form_value``
+    keeps it); any other field as it is."""
+    field_type = _card_field_type(unquote_plus(match.group(1)))
+    if field_type is None:
+        return match.group(0)
+    head, inner, tail = _split_form_value(match.group(2))
+    value = unquote_plus(inner)
+    masked = _mask_card_field(value, field_type)
+    if masked == value:
+        return match.group(0)
+    return f"{match.group(1)}={head}{masked}{tail}"
 
 
 def _mask_json_value(match: re.Match) -> str:

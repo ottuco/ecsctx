@@ -907,9 +907,9 @@ Both are `from ecsctx import mask_card_value, mask_secret`.
 `mask_sensitive_data` masks a credential its rules name wherever it appears in a
 record — `password=…` in a URL's query, `"access_token": "…"` in body text, a
 URL's userinfo, `cvv=123` — but these helpers know their input: a query param
-whose name only hints at a credential (`username`, `P`, `sign`), a literal
-secret in a URL's path, a body masked by its keys before it is serialised and
-capped.
+whose name only hints at a credential (`username`, `P`, `sign`), a card number
+under its key in a query or form body, a literal secret in a URL's path, a
+body masked by its keys before it is serialised and capped.
 Import them instead of copying them per service:
 
 ```python
@@ -921,9 +921,11 @@ from ecsctx.contrib.net import (
 - `redact_url(url)` — masks a URL's userinfo (`https://<user>:<password>@host`,
   each part as it decodes, the host and port kept) and credential-looking
   query and fragment params (`password`, `api_key`, `access_code`,
-  `#access_token=…`, … incl. single-letter legacy keys) before logging. A
-  credential param's value is replaced in place, unencoded; every other param
-  is left exactly as written, an empty value stays empty, a label in the
+  `#access_token=…`, … incl. single-letter legacy keys) before logging, and a
+  param whose key the key rules call a card, CVV or other SAD
+  (`card_number=411111******1111`, `vpc_CardSecurityCode=[CVV-MASKED]`,
+  `pin=[SAD-MASKED]`). A masked param's value is replaced in place, unencoded;
+  every other param is left exactly as written, an empty value stays empty, a label in the
   userinfo is percent-encoded (`%5BSECRET-MASKED%5D`) so the URL still parses,
   and a URL that cannot be parsed is masked whole. `ecs_url(full_url)` calls
   it for you; call it yourself for a URL logged anywhere else, or to name a
@@ -935,9 +937,11 @@ from ecsctx.contrib.net import (
   passes through. A form value runs to the next `&` or whitespace; the
   quotes and closing brackets at its ends stay as written (`<Auth
   password="[SECRET-MASKED]"/>`). A value, JSON or form, holding a card-number
-  run is `[SECRET-MASKED]` either way. A bare `token` key is deliberately left alone:
-  gateways reuse it for non-secret payment/session identifiers that log
-  readers rely on.
+  run is `[SECRET-MASKED]` either way. A form field whose key the key rules
+  call a card, CVV or other SAD is masked by that type, as in a URL
+  (`cvv=[CVV-MASKED]&card_number=411111******1111`). A bare `token` key is
+  deliberately left alone: gateways reuse it for non-secret payment/session
+  identifiers that log readers rely on.
 - `redact_url(url, secrets=[token])` also masks literal values anywhere in
   the URL, longest first — a saved-card token in a path such as
   `/card/<token>/`.
