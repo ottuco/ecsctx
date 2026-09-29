@@ -38,6 +38,7 @@ from ecsctx.contrib.net import configure_redaction, ecs_url, loggable_body, reda
 from ecsctx.masking import mask_by_field_type, mask_secret
 from ecsctx.masking import patterns as masking_patterns
 from ecsctx.masking.config import configure_masking_packs
+from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
 from ecsctx.masking.tokens import make_label
 from ecsctx.pii import configure_pii, is_configured, tokenize
@@ -678,10 +679,11 @@ def _outputs(text: str, *, text_rules: bool = True) -> list[str]:
     return outputs
 
 
-# Without `pci` a credential text rule hashes a value that holds a card number,
-# the accepted default-pack residual (TestACredentialThatHoldsACardNumber). Of
-# these shapes one puts the card number in a credential value's own
-# characters, since a value runs to its delimiter: `%22` is part of it.
+# Without `pci` among the call's packs a credential text rule hashes a value
+# that holds a card number, the accepted default-pack residual
+# (TestACredentialThatHoldsACardNumber). Of these shapes one puts the card
+# number in a credential value's own characters, since a value runs to its
+# delimiter: `%22` is part of it.
 _HASHED_WITHOUT_PCI = {f"password=%22{PAN}%22&x=1"}
 
 
@@ -748,11 +750,12 @@ def _as_masked(masked: str) -> dict[str, str]:
 
 
 class TestACredentialThatHoldsACardNumber:
-    """With the `pci` pack, a credential holding a card-number run is its
-    label on every path -- as the key walk's own `pci` branch already made it
-    under a key -- since its hash is a keyed hash of a card number. Without
-    `pci` it keeps its token: a default-pack service receives no card
-    numbers, and labelling such values would label 7% of 64-hex signatures."""
+    """With `pci` among the call's packs, a credential holding a card-number
+    run is its label on every path -- as the key walk's own `pci` branch
+    already made it under a key -- since its hash is a keyed hash of a card
+    number. Without `pci` among them it keeps its token: a default-pack
+    service receives no card numbers, and labelling such values would label
+    7% of 64-hex signatures."""
 
     def test_with_pci_it_is_the_label_on_every_path(self):
         configure_masking_packs(["pci"])
@@ -1119,3 +1122,38 @@ class TestAUrlsUserinfoInText:
         # `john@example.com` as it did -- the host with it.
         email = tokenize("john@example.com", "email") if is_configured() else "[EMAIL-MASKED]"
         assert mask_by_patterns("GET https://john@example.com/v1", _TEXT_RULES) == f"GET https://{email}/v1"
+
+
+# Values whose card number R4 now reads as part of the credential: 0.15.4's
+# value class stopped at `@`, `\` or `%`, and the card rule truncated it.
+CARD_IN_A_CREDENTIAL = [
+    ("password=p@ss4111111111111111", "password=[SECRET-MASKED]"),
+    ("password=ab\\cd4111111111111111", "password=[SECRET-MASKED]"),
+    ("password=%224111111111111111%22&x=1", "password=[SECRET-MASKED]&x=1"),
+    ("payment_id=4111111111111111", "payment_id=[PAYMENT-ID-MASKED]"),
+]
+
+
+class TestTheCallsPacksDecide:
+    """"`pci` in force" is the masking call's packs -- a filter built with its
+    own `packs=`, as a PCI handler beside a default one is -- and the
+    process's only outside one. Read from the process alone, a pci filter in
+    a default-configured process hashed a credential holding a card number."""
+
+    @pytest.mark.parametrize(("text", "masked"), CARD_IN_A_CREDENTIAL)
+    def test_a_pci_filter_labels_it_in_a_default_process(self, text, masked):
+        assert MaskPIIFilter(packs=ALL_PACKS)._mask_string(text) == masked
+
+    def test_a_pci_filters_key_walk_labels_it_too(self):
+        out = MaskPIIFilter(packs=ALL_PACKS)._mask_dict({"password": HOLDS_A_PAN, "note": "password=p@ss4111111111111111"})
+        assert out == {"password": LABEL, "note": "password=[SECRET-MASKED]"}
+
+    def test_outside_the_call_the_process_packs_decide_again(self):
+        MaskPIIFilter(packs=ALL_PACKS)._mask_string("password=p@ss4111111111111111")
+        assert mask_secret(HOLDS_A_PAN) == token_or_label(HOLDS_A_PAN)
+
+    def test_a_default_filter_in_a_pci_process_hashes_it(self):
+        # Its own packs, the call's: no card rule and no card check.
+        configure_masking_packs(["pci"])
+        text = f"password={HOLDS_A_PAN}"
+        assert MaskPIIFilter(packs=("default",))._mask_string(text) == f"password={token_or_label(HOLDS_A_PAN)}"

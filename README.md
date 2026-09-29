@@ -894,11 +894,13 @@ builds itself — is masked as the key it would sit under masks it:
   a placeholder another masker left (`[REDACTED]`, `[PII_REDACTED]`, `***`,
   `Bearer ****`), which would otherwise hash to one token shared by every
   record that carries it, and for a value in a token's exact shape with a card
-  number in it (`ptok:v1:` typed before one). With the `pci` pack it is
-  `[SECRET-MASKED]` too for any value that holds a card-number run
-  (`abc4111111111111111xyz`), as under a credential key; without `pci` such a
-  value is hashed, since a default-pack service receives no card numbers. An
-  empty value stays empty; `None` and booleans come back as they are.
+  number in it (`ptok:v1:` typed before one). With `pci` among the call's
+  packs — a `MaskPIIFilter`'s own `packs=` while it masks, else the
+  process's — it is `[SECRET-MASKED]` too for any value that holds a
+  card-number run (`abc4111111111111111xyz`), as under a credential key;
+  without `pci` among the call's packs such a value is hashed, since a
+  default-pack service receives no card numbers. An empty value stays empty;
+  `None` and booleans come back as they are.
 
 Both are `from ecsctx import mask_card_value, mask_secret`.
 
@@ -962,9 +964,9 @@ Every credential these helpers mask is masked as `mask_secret` masks one: its
 token where PII tokenization is configured, `[SECRET-MASKED]` where it is not
 (and for a card-shaped value or a placeholder), so it carries the token the
 same value gets under a key. `redact_body` gives `[SECRET-MASKED]` to a body
-value that holds a card-number run in every pack; `mask_secret` does with the
-`pci` pack, so there the two agree, and without it `mask_secret` (and so
-`redact_url`) hashes such a value. Before 0.15.4 they wrote a fixed
+value that holds a card-number run in every pack; `mask_secret` does with `pci`
+among the call's packs, so there the two agree, and without it `mask_secret`
+(and so `redact_url`) hashes such a value. Before 0.15.4 they wrote a fixed
 `[REDACTED]`, whatever the keyset.
 
 Configure per deploy without code changes. Precedence: explicit call >

@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import warnings
 from collections.abc import Iterable
+from contextvars import ContextVar
 from functools import lru_cache
 
 from ecsctx.masking.patterns import ALL_PACKS, classify_key, never_safe
@@ -141,6 +142,40 @@ def get_masking_packs() -> frozenset[str]:
     return packs
 
 
+# The packs of the masking call in progress: a MaskPIIFilter's own, set for
+# the call, so what depends on them outside the rule tuple (whether a
+# credential holding a card number is its label, tokens.mask_by_field_type)
+# follows the filter, not only the process -- a PCI handler beside a default
+# one. None outside a call.
+_CALL_PACKS: ContextVar[frozenset[str] | None] = ContextVar("ecsctx_masking_call_packs", default=None)
+
+
+class _CallPacks:
+    """``with call_packs(packs):`` -- the packs in force for one masking call."""
+
+    __slots__ = ("_packs", "_token")
+
+    def __init__(self, packs: frozenset[str]) -> None:
+        self._packs = packs
+
+    def __enter__(self) -> None:
+        self._token = _CALL_PACKS.set(self._packs)
+
+    def __exit__(self, *_exc: object) -> None:
+        _CALL_PACKS.reset(self._token)
+
+
+def call_packs(packs: frozenset[str]) -> _CallPacks:
+    return _CallPacks(packs)
+
+
+def packs_in_force() -> frozenset[str]:
+    """The packs of the masking call in progress, else the process's
+    (get_masking_packs). Never raises."""
+    packs = _CALL_PACKS.get()
+    return get_masking_packs() if packs is None else packs
+
+
 def _safe_names(keys: Iterable[str] | str) -> frozenset[str]:
     return frozenset(name.lower() for name in _names(keys))
 
@@ -234,9 +269,9 @@ def key_field_type(key: str) -> str | None:
     reads as the same field would: its token, or ``[SECRET-MASKED]`` without a
     keyset, and ``[SECRET-MASKED]`` either way where it is shaped like a card
     number (an MPGS token is sixteen digits), is a placeholder another masker
-    left, or is in a token's shape with a card number in it -- and, with the
-    ``pci`` pack, where it holds a card-number run anywhere, as a payment id
-    does too. A value known to be a credential needs no lookup:
+    left, or is in a token's shape with a card number in it -- and, with
+    ``pci`` among the call's packs (``packs_in_force``), where it holds a
+    card-number run anywhere, as a payment id does too. A value known to be a credential needs no lookup:
     ``mask_secret(value)``. A card key's value is truncated, not labelled:
     ``mask_card_value(value)``.
     """

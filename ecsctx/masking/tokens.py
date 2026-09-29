@@ -112,9 +112,11 @@ def mask_by_field_type(value: str, field_type: str) -> str:
     and is the label, in every pack. A credential is the label, never a token,
     when it is shaped like a card number (a saved card's sixteen-digit gateway
     token), since a keyed hash of what may be a PAN is what PCI DSS FAQ 1117
-    forbids, and when it is a placeholder another masker left. With the `pci`
-    pack in force, a credential or payment id that holds a card-number run
-    anywhere (``holds_pan_run``) is the label too. Applied here, where every
+    forbids, and when it is a placeholder another masker left. With `pci`
+    among the call's packs -- a filter's own ``packs=`` for the call, else
+    the process's (``config.packs_in_force``) -- a credential or payment id
+    that holds a card-number run anywhere (``holds_pan_run``) is the label
+    too. Applied here, where every
     caller passes -- the key walk, the credential and payment-id text rules, a
     route parameter, ``ecsctx.contrib.net`` -- rather than by each of them.
     """
@@ -145,9 +147,10 @@ def mask_by_field_type(value: str, field_type: str) -> str:
             if pan_shaped(bare) or _PLACEHOLDER.fullmatch(bare):
                 return f"[{label}]"
         if _pci_in_force() and holds_pan_run(bare):
-            # Without `pci` it is hashed: a default-pack service receives no
-            # card numbers, and the label would stand in for 7% of the 64-hex
-            # signatures Connect logs, where a token can stand.
+            # Without `pci` among the call's packs it is hashed: a
+            # default-pack service receives no card numbers, and the label
+            # would stand in for 7% of the 64-hex signatures Connect logs,
+            # where a token can stand.
             return f"[{label}]"
     token = safe_tokenize(value, field_rule.field_type)
     if token == _REDACTED:
@@ -163,8 +166,9 @@ def _holds_a_card_number(text: str) -> bool:
 
 
 def _pci_in_force() -> bool:
-    """Whether this process masks with the `pci` pack. Imported here: config
-    imports patterns, which imports this module as it loads."""
-    from ecsctx.masking.config import get_masking_packs
+    """Whether `pci` is among the call's packs: those of the masking call in
+    progress -- a MaskPIIFilter's own -- else the process's. Imported here:
+    config imports patterns, which imports this module as it loads."""
+    from ecsctx.masking.config import packs_in_force
 
-    return "pci" in get_masking_packs()
+    return "pci" in packs_in_force()

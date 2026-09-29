@@ -888,9 +888,10 @@ def mask_secret(value: Any) -> Any:
     where it is not, and ``[SECRET-MASKED]`` either way for a value shaped
     like a card number, a placeholder another masker left, a value in a
     token's shape with a card number in it (``ptok:v1:`` typed before one),
-    and -- with the ``pci`` pack in force -- any value that holds a
-    card-number run (``holds_pan_run``). Without ``pci`` such a value is
-    hashed: a default-pack service receives no card numbers.
+    and -- with ``pci`` among the call's packs, a filter's own while it
+    masks, else the process's -- any value that holds a card-number run
+    (``holds_pan_run``). Without ``pci`` among them such a value is hashed: a
+    default-pack service receives no card numbers.
 
     For a credential that reaches a log outside a mapping, where no key sits
     next to it: a URL's path or query, a body masked before it is logged, a

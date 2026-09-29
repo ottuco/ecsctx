@@ -26,7 +26,7 @@ from functools import lru_cache
 from numbers import Number
 from typing import Any, NamedTuple
 
-from ecsctx.masking.config import _normalise, get_masking_packs, get_masking_safe_keys
+from ecsctx.masking.config import _normalise, call_packs, get_masking_packs, get_masking_safe_keys
 from ecsctx.masking.exemptions import (
     _get_exempt_patterns,
     _path_is_exempt,
@@ -417,6 +417,10 @@ class MaskPIIFilter(logging.Filter):
         return self._packs if self._packs is not None else get_masking_packs()
 
     def _context(self) -> _Pass:
+        """What one masking call needs. Every call that builds it -- filter(),
+        and a method called with no context -- then masks with this filter's
+        packs in force (config.call_packs), so the card check
+        mask_by_field_type makes follows them, not the process's."""
         packs = self._packs_in_force()
         return _Pass(packs, rules_for(packs), _get_exempt_patterns(), get_masking_safe_keys())
 
@@ -427,7 +431,10 @@ class MaskPIIFilter(logging.Filter):
         # for real PII elsewhere in the same string. A second regex pass
         # over already-masked markers is a noop (pinned by test), and
         # leaf-level idempotency still lives in mask_by_field_type.
-        ctx = ctx or self._context()
+        if ctx is None:
+            ctx = self._context()
+            with call_packs(ctx.packs):
+                return self._mask_string(text, ctx, scalar=scalar)
         if not ctx.rules:
             return text  # a key-only walk: see _mask_json_text
         # A whole field value is judged by its key, not by its shape: the
@@ -443,7 +450,10 @@ class MaskPIIFilter(logging.Filter):
         dict sits in (a ``customer``, a ``billing`` address): a key of its own
         type wins, a safe key keeps its value, and any other key is masked as
         the container's type."""
-        ctx = ctx or self._context()
+        if ctx is None:
+            ctx = self._context()
+            with call_packs(ctx.packs):
+                return self._mask_dict(data, path, ctx, inherited)
         if inherited == "secret" and _is_card_object(data):
             inherited = "card"
         # A pair is judged by its identifiers -- never under a CVV or SAD
@@ -572,7 +582,10 @@ class MaskPIIFilter(logging.Filter):
         ctx: _Pass | None = None,
         inherited: str | None = None,
     ) -> list | tuple | set:
-        ctx = ctx or self._context()
+        if ctx is None:
+            ctx = self._context()
+            with call_packs(ctx.packs):
+                return self._mask_iterable(data, path, ctx, inherited)
         arr_path = path + ("[*]",)
         items = [self._mask_value(v, arr_path, ctx, inherited=inherited) for v in data]
         try:
@@ -602,6 +615,10 @@ class MaskPIIFilter(logging.Filter):
         _mask_dict. Inside a PII container (``inherited``) a bare value in a
         list is masked as the container's type.
         """
+        if ctx is None:
+            ctx = self._context()
+            with call_packs(ctx.packs):
+                return self._mask_value(value, path, ctx, inherited, verbatim_digits=verbatim_digits)
         if value is None:
             return value
         if len(path) > _MAX_DEPTH:
@@ -614,7 +631,6 @@ class MaskPIIFilter(logging.Filter):
             value = bytes(value).decode("utf-8", errors="replace")
         if verbatim_digits and _is_reference_number(value):
             return value
-        ctx = ctx or self._context()
         # The two exact types nearly every value is, first: this runs for
         # every value of every record.
         kind = type(value)
@@ -738,15 +754,16 @@ class MaskPIIFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         ctx = self._context()
         if not is_masked_object(record, ctx.packs):
-            try:
-                record.msg = self._mask_value(record.msg, (), ctx)
-                record.args = self._mask_args(record.args, ctx)
-            except Exception as error:  # noqa: BLE001 -- nothing here may reach the caller
-                # This runs outside emit()'s handleError, so an exception here
-                # became the caller's: a failed log line failed the payment.
-                # The message is replaced whole -- the one outcome that cannot
-                # leak what masking failed to mask.
-                record.msg = MASKING_FAILED.format(type(error).__name__)
-                record.args = ()
+            with call_packs(ctx.packs):
+                try:
+                    record.msg = self._mask_value(record.msg, (), ctx)
+                    record.args = self._mask_args(record.args, ctx)
+                except Exception as error:  # noqa: BLE001 -- nothing here may reach the caller
+                    # This runs outside emit()'s handleError, so an exception
+                    # here became the caller's: a failed log line failed the
+                    # payment. The message is replaced whole -- the one outcome
+                    # that cannot leak what masking failed to mask.
+                    record.msg = MASKING_FAILED.format(type(error).__name__)
+                    record.args = ()
             mark_object_as_masked(record, ctx.packs)
         return True
