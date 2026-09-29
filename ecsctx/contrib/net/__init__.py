@@ -1,13 +1,17 @@
 """Credential redaction for the network boundary (shared by all services).
 
-The net boundary logs ``url.full`` and (when textual) the response body for
-every outbound call. Legacy providers send ``username``/``password``/``apikey``
-in the GET query string and OAuth-style secrets as body values, so both must
-be masked before logging. ``mask_sensitive_data`` does not cover these shapes:
-it masks PII (email/phone) and ``Authorization`` *headers*, but not a secret
-carried as a query param or a body value — an OAuth token response would reach
-the index intact. Each value found is masked as ``mask_secret`` masks a
-credential, so it carries the token the same value gets under a key.
+The net boundary logs ``url.full`` and (when textual) the request and response
+bodies of every outbound call. Legacy providers send
+``username``/``password``/``apikey`` in the GET query string, a DSN or proxy URL
+carries a password in its userinfo, and OAuth-style secrets come back as body
+values, so all of them are masked before logging. ``mask_sensitive_data``
+masks what its credential rules name wherever it appears -- ``password=`` in a
+query, ``"access_token": …`` in body text -- but these helpers know their
+input: a param whose name only hints at a credential
+(``user``, ``P``, ``sign``), a literal secret in a URL's path, a body masked by
+its keys before it is serialised and capped. Each value found is masked as
+``mask_secret`` masks a credential, so it carries the token the same value gets
+under a key.
 
 Ported from ottu_backend's ``contrib/net/redact.py`` so every service imports
 one copy. Best-effort by design: matches common credential key names
@@ -27,7 +31,7 @@ from typing import Any
 from urllib.parse import unquote_plus, urlparse, urlsplit, urlunsplit
 
 from ecsctx.masking.filters import MaskPIIFilter
-from ecsctx.masking.patterns import holds_pan_run, mask_secret
+from ecsctx.masking.patterns import _mask_userinfo, holds_pan_run, mask_secret
 from ecsctx.masking.tokens import _MASKED_VALUE, _PLACEHOLDER, make_label
 
 _SECRET_LABEL = f"[{make_label('secret')}]"
@@ -255,16 +259,23 @@ def _is_credential_key(key: str) -> bool:
 
 
 def redact_url(url: str, *, secrets: Collection[str] | None = None) -> str:
-    """Return ``url`` with credential-looking query-param values masked, each
-    as ``mask_secret`` masks a credential: its token, or ``[SECRET-MASKED]``.
+    """Return ``url`` with its userinfo and credential-looking query and
+    fragment params masked, each as ``mask_secret`` masks a credential: its
+    token, or ``[SECRET-MASKED]``.
 
+    The userinfo's user and password are masked each as it decodes
+    (``https://<user>:<password>@host``), the host and port kept; an empty
+    part stays empty, and a label's brackets there are percent-encoded
+    (``%5BSECRET-MASKED%5D``), which a netloc must be to parse. The fragment's ``key=value`` params are read as the
+    query's are (an OAuth implicit grant returns ``#access_token=…``).
     ``secrets`` holds literal values (e.g. a saved-card token carried in the
     URL path) to mask wherever they occur in the URL, longest first, so one
     that contains another is masked whole. The path is otherwise left alone,
     so deliberately logged identifiers such as ``session_id`` stay visible.
     Empty secrets are ignored. A credential param's value is replaced in place
-    and every other param is left as written; an empty value stays empty. A
-    URL that cannot be parsed is masked whole.
+    and every other param is left as written; an empty value stays empty. The
+    URL is rebuilt only when something in it was masked, and a URL that cannot
+    be parsed is masked whole. Masking a URL twice masks it once.
     """
     if not isinstance(url, str) or not url:
         return url  # None/empty/non-str: nothing to redact, never raise on a log path
@@ -282,11 +293,25 @@ def redact_url(url: str, *, secrets: Collection[str] | None = None) -> str:
         parts = urlsplit(url)
     except ValueError:
         return mask_secret(url)  # unparseable -> don't risk logging it raw
-    if parts.query:
-        query = "&".join(_mask_query_field(field) for field in parts.query.split("&"))
-        if query != parts.query:
-            url = urlunsplit(parts._replace(query=query))
+    userinfo, at, host = parts.netloc.rpartition("@")
+    # A label's brackets percent-encoded: urlsplit refuses brackets in a
+    # netloc whose host is no IPv6 address, so the masked URL would not parse
+    # again -- not in redact_url, nor in ecs_url's urlparse. The userinfo is
+    # read as it decodes, so a second pass leaves it as it is.
+    masked = _mask_userinfo(userinfo).replace("[", "%5B").replace("]", "%5D")
+    netloc = f"{masked}@{host}" if at else parts.netloc
+    query, fragment = _mask_params(parts.query), _mask_params(parts.fragment)
+    if (netloc, query, fragment) != (parts.netloc, parts.query, parts.fragment):
+        url = urlunsplit(parts._replace(netloc=netloc, query=query, fragment=fragment))
     return url
+
+
+def _mask_params(params: str) -> str:
+    """A query or fragment, ``&``-separated ``key=value`` params, each masked
+    by its key."""
+    if not params:
+        return params
+    return "&".join(_mask_query_field(field) for field in params.split("&"))
 
 
 def _mask_query_field(field: str) -> str:
@@ -506,11 +531,13 @@ def parse_json_or_raw(raw: bytes | str | None) -> Any:
 def ecs_url(url: str, *, redact: bool = True) -> dict:
     """Build an ECS-compliant ``url`` object from a raw URL string.
 
-    Credential query params are redacted by default (``redact=True``), so
-    ``url.full`` — the field every dashboard shows — can never carry a
-    password or API key. Pass ``redact=False`` only when the URL is already
-    redacted. ``urlparse`` never raises on malformed input: hostname is
-    simply None if the URL can't be parsed.
+    Redacted by default (``redact=True``, ``redact_url``): ``url.full`` — the
+    field every dashboard shows — carries no userinfo password and no value of
+    a credential-named query or fragment param, only their tokens or labels.
+    A credential in the path is masked only when it is named: pass the URL
+    through ``redact_url(url, secrets=[...])`` first. Pass ``redact=False``
+    only when the URL is already redacted. ``urlparse`` never raises on
+    malformed input: hostname is simply None if the URL can't be parsed.
     """
     if redact:
         url = redact_url(url)

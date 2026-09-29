@@ -34,8 +34,16 @@ from functools import lru_cache
 from heapq import merge
 from itertools import accumulate, pairwise
 from typing import Any, NamedTuple
+from urllib.parse import unquote
 
-from ecsctx.masking.tokens import _CARDLESS_TOKEN, _TOKEN, _TRUNCATED_PAN, make_label, mask_by_field_type
+from ecsctx.masking.tokens import (
+    _CARDLESS_TOKEN,
+    _TOKEN,
+    _TOKEN_SHAPE,
+    _TRUNCATED_PAN,
+    make_label,
+    mask_by_field_type,
+)
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -873,6 +881,31 @@ def mask_secret(value: Any) -> Any:
         return value
     text = str(value)
     return mask_by_field_type(text, "secret")
+
+
+def _mask_url_part(part: str) -> str:
+    """One part of a URL's userinfo, masked as a credential as it decodes
+    (`unquote`): the token the same value gets under a key. An empty part
+    stays empty, and one masking leaves as it is stays as it was written."""
+    if not part:
+        return part
+    decoded = unquote(part)
+    masked = mask_secret(decoded)
+    return part if masked == decoded else masked
+
+
+def _mask_userinfo(userinfo: str) -> str:
+    """A URL's userinfo -- ``user`` or ``user:password`` -- with each part
+    masked, for ``contrib.net.redact_url``. A token at its head is the user
+    whole: split at its first colon, a masked user was read as ``ptok`` and
+    masked again (`ptok:v1:ptok:v1:…`)."""
+    head = _TOKEN_SHAPE.match(userinfo)
+    if head is not None and userinfo[head.end() : head.end() + 1] in ("", ":"):
+        user, rest = userinfo[: head.end()], userinfo[head.end() :]
+        separator, password = rest[:1], rest[1:]
+    else:
+        user, separator, password = userinfo.partition(":")
+    return f"{_mask_url_part(user)}{separator}{_mask_url_part(password)}"
 
 
 def _mask_pem(match: re.Match) -> str:

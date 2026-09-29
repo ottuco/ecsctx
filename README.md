@@ -901,9 +901,12 @@ Both are `from ecsctx import mask_card_value, mask_secret`.
 
 ### Network-boundary redaction (`ecsctx.contrib.net`)
 
-`mask_sensitive_data` covers PII in `payload`/`args`/`kwargs`/http bodies, but
-two boundary shapes need dedicated helpers — import them instead of copying
-them per service:
+`mask_sensitive_data` masks a credential its rules name wherever it appears in a
+record — `password=…` in a URL's query, `"access_token": "…"` in body text —
+but these helpers know their input: a query param whose name
+only hints at a credential (`username`, `P`, `sign`), a literal secret in a
+URL's path, a body masked by its keys before it is serialised and capped.
+Import them instead of copying them per service:
 
 ```python
 from ecsctx.contrib.net import (
@@ -911,13 +914,17 @@ from ecsctx.contrib.net import (
 )
 ```
 
-- `redact_url(url)` — masks credential-looking query params (`password`,
-  `api_key`, `access_code`, … incl. single-letter legacy keys) before logging.
-  A credential param's value is replaced in place, unencoded; every other
-  param is left exactly as written, an empty value stays empty, and a URL
-  that cannot be parsed is masked whole.
-  Call it **before** shaping the URL for ECS: `ecs_url(redact_url(full_url))`,
-  otherwise the raw query survives in `url.full`.
+- `redact_url(url)` — masks a URL's userinfo (`https://<user>:<password>@host`,
+  each part as it decodes, the host and port kept) and credential-looking
+  query and fragment params (`password`, `api_key`, `access_code`,
+  `#access_token=…`, … incl. single-letter legacy keys) before logging. A
+  credential param's value is replaced in place, unencoded; every other param
+  is left exactly as written, an empty value stays empty, a label in the
+  userinfo is percent-encoded (`%5BSECRET-MASKED%5D`) so the URL still parses,
+  and a URL that cannot be parsed is masked whole. `ecs_url(full_url)` calls
+  it for you; call it yourself for a URL logged anywhere else, or to name a
+  literal secret (`ecs_url(redact_url(full_url, secrets=[token]))` — masking
+  twice masks once).
 - `redact_body(text)` — masks credential values (`access_token`,
   `client_secret`, …) in JSON and form-encoded bodies. A value is masked as
   what it decodes to (a JSON escape, a form encoding), and one already masked

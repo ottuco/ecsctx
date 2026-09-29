@@ -25,7 +25,7 @@ by ecsctx under the same keyset, never written out.
 
 import json
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import pytest
 from django.test import RequestFactory
@@ -34,7 +34,7 @@ from django.urls import path, re_path, resolve
 import ecsctx
 import ecsctx.masking
 from ecsctx.contrib.django.routes import loggable_path
-from ecsctx.contrib.net import configure_redaction, loggable_body, redact_body, redact_url
+from ecsctx.contrib.net import configure_redaction, ecs_url, loggable_body, redact_body, redact_url
 from ecsctx.masking import mask_by_field_type, mask_secret
 from ecsctx.masking import patterns as masking_patterns
 from ecsctx.masking.config import configure_masking_packs
@@ -962,3 +962,75 @@ class TestAnAuthorizationHeaderInText:
         # `password=basic more words` is a password, `basic`, and prose.
         masked = mask_by_patterns("password=basic more words", _TEXT_RULES)
         assert masked == f"password={token_or_label('basic')} more words"
+
+
+def _part(value: str) -> str:
+    """A userinfo part as it must read: empty stays empty."""
+    return token_or_label(value) if value else value
+
+
+def _url_part(value: str) -> str:
+    """...and in a URL redact_url rebuilt, where a label's brackets are
+    percent-encoded: a netloc holding them does not parse."""
+    return _part(value).replace("[", "%5B").replace("]", "%5D")
+
+
+class TestAUrlsUserinfoAndFragmentInRedactUrl:
+    """`redact_url` masked credential query params only: a password in the
+    userinfo (`https://user:pass@host`) or an OAuth implicit-grant token in
+    the fragment (`#access_token=…`) reached `url.full` in clear."""
+
+    def test_the_user_and_password_are_masked_and_the_host_kept(self):
+        url = redact_url("https://user:pa55word@api.host.example:8443/v1/pay?order_id=42")
+        assert url == f"https://{_url_part('user')}:{_url_part('pa55word')}@api.host.example:8443/v1/pay?order_id=42"
+        assert urlsplit(url).hostname == "api.host.example"
+
+    @pytest.mark.parametrize(
+        ("url", "user", "password", "rest"),
+        [
+            ("https://key:@api.host/", "key", "", "api.host/"),
+            ("redis://:s3cret@cache:6379/0", "", "s3cret", "cache:6379/0"),
+            ("https://u%40corp:p%3Ass@host/", "u@corp", "p:ss", "host/"),
+            ("https://u:p@ss@host/", "u", "p@ss", "host/"),
+        ],
+    )
+    def test_each_part_is_masked_as_it_decodes_and_an_empty_one_stays_empty(self, url, user, password, rest):
+        scheme = url.split("://")[0]
+        assert redact_url(url) == f"{scheme}://{_url_part(user)}:{_url_part(password)}@{rest}"
+
+    def test_a_user_alone_is_masked(self):
+        assert redact_url("https://ghp_abc123@github.example/o/r") == f"https://{_url_part('ghp_abc123')}@github.example/o/r"
+
+    def test_the_fragment_params_are_masked_as_the_query_params_are(self):
+        url = redact_url("https://h/cb#access_token=abc123&state=xyz&scope=read")
+        assert url == f"https://h/cb#access_token={_part('abc123')}&state=xyz&scope=read"
+
+    def test_a_url_with_neither_is_left_as_written(self):
+        for url in ("https://h/a?x=1#section-2", "https://h/a#", "https://h/a?"):
+            assert redact_url(url) == url
+
+    def test_a_token_shaped_user_that_holds_a_card_number_is_the_label(self):
+        assert redact_url(f"https://{CRAFTED_TOKEN}@host.example/") == "https://%5BSECRET-MASKED%5D@host.example/"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://user:pa55word@api.host.example/v1/pay",
+            "https://user@api.host.example/v1/pay",
+            "https://key:@api.host/",
+            "https://h/cb#access_token=abc123&state=xyz",
+        ],
+    )
+    def test_masked_twice_it_is_masked_once(self, url):
+        once = redact_url(url)
+        assert redact_url(once) == once
+        assert "ptok:v1:ptok:v1:" not in once
+
+    def test_ecs_url_masks_them_and_keeps_the_domain(self):
+        shaped = ecs_url("https://user:pa55word@api.host.example/v1/pay#access_token=abc123")
+        assert shaped == {
+            "full": f"https://{_url_part('user')}:{_url_part('pa55word')}@api.host.example/v1/pay"
+            f"#access_token={_part('abc123')}",
+            "domain": "api.host.example",
+            "path": "/v1/pay",
+        }
