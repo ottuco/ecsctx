@@ -155,8 +155,17 @@ _OTHER_CRED_KEYWORD = (
 _CRED_KEYWORD = rf"(?:{_AUTH_KEYWORD}|{_OTHER_CRED_KEYWORD})"
 
 # Card verification code keywords — cvv/cvc/security code are all the same
-# thing under different names depending on card scheme/vendor terminology.
-_CVV_KEYWORD = r"(?:cvv|cvc|security[-_.\s]?code)"
+# thing under different names depending on card scheme/vendor terminology. The
+# key rule's words (_is_cvv_key): cvv, cvc, cvn, cvd and their "2"s, csc, cav2,
+# security code, verification value, card code, cv number; glued to "card"
+# (`cardCvv`, `CardSecurityCode`) or after a prefix ending in `_` or `-`
+# (`vpc_CardSecurityCode`, `x-cvv`), where `\b` cannot find the word. The rules
+# need the keyword to end the key, so `cvv_required=true` names something
+# about one and is left alone.
+_CVV_KEYWORD = (
+    r"(?:[\w-]{0,64}[_-])?(?:card[-_]?)?"
+    r"(?:cv[vcnd]2?|csc|cav2|security[-_.\s]?code|verification[-_.\s]?value|card[-_.\s]?code|cv[-_.\s]?number)"
+)
 
 # Payment/transaction/auth id keywords.
 _PAYMENT_ID_KEYWORD = r"(?:payment|transaction|auth)[_\s-]?id"
@@ -985,7 +994,7 @@ def _cred_space(m: re.Match) -> str:
 
 
 def _cvv_quoted(m: re.Match) -> str:
-    q, kw, sep = m.group(1), m.group(2), m.group(3)
+    q, kw, sep = m.group("q"), m.group("key"), m.group("sep")
     return f"{q}{kw}{q}{sep}{q}{_CVV_LABEL}{q}"
 
 
@@ -1070,8 +1079,9 @@ def _ssn(m: re.Match) -> str:
 # ---------------------------------------------------------------------------
 # Rules, packs and pre-checks
 # ---------------------------------------------------------------------------
-# Each rule belongs to one pack. `default` is always on; `pci` (card numbers,
-# CVV) and `financial_ids` (IBAN, SSN, payment ids) are opt-in: only a PCI
+# Each rule belongs to one pack. `default` is always on, the keyed CVV rules
+# among its own; `pci` (card numbers, and a bare 3-4 digit CVV beside card
+# context) and `financial_ids` (IBAN, SSN, payment ids) are opt-in: only a PCI
 # service ever sees that data, and scanning every string of every log line
 # for it costs every other service CPU and mangles its numeric ids.
 PACK_NAMES = ("default", "pci", "financial_ids")
@@ -1110,7 +1120,11 @@ _CRED_LITERALS = (
     "token", "secret", "password", "passwd", "bearer", "basic", "digest",
     "credential", "authorization", "authorisation", "key",
 )
-_CVV_LITERALS = ("cvv", "cvc", "security")
+# In every CVV keyword: "cv" (cvv, cvc, cvn, cvd, cv number, cardCvv), the rest
+# spelled out, or "card code" -- not "card" alone, which most payment lines
+# hold.
+_CVV_LITERALS = ("cv", "csc", "cav2", "security", "verification")
+_CARD_CODE = re.compile(r"card[-_.\s]?code")
 _PHONE_SHAPE = re.compile(r"\+\d|\d{3}\D{0,2}\d{3}\D?\d{4}")
 _CARD_SHAPE = re.compile(rf"\d(?:{_CARD_SEP}?\d){{11}}")
 _SSN_SHAPE = re.compile(r"\d{3}[-\s]?\d{2}[-\s]?\d{4}")
@@ -1127,7 +1141,7 @@ def _has_credential(_text: str, lowered: str) -> bool:
 
 
 def _has_cvv_keyword(_text: str, lowered: str) -> bool:
-    return any(word in lowered for word in _CVV_LITERALS)
+    return any(word in lowered for word in _CVV_LITERALS) or _CARD_CODE.search(lowered) is not None
 
 
 def _has_id(_text: str, lowered: str) -> bool:
@@ -1171,10 +1185,10 @@ def _has_three_digits(text: str, _lowered: str) -> bool:
 # text is now a bare truncation rather than a digit run. _TRUNCATED_PAN_RE
 # below is what recognises it; these words cover a "card"/"pan" key name
 # serialised into the text, and the prose cases.
-# _CVV_LITERALS too: text that says "cvv" anywhere is card context even when
-# the keyword rules cannot reach the digits ("the cvv is 123" -- rule 9 needs
-# them adjacent).
-_CARD_CONTEXT = ("card", "pan", "cardholder", "credit", *_CVV_LITERALS)
+# "cvv", "cvc" and "security" too: text that says "cvv" anywhere is card
+# context even when the keyword rules cannot reach the digits ("the cvv is
+# 123" -- rule 9 needs them adjacent).
+_CARD_CONTEXT = ("card", "pan", "cardholder", "credit", "cvv", "cvc", "security")
 _TRUNCATED_PAN_RE = re.compile(_TRUNCATED_PAN)
 
 
@@ -1324,17 +1338,21 @@ _RULE_TABLE = (
         _has_credential,
         _sub_near_credential_words,
     ),
-    # 4. CVV — quoted key ("cvv": "123").
+    # 4. CVV — quoted key ("cvv": "123"). The keyed CVV rules (4, 5, 9) are
+    # `default`: a CVV must not ship from any service, and a default-pack one
+    # (Connect) receives the CVV a saved-card payment sends. A value that
+    # starts as a CVV runs to its end, as a credential's does: none of it is
+    # left after the first four digits.
     _rule(
-        "pci",
-        rf"([\"'])({_CVV_KEYWORD})\1(\s*:\s*)\1\d{{3,4}}\1",
+        "default",
+        rf"(?P<q>[\"'])(?P<key>{_CVV_KEYWORD})(?P=q)(?P<sep>\s*:\s*)(?P=q)\d{{3}}{_quoted_body('q')}*(?P=q)",
         _cvv_quoted,
         _has_cvv_keyword,
     ),
     # 5. CVV — ":" / "=" (cvv=123).
     _rule(
-        "pci",
-        rf"\b({_CVV_KEYWORD}[\"'\s]*[:=][\"'\s]*)\d{{3,4}}",
+        "default",
+        rf"\b({_CVV_KEYWORD}(?:\\?[\"']|\s)*[:=](?:\\?[\"']|\s)*)\d{{3}}{_VALUE_UNIT}*",
         _cvv_kv,
         _has_cvv_keyword,
     ),
@@ -1365,8 +1383,8 @@ _RULE_TABLE = (
     ),
     # 9. CVV — bare space (CVV 123).
     _rule(
-        "pci",
-        rf"\b({_CVV_KEYWORD})\s+\d{{3,4}}\b",
+        "default",
+        rf"\b({_CVV_KEYWORD})\s+\d{{3}}{_VALUE_UNIT}*",
         _cvv_space,
         _has_cvv_keyword,
     ),

@@ -838,14 +838,17 @@ Keys are delivered via mounted keyset files or fetched from Vault.
 ### Masking packs — PCI services must opt in
 
 Content rules come in packs. Only a service that handles card data needs the
-card and CVV rules, and running them on every string of every line costs CPU
-and mangles numeric ids (a hex `session_id` starting with ten digits reads
-as a phone number to a careless rule).
+card rules, and running them on every string of every line costs CPU and
+mangles numeric ids (a hex `session_id` starting with ten digits reads as a
+phone number to a careless rule). A CVV named by its key in text is another
+matter: it must not ship from any service, and a default-pack one (Connect)
+receives the CVV a saved-card payment sends, so the keyed CVV rules are
+`default`.
 
 | Pack | Content rules | On by default |
 |------|---------------|---------------|
-| `default` | PEM keys, credentials (`token=…`, `"secret": …`, `Bearer …`), a URL's userinfo, phone numbers, emails, JWTs | always |
-| `pci` | PANs (truncated), CVV — keyed (`cvv=123`, `"securityCode": "123"`, `CVV 123`) and bare 3–4 digit groups | no |
+| `default` | PEM keys, credentials (`token=…`, `"secret": …`, `Bearer …`), keyed CVV (`cvv=123`, `"securityCode": "123"`, `CVV 123`, `vpc_CardSecurityCode=123`), a URL's userinfo, phone numbers, emails, JWTs | always |
+| `pci` | PANs (truncated), bare 3–4 digit CVV groups beside card context | no |
 | `financial_ids` | IBANs, SSNs, payment/transaction/auth ids (content and key names) | no |
 
 A PCI-scoped service enables them in its logging config:
@@ -859,8 +862,8 @@ or `ECSCTX_MASKING_PACKS=pci,financial_ids` in the environment (precedence:
 the argument, then the setting, then the env var). `default` is always on. An
 unknown pack name in the setting or env var fails closed — every pack is on,
 with a warning, and the boot check reports it.
-Upgrading from 0.7.x without opting in turns PAN and CVV content scanning
-**off**.
+Upgrading from 0.7.x without opting in turns PAN content scanning (and the
+bare-digit CVV rule) **off**.
 
 Key names are checked in every service regardless of packs: a key named
 `card`, `pan`, `card_number`, `cvv`, `securityCode`, `expiry`, `exp_month`, …
@@ -903,9 +906,10 @@ Both are `from ecsctx import mask_card_value, mask_secret`.
 
 `mask_sensitive_data` masks a credential its rules name wherever it appears in a
 record — `password=…` in a URL's query, `"access_token": "…"` in body text, a
-URL's userinfo — but these helpers know their input: a query param whose name
-only hints at a credential (`username`, `P`, `sign`), a literal secret in a
-URL's path, a body masked by its keys before it is serialised and capped.
+URL's userinfo, `cvv=123` — but these helpers know their input: a query param
+whose name only hints at a credential (`username`, `P`, `sign`), a literal
+secret in a URL's path, a body masked by its keys before it is serialised and
+capped.
 Import them instead of copying them per service:
 
 ```python
@@ -1027,7 +1031,7 @@ Card and expiry keys are matched precisely.
 | **Emails / phones** | containing `email`; `phone`, `mobile`, `tel` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]` |
 | **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `card_details` (the whole key); `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
 | **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no` | 12–19 digit runs (`pci`) | `411111******1111` |
-| **CVV** | containing `cvv`, `cvc`, `security code`, `verification value`, or the words `csc`, `cvd`, `cvn`, `card code` — unless what follows names something *about* one (`cvv_required`, `cvvResult`, `cardSecurityCodeError`) | keyed and bare CVV (`pci`) | `[CVV-MASKED]` |
+| **CVV** | containing `cvv`, `cvc`, `security code`, `verification value`, or the words `csc`, `cvd`, `cvn`, `card code` — unless what follows names something *about* one (`cvv_required`, `cvvResult`, `cardSecurityCodeError`) | keyed CVV (`default`), a bare 3–4 digit group beside card context (`pci`) | `[CVV-MASKED]` |
 | **SAD** | track data (`track2`, `trackData`, `raw_track`; not `track_id`), `pin`/`pinBlock`, EMV/chip data, and ending in `cryptogram`, `cavv`, `tavv`, `aav`, `ucaf` | — | `[SAD-MASKED]` |
 | **National ids** | `civil_id`, `national_id`, `passport`, `iqama`, `qid`, `cpr`, `nid`, `emirates_id`, `ssn`, `tin`, `tax_id`, `aadhaar`, `id_number` | — | `[SSN-MASKED…]` |
 | **IBAN / SSN / payment ids** | `payment_id`, `transaction_id`, `auth_id` (`financial_ids`) | `financial_ids` | `[IBAN-MASKED…]`, … |

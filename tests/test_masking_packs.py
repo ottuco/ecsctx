@@ -1,9 +1,10 @@
 """Masking packs: which content rules run, and where the choice comes from.
 
-Card and CVV content scanning (and the financial-id rules) cost every service
-CPU and correlation fields, but only PCI services ever see such data, so they
-are opt-in packs a PCI service enables in its logging config. The default pack
-(credentials, PEM, JWT, email, phone) is always on.
+Card content scanning (and the financial-id rules) cost every service CPU and
+correlation fields, but only PCI services ever see such data, so they are
+opt-in packs a PCI service enables in its logging config. The default pack
+(credentials, keyed CVV, PEM, JWT, email, phone, a URL's userinfo) is always
+on: a CVV must not ship from any service.
 """
 
 import logging
@@ -41,9 +42,12 @@ def _mask(msg, packs=None):
 
 
 class TestPacks:
-    def test_default_pack_leaves_card_shaped_text_alone(self):
+    def test_default_pack_leaves_a_card_number_alone_but_masks_a_keyed_cvv(self):
+        # The keyed CVV rules are `default`: a default-pack service (Connect)
+        # receives the CVV a saved-card payment sends. The card rule and the
+        # bare 3-4 digit CVV rule stay `pci`.
         text = "card 4111111111111111 cvv 123 HTTP 200 OK took 1500 ms"
-        assert _mask(text) == text
+        assert _mask(text) == "card 4111111111111111 cvv [CVV-MASKED] HTTP 200 OK took 1500 ms"
 
     def test_pci_pack_truncates_the_pan_and_masks_the_cvv(self):
         assert _mask("card 4111111111111111 cvv 123", packs=("pci",)) == (
@@ -96,8 +100,10 @@ class TestPackSelection:
             configure_masking_packs(["pcii"])
 
     def test_filter_without_packs_follows_the_configuration(self):
+        # A card number: `cvv 123` is masked in every pack now.
+        assert _mask("card 4111111111111111") == "card 4111111111111111"
         configure_masking_packs(["pci"])
-        assert _mask("cvv 123") == "cvv [CVV-MASKED]"
+        assert _mask("card 4111111111111111") == "card 411111******1111"
 
 
 class TestKeyNames:
@@ -501,6 +507,8 @@ class TestGatesNeverChangeAResult:
             "gb33BUKB20201555555555", "(555) 123-4567", "+965 5555 1234",
             "A@B.CO", "4111-1111-1111-1111", "123-45-6789", "call 123 now",
             "AUTHORIZATION: Bearer abc12345def", "Api-Key=abc123",
+            "vpc_CardSecurityCode=123", "Card Code: 1234", "CSC 123", "x_CVV2=123", "verification-value=123",
+            "postgresql://u:p@db:5432/app",
         ]
         for rule in RULES:
             for text in samples:
