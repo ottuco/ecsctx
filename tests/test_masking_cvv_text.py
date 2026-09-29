@@ -247,13 +247,21 @@ class TestACardKeysValueIsMaskedOnce:
 # Below twelve digits a value cannot be a card number as written, but its stars
 # can stand for the rest of one: a group of digits and stars long enough to be
 # a card number is shown only in a truncation's shape -- the first six digits
-# at most, four stars or more, the last four at most. Groups of four one space
-# apart, as a card number is written 4-4-4-4, are read as one group.
+# at most, four stars or more, the last four at most. Groups of four to six,
+# one card separator apart, as a card number is written (4-4-4-4, Amex 4-6-5,
+# Diners 4-6-4), are read as one group.
 STARRED_REFUSED = [
     # The last six of fifteen.
     "45087****001019",
-    # Seven leading digits, read as one group: `4508750*****1019`.
+    # Seven leading digits, read as one group: `4508750*****1019`, whatever
+    # separates the groups.
     "4508 750* **** 1019",
+    "4508-750*-****-1019",
+    "4508\u2013750*\u2013****\u20131019",
+    "4508\u200b750*\u200b****\u200b1019",
+    # Amex 4-6-5 and Diners 4-6-4: seven leading digits and the last four.
+    "3782 822*** *0005",
+    "3056 930*** 5904",
     # The last eight of sixteen.
     "**** **** 1111 1111",
 ]
@@ -270,11 +278,16 @@ STARRED_KEPT = [
     # The card rule's own output, read again.
     "411111******1111 x5",
     "****623691**********1234",
-    # Groups of four read as one: the first six and last four, or the last four.
+    # Groups read as one: the first six and last four, or the last four.
     "4111 11** **** 1111",
     "**** **** **** 1111",
-    # Too short to be a card number: `****1111` beside an expiry.
+    "3782 82**** *0005",
+    "3056 93**** 5904",
+    # Short groups stop a run: `****1111` beside an expiry is too short to be
+    # a card number, and a date beside a truncation is no part of it.
     "**** 1111 12 25",
+    "**** **** **** 1111 12/25",
+    "411111******1111 12/25",
     "****1234",
     "12**34",
 ]

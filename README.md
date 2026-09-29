@@ -889,12 +889,14 @@ builds itself — is masked as the key it would sit under masks it:
   that could still hide one refused as `[CARD-MASKED]`. Masking its output
   again changes nothing. A group of digits and stars long enough to be a
   card number is shown only in a truncation's shape — the first six digits at
-  most, four stars or more, the last four at most — and groups of four written
-  4-4-4-4 are read as one, so another masker's `45087****001019` (the last six
-  of fifteen) and `4508 750* **** 1019` (the first seven of sixteen) are
-  refused, while `4111********1111` and `**** **** **** 1111` are shown. In a
-  value with twelve digits or more, every group of digits and stars must be
-  one the card rule writes (`4508750****001019` is refused).
+  most, four stars or more, the last four at most — and a card number's
+  groups (4-4-4-4, Amex 4-6-5, Diners 4-6-4; a space, dash or invisible
+  separator apart) are read as one, so another masker's `45087****001019`
+  (the last six of fifteen), `4508-750*-****-1019` (the first seven of
+  sixteen) and `3782 822*** *0005` are refused, while `4111********1111`,
+  `3782 82**** *0005` and `**** **** **** 1111` are shown. In a value with
+  twelve digits or more, every group of digits and stars must be one the card
+  rule writes (`4508750****001019` is refused).
 - `mask_secret(value)` — a credential key's value: the bare token
   (`ptok:v1:…`) where PII tokenization is configured, `[SECRET-MASKED]` where
   it is not. It is `[SECRET-MASKED]` either way for a value shaped like a card
