@@ -185,6 +185,14 @@ class TestLoggableBody:
         assert "b-tail" not in logged
         assert json.loads(logged) == {"note": "client_secret=[SECRET-MASKED]&x=1"}
 
+    def test_a_form_value_the_key_walk_masked_inside_a_json_field_is_left_as_written(self):
+        # The key walk's text rule writes `password="[SECRET-MASKED]"`; escaped
+        # in the JSON string, it was then hashed (or relabelled) as a value.
+        body = json.dumps({"note": 'password="4111111111111111"&x=1'})
+        logged = loggable_body(_FakeResponse(body, "application/json"))
+        assert json.loads(logged) == {"note": 'password="[SECRET-MASKED]"&x=1'}
+        assert redact_body(logged) == logged
+
 
 class TestRedactionConfig:
     def test_extra_keys_via_call(self):

@@ -340,7 +340,20 @@ def _mask_json_value(match: re.Match) -> str:
 
 
 def _mask_form_value(match: re.Match) -> str:
-    return f"{match.group(1)}={mask_secret(unquote_plus(match.group(2)))}"
+    raw = match.group(2)
+    if "\\" in raw:
+        # A form body inside a JSON string: its value's own quotes arrive
+        # escaped (`\"…\"`). Unescaped, they are dropped before the checks
+        # and the hash, as plain quotes are.
+        with contextlib.suppress(ValueError):
+            raw = json.loads(f'"{raw}"')
+    value = unquote_plus(raw)
+    masked = mask_secret(value)
+    if masked == value:
+        # Empty, or masked already: left exactly as written, so what sits
+        # in a JSON string stays escaped.
+        return match.group(0)
+    return f"{match.group(1)}={masked}"
 
 
 def _masked_json(body: Any) -> str:

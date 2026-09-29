@@ -30,7 +30,7 @@ from django.urls import path, re_path, resolve
 import ecsctx
 import ecsctx.masking
 from ecsctx.contrib.django.routes import loggable_path
-from ecsctx.contrib.net import redact_body, redact_url
+from ecsctx.contrib.net import loggable_body, redact_body, redact_url
 from ecsctx.masking import mask_by_field_type, mask_secret
 from ecsctx.masking import patterns as masking_patterns
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
@@ -453,3 +453,64 @@ class TestAMarkerInQuotesIsMaskedAlready:
     def test_a_json_body(self, value):
         body = json.dumps({"password": value, "status": "ok"})
         assert redact_body(body) == body
+
+
+def _escaped_form_body(value: str) -> str:
+    """A form body inside a JSON string: the value's quotes are escaped."""
+    return json.dumps({"note": f'password="{value}"&x=1'})
+
+
+class _Reply:
+    status_code = 200
+    headers = {"Content-Type": "application/json"}
+
+    def __init__(self, text: str):
+        self.text = text
+
+
+class TestAFormValueInEscapedQuotes:
+    """`password=\\"…\\"` inside a JSON string. Unescaped, the value's quotes
+    are dropped before the checks and the hash, as plain quotes are; a value
+    masking already wrote is left as it is written."""
+
+    @pytest.mark.parametrize("value", [*CARD_SHAPED, "***"])
+    def test_a_card_number_or_placeholder_is_the_label(self, value):
+        masked = redact_body(_escaped_form_body(value))
+        assert json.loads(masked) == {"note": f"password={LABEL}&x=1"}
+        assert redact_body(masked) == masked
+
+    def test_a_secret_is_its_token_or_the_label(self):
+        masked = redact_body(_escaped_form_body(SECRET))
+        assert json.loads(masked) == {"note": f"password={token_or_label(SECRET)}&x=1"}
+        assert redact_body(masked) == masked
+
+    @pytest.mark.parametrize("value", [LABEL, "411111******1111"])
+    def test_a_masked_value_is_left_as_written(self, value):
+        body = _escaped_form_body(value)
+        assert redact_body(body) == body
+
+    def test_a_token_is_left_as_written(self):
+        body = _escaped_form_body(token_or_label(SECRET))
+        assert redact_body(body) == body
+
+    # Through loggable_body the key walk's credential text rule masks the
+    # value first, keeping its quotes; redact_body leaves what it wrote.
+    @pytest.mark.parametrize("value", CARD_SHAPED)
+    def test_through_loggable_body_a_card_number_is_the_label(self, value):
+        logged = loggable_body(_Reply(_escaped_form_body(value)))
+        assert json.loads(logged) == {"note": f'password="{LABEL}"&x=1'}
+        assert loggable_body(_Reply(logged)) == logged
+
+    def test_through_loggable_body_a_placeholder_is_the_label(self):
+        logged = loggable_body(_Reply(_escaped_form_body("***")))
+        assert json.loads(logged) == {"note": f"password={LABEL}&x=1"}
+        assert loggable_body(_Reply(logged)) == logged
+
+    def test_through_loggable_body_a_secret_keeps_the_key_walks_token(self):
+        logged = loggable_body(_Reply(_escaped_form_body(SECRET)))
+        assert json.loads(logged) == {"note": f'password="{token_or_label(SECRET)}"&x=1'}
+        assert loggable_body(_Reply(logged)) == logged
+
+    def test_through_loggable_body_a_masked_value_is_left_as_written(self):
+        body = _escaped_form_body(LABEL)
+        assert loggable_body(_Reply(body)) == body
