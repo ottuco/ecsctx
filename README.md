@@ -823,11 +823,14 @@ with content rules. `get_logging_config()` puts it on every handler, where it
 masks the record in place — so Sentry's logging integration, `handleError` and
 handlers that never call `format()` see masked data too — and the formatter's
 `mask_sensitive_data` masks the shaped event again. The second pass is cheap:
-strings already known clean are not scanned twice. A %-style template that
-masking itself changes — in `password=%s` the credential rule reads the
-placeholder as the credential — is rendered from the masked arguments and
-masked whole, so formatting it never fails and drops the line; a template
-masking leaves as it is keeps its arguments.
+strings already known clean are not scanned twice. A record that would not
+format once masked — a %-style template masking itself changes (in
+`password=%s` the credential rule reads the placeholder as the credential), a
+lazy translation or an exception as the message, a number masking turned into
+text under `%d`, arguments that never fit — is rendered from the masked
+arguments and masked whole, or is `[MASKING-FAILED: …]`: no line is dropped,
+and no argument reaches stderr. A template masking leaves as it is, and that
+formats, keeps its arguments.
 
 **Log processor path** (automatic via `mask_sensitive_data`):
 - When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`), for fraud correlation. Same input always produces the same token. Where no token can be made (PII not configured, or tokenization failing) the value becomes its type's label, `[EMAIL-MASKED]`; CVV is never tokenized and carries nothing, so it keeps a bracketed label (`[CVV-MASKED]`); a card number is never tokenized either, but its truncation IS carried, so it is bare (`411111******1111`) — under a card key, and with the `pci` pack under any key, including a name or email field. Expiry is not masked at all. A null stays null, and an empty value stays empty.

@@ -265,6 +265,68 @@ _MAX_DEPTH = 64
 # What a record becomes when masking itself fails: never the unmasked text.
 MASKING_FAILED = "[MASKING-FAILED: {}]"
 
+# A printf-style conversion, as the % operator reads one.
+_CONVERSION = re.compile(
+    r"%(?:\((?P<key>[^)]*)\))?(?P<flags>[#0\- +]*)(?P<width>\*|\d+)?(?:\.(?P<precision>\*|\d+))?[hlL]?"
+    r"(?P<type>[diouxXeEfFgGcrsa%])"
+)
+
+
+def _template_of(msg: Any) -> str | None:
+    """The text getMessage() formats: ``str(msg)`` -- a lazy translation or an
+    exception as much as a str -- but None for a mapping or list, which is a
+    structured record."""
+    if isinstance(msg, str):
+        return msg
+    if isinstance(msg, (dict, list)):
+        return None
+    return str(msg)
+
+
+def _renders(template: str, args: Any) -> bool:
+    try:
+        template % args
+    except (TypeError, ValueError, KeyError):
+        return False
+    return True
+
+
+def _became_text(original: Any, masked: Any) -> bool:
+    return isinstance(original, Number) and not isinstance(original, bool) and not isinstance(masked, Number)
+
+
+def _as_text(found: re.Match) -> str:
+    """A conversion read as ``%s``, keeping what still takes an argument or
+    lays text out: its key, a `-`, its width, a `*` precision."""
+    key = "" if found["key"] is None else f"({found['key']})"
+    return f"%{key}{'-' if '-' in found['flags'] else ''}{found['width'] or ''}{'.*' if found['precision'] == '*' else ''}s"
+
+
+def _as_masked_text(template: str, originals: Any, masked: Any) -> str:
+    """``template`` with each conversion whose number masking turned into text
+    read as ``%s``, so the masked text renders where the number stood --
+    rendered as written, a card number glued to a word stays whole."""
+    if isinstance(originals, dict):
+        return _CONVERSION.sub(
+            lambda found: _as_text(found)
+            if found["key"] is not None and _became_text(originals.get(found["key"]), masked.get(found["key"]))
+            else found.group(),
+            template,
+        )
+    if not isinstance(originals, tuple):
+        return template
+    parts, copied, index = [], 0, 0
+    for found in _CONVERSION.finditer(template):
+        if found["type"] == "%":
+            continue
+        # A `*` width or precision takes an argument of its own first.
+        index += (found["width"] == "*") + (found["precision"] == "*")
+        if index < len(originals) and _became_text(originals[index], masked[index]):
+            parts += [template[copied : found.start()], _as_text(found)]
+            copied = found.end()
+        index += 1
+    return "".join([*parts, template[copied:]])
+
 
 # A reference number a service may keep readable under a key it lists: digits
 # only, and short enough that it cannot be a full-length PAN (15-19 digits are
@@ -751,12 +813,13 @@ class MaskPIIFilter(logging.Filter):
             return value if masked == text else masked
         return self._mask_value(value, (), ctx)
 
-    def _mask_rendered(self, template: str, args: Any, ctx: _Pass) -> str:
-        """``template % args`` as getMessage() would render it, masked; the
-        marker when the arguments do not fit the template -- never an
-        exception, which would lose the line and print the arguments."""
+    def _mask_rendered(self, template: str, originals: Any, args: Any, ctx: _Pass) -> str:
+        """``template`` rendered as getMessage() would render it, from the
+        masked arguments, and masked whole; the marker when the arguments do
+        not fit it -- never an exception, which would lose the line and print
+        the arguments."""
         try:
-            rendered = template % args
+            rendered = _as_masked_text(template, originals, args) % args
         except (TypeError, ValueError, KeyError) as error:
             return MASKING_FAILED.format(type(error).__name__)
         return self._mask_value(rendered, (), ctx)
@@ -768,17 +831,19 @@ class MaskPIIFilter(logging.Filter):
                 try:
                     msg = self._mask_value(record.msg, (), ctx)
                     args = self._mask_args(record.args, ctx)
-                    if record.args and isinstance(record.msg, str) and msg != record.msg:
-                        # The template itself held something to mask: in
+                    template = _template_of(record.msg)
+                    if record.args and template is not None and (msg != template or not _renders(msg, args)):
+                        # getMessage() would raise on what masking left, so the
+                        # handler dropped the line and printed the arguments to
+                        # stderr: the template held something to mask (in
                         # `password=%s` the rule reads the placeholder as the
-                        # credential, and the masked template no longer takes
-                        # its arguments -- getMessage() raised, the handler
-                        # dropped the line and printed the arguments to stderr,
-                        # in clear. So the record is rendered, from the masked
-                        # arguments (a dict's keys still mask it), and masked
-                        # whole. A template masking leaves as it is keeps its
-                        # arguments, and Sentry's grouping by it.
-                        msg, args = self._mask_rendered(record.msg, args, ctx), ()
+                        # credential), a number masking turned into text meets
+                        # a `%d`, or the arguments never fit. So the record is
+                        # rendered from the masked arguments (a dict's keys
+                        # still mask it) and masked whole, or is the marker. A
+                        # template masking leaves as it is, and that renders,
+                        # keeps its arguments, and Sentry's grouping by it.
+                        msg, args = self._mask_rendered(template, record.args, args, ctx), ()
                     record.msg, record.args = msg, args
                 except Exception as error:  # noqa: BLE001 -- nothing here may reach the caller
                     # This runs outside emit()'s handleError, so an exception

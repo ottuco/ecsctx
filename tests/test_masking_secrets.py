@@ -1361,3 +1361,71 @@ class TestATemplateHoldingACredentialWord:
         MaskPIIFilter().filter(record)
         masked = f"password={token_or_label('hunter2')} body={{'card_number': '411111******1111'}}"
         assert (record.msg, record.args) == (masked, ())
+
+
+class _Lazy:
+    """Stands in for Django's gettext_lazy proxy: formats as text, is not a str."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def __str__(self):
+        return self.text
+
+
+# Records getMessage() could not render once masked: a template that is not a
+# str, a number masking turned into text under a numeric conversion, arguments
+# that do not fit. Each was dropped, its arguments printed to stderr.
+UNRENDERED = [
+    ("lazy", _Lazy("login password=%s"), ("hunter2-s3cret",), "hunter2-s3cret", ("default", "pci")),
+    ("exception", ValueError("bad password=%s"), ("hunter2-exc",), "hunter2-exc", ("default", "pci")),
+    ("epoch-second", "expires_at %d", (1727712345,), "1727712345", ("default", "pci")),
+    ("13-digit-number", "order %d", (1727712345678,), "1727712345678", ("pci",)),
+    ("str-format", "password={}", ("fmt-secret-1",), "fmt-secret-1", ("default", "pci")),
+    ("count-mismatch", "password=%s %s", ("only-one",), "only-one", ("default", "pci")),
+    # Rendered from the masked arguments: from the raw ones, a card number
+    # glued to a word in the template is left whole by the card rule.
+    ("glued-number", "password=%s ref%d", ("pw-1", 4111111111111111), "4111111111111111", ("pci",)),
+]
+
+
+class TestARecordThatWouldNotRender:
+    """Through get_logging_config(), as a service runs it: one line, nothing on stderr."""
+
+    @pytest.mark.parametrize(
+        ("msg", "args", "secret", "packs"),
+        [(*case[1:4], packs) for case in UNRENDERED for packs in case[4]],
+        ids=[f"{case[0]}-{packs}" for case in UNRENDERED for packs in case[4]],
+    )
+    def test_it_is_one_line_without_the_secret(self, msg, args, secret, packs, capsys, logging_state):
+        import io
+        import logging
+        import logging.config
+
+        from ecsctx.contrib.django import get_logging_config
+
+        out = io.StringIO()
+        cfg = get_logging_config(use_cid_filter=False, masking_packs=() if packs == "default" else ("pci", "financial_ids"))
+        cfg["handlers"]["console"]["stream"] = out
+        logging.config.dictConfig(cfg)
+        logging.getLogger("app.render").info(msg, *args)
+        lines = [json.loads(line) for line in out.getvalue().splitlines()]
+        assert len(lines) == 1
+        assert secret not in lines[0]["message"]
+        assert capsys.readouterr().err == ""
+
+    def test_a_number_masking_turned_into_text_is_rendered_as_it(self):
+        import logging
+
+        masked = MaskPIIFilter()._mask_string("1727712345")
+        assert "1727712345" not in masked
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "expires_at %d ok", (1727712345,), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == (f"expires_at {masked} ok", ())
+
+    def test_a_lazy_template_is_rendered_whole(self):
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, _Lazy("login password=%s"), ("hunter2",), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == (f"login password={token_or_label('hunter2')}", ())
