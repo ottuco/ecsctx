@@ -51,7 +51,13 @@ class TestRedactUrl:
         assert redact_url(123) == 123
 
     def test_unparseable_url_is_fully_redacted(self):
-        assert redact_url("http://[::1") == "[REDACTED]"
+        assert redact_url("http://[::1") == "[SECRET-MASKED]"
+
+    def test_other_params_are_left_as_written(self):
+        # Re-encoding every param rewrote `%20` as `+`, and an empty or bare
+        # param as another shape.
+        url = "https://h/pay?q=a%20b+c&password=s3cret&flag&empty=&next=%2Fhome"
+        assert redact_url(url) == "https://h/pay?q=a%20b+c&password=[SECRET-MASKED]&flag&empty=&next=%2Fhome"
 
 
 class TestRedactBody:
@@ -76,6 +82,18 @@ class TestRedactBody:
         body = '{"status": "ok", "id": 42}'
         assert redact_body(body) == body
 
+    def test_an_escaped_quote_does_not_end_the_value(self):
+        # `"[^"]*"` stopped at the escaped quote: the tail shipped in clear,
+        # after a marker that broke the JSON.
+        masked = redact_body('{"password": "a\\"b-tail", "status": "ok"}')
+        assert json.loads(masked) == {"password": "[SECRET-MASKED]", "status": "ok"}
+        assert "tail" not in masked
+
+    def test_a_form_value_inside_a_json_string_ends_with_the_string(self):
+        # `[^&\s]*` ran on through the closing quote and brace.
+        masked = redact_body('{"url": "https://x?secret=abc"}')
+        assert masked == '{"url": "https://x?secret=[SECRET-MASKED]"}'
+
 
 class TestLoggableBody:
     def test_non_textual_body_is_omitted(self):
@@ -94,7 +112,7 @@ class TestLoggableBody:
         body = '{"access_token": "' + secret + '"}'
         logged = loggable_body(_FakeResponse(body, "application/json"))
         assert secret not in logged
-        assert "[REDACTED]" in logged
+        assert "[SECRET-MASKED]" in logged
 
 
 class TestRedactionConfig:
@@ -142,7 +160,7 @@ class TestDjangoSettingsBridge:
     def test_explicit_call_wins_over_django_settings(self):
         configure_redaction(extra_secret_keys=["svc_key"])
         with override_settings(ECSCTX_REDACT_EXTRA_SECRET_KEYS=["merchant_pin"]):
-            assert "[REDACTED]" in redact_body('{"svc_key": "aaa"}')
+            assert redact_body('{"svc_key": "aaa"}') == '{"svc_key": "[SECRET-MASKED]"}'
             assert redact_body('{"merchant_pin": "1234"}') == '{"merchant_pin": "1234"}'
 
     def test_django_settings_win_over_env(self, monkeypatch):
@@ -209,7 +227,7 @@ class TestUrlHost:
 class TestRedactUrlSecrets:
     def test_a_secret_in_the_path_is_masked(self):
         assert redact_url("https://h/pbl/card/tok_9f8e/", secrets=["tok_9f8e"]) == (
-            "https://h/pbl/card/[REDACTED]/"
+            "https://h/pbl/card/[SECRET-MASKED]/"
         )
 
     def test_a_secret_in_the_query_and_repeated(self):
@@ -217,8 +235,13 @@ class TestRedactUrlSecrets:
         assert "tok_1" not in url
 
     def test_a_bare_string_is_one_secret_and_empty_ones_are_ignored(self):
-        assert redact_url("https://h/x/abc", secrets="abc") == "https://h/x/[REDACTED]"
+        assert redact_url("https://h/x/abc", secrets="abc") == "https://h/x/[SECRET-MASKED]"
         assert redact_url("https://h/x/abc", secrets=["", None]) == "https://h/x/abc"
+
+    def test_the_longest_secret_is_masked_first(self):
+        # A shorter secret it contains, masked first, left the rest in clear.
+        url = redact_url("https://h/a/tok_12345/b", secrets=["tok_1", "tok_12345"])
+        assert url == "https://h/a/[SECRET-MASKED]/b"
 
     def test_without_secrets_the_path_is_untouched(self):
         assert redact_url("https://h/checkout/8231045567ab") == "https://h/checkout/8231045567ab"

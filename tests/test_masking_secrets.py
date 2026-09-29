@@ -1,22 +1,26 @@
 """A credential masks alike on every path into a log, and a fixed marker never
 stands where a token can.
 
-| Value                                                 | With a keyset       | Without           |
-|-------------------------------------------------------|---------------------|-------------------|
-| a secret                                              | its `ptok:v1:` token | `[SECRET-MASKED]` |
-| a secret shaped like a card number                    | `[SECRET-MASKED]`   | `[SECRET-MASKED]` |
-| a placeholder another masker left (`[REDACTED]`, `***`) | `[SECRET-MASKED]`   | `[SECRET-MASKED]` |
-| empty                                                 | empty               | empty             |
+| Value                               | With a keyset          | Without           |
+|-------------------------------------|------------------------|-------------------|
+| a secret                            | its token (`ptok:v1:`) | `[SECRET-MASKED]` |
+| a secret shaped like a card number  | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
+| a placeholder (`[REDACTED]`, `***`) | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
+| empty                               | empty                  | empty             |
 
 A secret shaped like a card number -- a saved card's sixteen-digit gateway
 token, Luhn-valid or not -- was the label under a credential key only: the
 credential text rules and a route parameter hashed it, a keyed hash of what
-may be a PAN (PCI DSS FAQ 1117). A placeholder was hashed too, into one token
-shared by every record that carried it: a credential that was never there.
+may be a PAN (PCI DSS FAQ 1117). A placeholder another masker left was hashed
+too, into one token shared by every record that carried it: a credential that
+was never there. And `ecsctx.contrib.net` wrote `[REDACTED]` whatever the
+keyset.
 
 Every test runs with a keyset and without one. An expected token is computed
 by ecsctx under the same keyset, never written out.
 """
+
+import json
 
 import pytest
 from django.test import RequestFactory
@@ -25,6 +29,7 @@ from django.urls import path, re_path, resolve
 import ecsctx
 import ecsctx.masking
 from ecsctx.contrib.django.routes import loggable_path
+from ecsctx.contrib.net import redact_body, redact_url
 from ecsctx.masking import mask_by_field_type, mask_secret
 from ecsctx.masking import patterns as masking_patterns
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
@@ -38,7 +43,7 @@ CARD_SHAPED = ["4111111111111111", "9923960000004314"]
 PLACEHOLDERS = ["[REDACTED]", "[PII_REDACTED]", "*", "***", "****", "Bearer ****"]
 
 
-@pytest.fixture(autouse=True, params=["keyset", "no keyset"])
+@pytest.fixture(autouse=True, params=["keyset", "no-keyset"])
 def mode(request, token_keyset_path):
     if request.param == "keyset":
         configure_pii(token_keyset_path=token_keyset_path, env="test")
@@ -186,3 +191,96 @@ class TestARouteParameter:
 
     def test_an_empty_value_stays_empty(self):
         assert _loggable_path("/v1/receipts//") == "/v1/receipts//"
+
+
+class TestALiteralSecretInAUrl:
+    def test_a_secret_is_its_token_or_the_label(self):
+        url = redact_url(f"https://h/pbl/card/{SECRET}/", secrets=[SECRET])
+        assert url == f"https://h/pbl/card/{token_or_label(SECRET)}/"
+
+    @pytest.mark.parametrize("value", CARD_SHAPED)
+    def test_a_secret_shaped_like_a_card_number_is_the_label(self, value):
+        assert redact_url(f"https://h/pbl/card/{value}/", secrets=[value]) == f"https://h/pbl/card/{LABEL}/"
+
+    @pytest.mark.parametrize("value", ["[REDACTED]", "***"])
+    def test_a_placeholder_is_the_label(self, value):
+        assert redact_url(f"https://h/pbl/card/{value}/", secrets=[value]) == f"https://h/pbl/card/{LABEL}/"
+
+    def test_an_empty_secret_masks_nothing(self):
+        assert redact_url("https://h/pbl/card/x/", secrets=[""]) == "https://h/pbl/card/x/"
+
+
+class TestACredentialQueryParam:
+    def test_a_secret_is_its_token_or_the_label(self):
+        url = redact_url(f"https://h/pay?password={SECRET}&order_id=42")
+        assert url == f"https://h/pay?password={token_or_label(SECRET)}&order_id=42"
+
+    @pytest.mark.parametrize("value", CARD_SHAPED)
+    def test_a_secret_shaped_like_a_card_number_is_the_label(self, value):
+        url = redact_url(f"https://h/pay?card_token={value}&order_id=42")
+        assert url == f"https://h/pay?card_token={LABEL}&order_id=42"
+
+    @pytest.mark.parametrize("value", ["[REDACTED]", "%5BREDACTED%5D", "***"])
+    def test_a_placeholder_is_the_label(self, value):
+        url = redact_url(f"https://h/pay?password={value}&order_id=42")
+        assert url == f"https://h/pay?password={LABEL}&order_id=42"
+
+    def test_an_empty_value_stays_empty(self):
+        assert redact_url("https://h/pay?password=&order_id=42") == "https://h/pay?password=&order_id=42"
+
+    def test_an_encoded_value_is_masked_as_what_it_decodes_to(self):
+        # So it carries the token the same value gets under a key.
+        url = redact_url("https://h/pay?password=a%2Bb+c")
+        assert url == f"https://h/pay?password={token_or_label('a+b c')}"
+
+
+def test_an_unparseable_url_is_masked_whole_as_a_secret():
+    assert redact_url("http://[::1") == token_or_label("http://[::1")
+
+
+BODIES = {
+    "json": '{"password": "%s", "status": "ok"}',
+    "form": "password=%s&grant_type=client_credentials",
+}
+
+
+@pytest.mark.parametrize("body", list(BODIES.values()), ids=list(BODIES))
+class TestACredentialInABody:
+    def test_a_secret_is_its_token_or_the_label(self, body):
+        assert redact_body(body % SECRET) == body % token_or_label(SECRET)
+
+    @pytest.mark.parametrize("value", CARD_SHAPED)
+    def test_a_secret_shaped_like_a_card_number_is_the_label(self, body, value):
+        assert redact_body(body % value) == body % LABEL
+
+    @pytest.mark.parametrize("value", ["[REDACTED]", "***"])
+    def test_a_placeholder_is_the_label(self, body, value):
+        assert redact_body(body % value) == body % LABEL
+
+    def test_an_empty_value_stays_empty(self, body):
+        assert redact_body(body % "") == body % ""
+
+    def test_a_value_masking_produced_passes_through(self, body):
+        for value in (token_or_label(SECRET), LABEL, "411111******1111"):
+            assert redact_body(body % value) == body % value
+
+
+class TestABodyValueIsMaskedAsWhatItDecodesTo:
+    """So it carries the token the same value gets under a key."""
+
+    def test_a_json_escape(self):
+        masked = redact_body('{"password": "a\\"b"}')
+        assert json.loads(masked) == {"password": token_or_label('a"b')}
+
+    def test_a_form_encoding(self):
+        assert redact_body("password=a%2Bb+c") == f"password={token_or_label('a+b c')}"
+
+
+def test_every_path_gives_a_secret_the_same_token():
+    """The key walk, a credential text rule, a credential query param and a
+    body: one secret, one token -- or, without a keyset, one label."""
+    expected = token_or_label(SECRET)
+    assert _walk({"password": SECRET})["password"] == expected
+    assert mask_by_patterns(f"password={SECRET}", _TEXT_RULES) == f"password={expected}"
+    assert redact_url(f"https://h/pay?password={SECRET}") == f"https://h/pay?password={expected}"
+    assert redact_body(f'{{"password": "{SECRET}"}}') == f'{{"password": "{expected}"}}'

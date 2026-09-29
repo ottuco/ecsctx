@@ -6,7 +6,8 @@ in the GET query string and OAuth-style secrets as body values, so both must
 be masked before logging. ``mask_sensitive_data`` does not cover these shapes:
 it masks PII (email/phone) and ``Authorization`` *headers*, but not a secret
 carried as a query param or a body value — an OAuth token response would reach
-the index intact.
+the index intact. Each value found is masked as ``mask_secret`` masks a
+credential, so it carries the token the same value gets under a key.
 
 Ported from ottu_backend's ``contrib/net/redact.py`` so every service imports
 one copy. Best-effort by design: matches common credential key names
@@ -23,11 +24,10 @@ import re
 from collections.abc import Collection
 from http import HTTPStatus
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
+from urllib.parse import unquote_plus, urlparse, urlsplit, urlunsplit
 
 from ecsctx.masking.filters import MaskPIIFilter
-
-_REDACTED = "[REDACTED]"
+from ecsctx.masking.patterns import mask_secret
 
 # Masks a body by its keys before it is serialised (see _masked_json). The
 # filter's defaults describe a log record: service/project/log and the
@@ -220,15 +220,18 @@ def _get_compiled() -> tuple:
         return _compiled_cache[1]
     # Cheap pre-check: scans without lowercasing (and so without copying) the body.
     hint_re = re.compile("|".join(keys), re.IGNORECASE)
-    # "access_token": "..."  ->  "access_token": "[REDACTED]"
+    # "access_token": "..."  ->  "access_token": "<masked>"
+    # The value is read past an escaped quote: `"[^"]*"` stopped at the one in
+    # "a\"b" and left the rest of the value in clear.
     json_re = re.compile(
-        r'("(?:' + "|".join(keys) + r')"\s*:\s*)"[^"]*"',
+        r'("(?:' + "|".join(keys) + r')"\s*:\s*)"([^"\\]*(?:\\.[^"\\]*)*)"',
         re.IGNORECASE,
     )
-    # access_token=...  ->  access_token=[REDACTED]  (form-encoded bodies)
+    # access_token=...  ->  access_token=<masked>  (form-encoded bodies)
     # `\b` cannot fire between "_" and "secret", so "client_secret=" is never half-matched.
+    # A value stops at a quote: a query inside a JSON string ends where the string does.
     form_re = re.compile(
-        r"\b(" + "|".join(keys) + r")=[^&\s]*",
+        r"\b(" + "|".join(keys) + r')=([^&\s"]*)',
         re.IGNORECASE,
     )
     _compiled_cache = (cache_key, (hint_re, json_re, form_re))
@@ -241,32 +244,44 @@ def _is_credential_key(key: str) -> bool:
 
 
 def redact_url(url: str, *, secrets: Collection[str] | None = None) -> str:
-    """Return ``url`` with credential-looking query-param values masked.
+    """Return ``url`` with credential-looking query-param values masked, each
+    as ``mask_secret`` masks a credential: its token, or ``[SECRET-MASKED]``.
 
     ``secrets`` holds literal values (e.g. a saved-card token carried in the
-    URL path) to mask wherever they occur in the URL. The path is otherwise
-    left alone, so deliberately logged identifiers such as ``session_id`` stay
-    visible. Empty values are ignored; with no secrets the result is exactly
-    what the query-param masking alone produces.
+    URL path) to mask wherever they occur in the URL, longest first, so one
+    that contains another is masked whole. The path is otherwise left alone,
+    so deliberately logged identifiers such as ``session_id`` stay visible.
+    Empty secrets are ignored. A credential param's value is replaced in place
+    and every other param is left as written; an empty value stays empty. A
+    URL that cannot be parsed is masked whole.
     """
     if not isinstance(url, str) or not url:
         return url  # None/empty/non-str: nothing to redact, never raise on a log path
+    if isinstance(secrets, str):
+        secrets = (secrets,)  # a bare string is one secret, not a char collection
+    # Longest first: a shorter secret inside a longer one, masked first, left
+    # the rest of the longer one in clear.
+    for secret in sorted((str(s) for s in secrets or () if s), key=len, reverse=True):
+        url = url.replace(secret, mask_secret(secret))
     try:
         parts = urlsplit(url)
     except ValueError:
-        return _REDACTED  # unparseable -> don't risk logging it raw
+        return mask_secret(url)  # unparseable -> don't risk logging it raw
     if parts.query:
-        redacted = [
-            (k, _REDACTED if _is_credential_key(k) else v)
-            for k, v in parse_qsl(parts.query, keep_blank_values=True)
-        ]
-        url = urlunsplit(parts._replace(query=urlencode(redacted)))
-    if isinstance(secrets, str):
-        secrets = (secrets,)  # a bare string is one secret, not a char collection
-    for secret in secrets or ():
-        if secret:
-            url = url.replace(str(secret), _REDACTED)
+        query = "&".join(_mask_query_field(field) for field in parts.query.split("&"))
+        if query != parts.query:
+            url = urlunsplit(parts._replace(query=query))
     return url
+
+
+def _mask_query_field(field: str) -> str:
+    """One ``key=value`` of a query: a credential's value masked, written
+    unencoded so it reads as the token or label it is; anything else byte for
+    byte, since re-encoding it changed what a reader searches for."""
+    key, equals, value = field.partition("=")
+    if equals and _is_credential_key(unquote_plus(key)):
+        return f"{key}={mask_secret(unquote_plus(value))}"
+    return field
 
 
 def url_host(url: str) -> str:
@@ -283,17 +298,34 @@ def url_host(url: str) -> str:
 
 
 def redact_body(text: str) -> str:
-    """Mask credential values inside a response body before it is logged.
+    """Mask credential values inside a response body before it is logged, each
+    as ``mask_secret`` masks a credential: its token, or ``[SECRET-MASKED]``.
 
     Only unambiguous credential keys are masked. A bare ``token`` is
     deliberately left alone: gateways use it for non-secret payment/session
-    identifiers that are the main thing a log reader needs.
+    identifiers that are the main thing a log reader needs. A value is masked
+    as what it decodes to -- a JSON string unescaped, a form value unquoted --
+    so it carries the token the same value gets under a key; one already
+    masked passes through.
     """
     hint_re, json_re, form_re = _get_compiled()
     if not hint_re.search(text):
         return text
-    text = json_re.sub(rf'\1"{_REDACTED}"', text)
-    return form_re.sub(rf"\1={_REDACTED}", text)
+    text = json_re.sub(_mask_json_value, text)
+    return form_re.sub(_mask_form_value, text)
+
+
+def _mask_json_value(match: re.Match) -> str:
+    raw = match.group(2)
+    try:
+        value = json.loads(f'"{raw}"')
+    except ValueError:
+        value = raw  # an escape JSON does not know: masked as it is written
+    return match.group(1) + json.dumps(mask_secret(value))
+
+
+def _mask_form_value(match: re.Match) -> str:
+    return f"{match.group(1)}={mask_secret(unquote_plus(match.group(2)))}"
 
 
 def _masked_json(body: Any) -> str:
