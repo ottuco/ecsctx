@@ -1223,64 +1223,95 @@ def _text_has_card_context(text: str, lowered: str) -> bool:
 # and at ~16 µs per rule per gateway body that was most of the masking cost.
 # The words are found with str.find on the lowercased text: a case-insensitive
 # regex alternation gets no literal-prefix speedup and costs as much as the
-# rule it would be saving.
+# rule it would be saving. The keyed CVV rules are read the same way, near
+# their own words (_cvv_word_starts).
 _CRED_WORDS = (
     "bearer", "basic", "digest", "credential", "authorization", "authorisation",
     "token", "secret", "password", "passwd", "key",
 )
 _KEY_CHAR = re.compile(r"[\w-]")
+_KEY_RUN = re.compile(r"[\w-]*")
 
 
-def _credential_word_starts(lowered: str) -> list[int]:
+def _word_starts(lowered: str, words: tuple[str, ...]) -> set[int]:
     starts = set()
-    for word in _CRED_WORDS:
+    for word in words:
         index = lowered.find(word)
         while index != -1:
             starts.add(index)
             index = lowered.find(word, index + 1)
+    return starts
+
+
+def _credential_word_starts(lowered: str) -> list[int]:
+    return sorted(_word_starts(lowered, _CRED_WORDS))
+
+
+def _cvv_word_starts(lowered: str) -> list[int]:
+    """Where a keyed CVV rule's keyword can hold one of its words: every CVV
+    keyword holds a gate literal, or is `card code`."""
+    starts = _word_starts(lowered, _CVV_LITERALS)
+    starts.update(match.start() for match in _CARD_CODE.finditer(lowered))
     return sorted(starts)
 
 
 # A credential match starts at most this far before its credential word: the
 # bounded key prefix (128), its separator, and rule 2's opening quote.
 _CRED_REACH = 130
+# ...and a CVV match before its CVV word: the bounded key prefix (64) and its
+# separator, `card_`, and rule 4's opening quote.
+_CVV_REACH = 72
 
 
-def _sub_near_credential_words(pattern: re.Pattern, repl, text: str) -> str:
-    """pattern.sub(repl, text), trying only positions a credential match can start at."""
-    lowered = _folded_lower(text)
-    if lowered is None:
-        return pattern.sub(repl, text)
-    parts = []
-    copied = 0  # text[:copied] is already in parts
-    tried = 0  # every position below this has been tried or lies inside a match
-    run_start = run_end = -1  # the [\w-] run found for the previous word
-    for word_start in _credential_word_starts(lowered):
-        if word_start < tried:
-            continue
-        if not run_start <= word_start <= run_end:
-            # Walk back once per run, not once per word: a run holding many
-            # credential words ("keykeykey…") would otherwise be quadratic.
-            run_start = word_start
-            while run_start > 0 and _KEY_CHAR.match(text, run_start - 1):
-                run_start -= 1
-            run_end = word_start
-            while run_end < len(text) and _KEY_CHAR.match(text, run_end):
-                run_end += 1
-        first = max(tried, run_start - 1, word_start - _CRED_REACH)
-        for position in range(first, word_start + 1):
-            match = pattern.match(text, position)
-            if match:
-                parts.append(text[copied:match.start()])
-                parts.append(repl(match))
-                copied = tried = match.end()
-                break
-        else:
-            tried = word_start + 1
-    if not parts:
-        return text
-    parts.append(text[copied:])
-    return "".join(parts)
+def _near_words(word_starts: Callable[[str], list[int]], reach: int) -> Callable[[re.Pattern, Callable, str], str]:
+    """A Rule.scan for rules whose every match holds one of the words
+    ``word_starts`` finds, starting inside the run of word characters and
+    hyphens holding it -- at most ``reach`` characters before it -- or on the
+    quote right before that run."""
+
+    def scan(pattern: re.Pattern, repl, text: str) -> str:
+        """pattern.sub(repl, text), trying only positions a match can start at."""
+        lowered = _folded_lower(text)
+        if lowered is None:
+            return pattern.sub(repl, text)
+        parts = []
+        copied = 0  # text[:copied] is already in parts
+        tried = 0  # every position below this has been tried or lies inside a match
+        run_start = run_end = -1  # the [\w-] run found for the previous word
+        for word_start in word_starts(lowered):
+            if word_start < tried:
+                continue
+            if not run_start <= word_start <= run_end:
+                # Once per run, not once per word: a run holding many words
+                # ("keykeykey…") would otherwise be quadratic. Its start only
+                # as far back as a match can reach, which is all `first` needs;
+                # its end, to know whether the next word shares it.
+                bound = max(0, word_start - reach - 1)
+                run_start = word_start
+                while run_start > bound and _KEY_CHAR.match(text, run_start - 1):
+                    run_start -= 1
+                run_end = _KEY_RUN.match(text, word_start).end()
+            first = max(tried, run_start - 1, word_start - reach)
+            for position in range(first, word_start + 1):
+                match = pattern.match(text, position)
+                if match:
+                    parts.append(text[copied : match.start()])
+                    parts.append(repl(match))
+                    copied = tried = match.end()
+                    break
+            else:
+                tried = word_start + 1
+        if not parts:
+            return text
+        parts.append(text[copied:])
+        return "".join(parts)
+
+    return scan
+
+
+_sub_near_credential_words = _near_words(_credential_word_starts, _CRED_REACH)
+# Tried at every word boundary instead, a long `a-a-a-…` cost 0.7 s per rule.
+_sub_near_cvv_words = _near_words(_cvv_word_starts, _CVV_REACH)
 
 
 def _rule(pack, regex, repl, gate, scan=None, prose_only=False, precondition=None):
@@ -1360,6 +1391,7 @@ _RULE_TABLE = (
         rf"(?P<q>[\"'])(?P<key>{_CVV_KEYWORD})(?P=q)(?P<sep>\s*:\s*)(?P=q)\d{{3}}{_quoted_body('q')}*(?P=q)",
         _cvv_quoted,
         _has_cvv_keyword,
+        _sub_near_cvv_words,
     ),
     # 5. CVV — ":" / "=" (cvv=123).
     _rule(
@@ -1367,6 +1399,7 @@ _RULE_TABLE = (
         rf"\b({_CVV_KEYWORD}(?:\\?[\"']|\s)*[:=](?:\\?[\"']|\s)*)\d{{3}}{_VALUE_UNIT}*",
         _cvv_kv,
         _has_cvv_keyword,
+        _sub_near_cvv_words,
     ),
     # 6. Payment/transaction/auth id — quoted key ("payment_id": "abc12345").
     _rule(
@@ -1399,6 +1432,7 @@ _RULE_TABLE = (
         rf"\b({_CVV_KEYWORD})\s+\d{{3}}{_VALUE_UNIT}*",
         _cvv_space,
         _has_cvv_keyword,
+        _sub_near_cvv_words,
     ),
     # 10. Payment/transaction/auth id — bare space (payment_id abc12345).
     _rule(

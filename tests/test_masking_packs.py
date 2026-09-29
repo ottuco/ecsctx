@@ -496,6 +496,34 @@ class TestCredentialScanMatchesFullScan:
                 assert rule.scan(rule.pattern, rule.repl, sample) == rule.pattern.sub(rule.repl, sample)
 
 
+class TestCvvScanMatchesFullScan:
+    """The keyed CVV rules, `default` since 0.15.5, try only positions near a
+    CVV word, as the credential rules do: re.sub tried every word boundary,
+    and a long `a-a-a-…` cost 0.7 s per rule. That must never change their
+    output."""
+
+    FRAGMENTS = (
+        '"', "'", ":", "=", " ", "-", "_", ",", "{", "}", "\n", "\\", "a-", "x",
+        "cvv", "CVV2", "cvc", "Cvv", "csc", "cav2", "cvn", "cv", "number", "security", "Security", "code", "Code",
+        "card", "Card", "verification", "value", "vpc_", "payment", "saved", "recv", "123", "4829", "482912",
+    )
+
+    def _cvv_rules(self):
+        return [rule for rule in RULES if rule.name.split(":")[1] in ("_cvv_quoted", "_cvv_kv", "_cvv_space")]
+
+    def test_each_keyed_cvv_rule_scans_near_its_words(self):
+        rules = self._cvv_rules()
+        assert len(rules) == 3
+        assert all(rule.scan is not None for rule in rules)
+
+    def test_matches_on_generated_text(self):
+        rng = random.Random(159942)
+        for _ in range(3000):
+            text = "".join(rng.choice(self.FRAGMENTS) for _ in range(rng.randint(1, 14)))
+            for rule in self._cvv_rules():
+                assert rule.scan(rule.pattern, rule.repl, text) == rule.pattern.sub(rule.repl, text), (rule.name, text)
+
+
 class TestGatesNeverChangeAResult:
     """A gate may only skip a rule that could not have matched."""
 
