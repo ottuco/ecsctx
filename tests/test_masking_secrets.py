@@ -699,7 +699,15 @@ def test_no_output_holds_the_card_number_or_a_hash_of_anything_holding_it(mode, 
 
 @pytest.mark.parametrize(
     "shape",
-    [*PAN_SHAPES, 'password="s3cr3tVALUE" rejected', 'password=ab",cd-TAIL&x=1', "<Auth password=s3cr3t/>", "password=:/>"],
+    [
+        *PAN_SHAPES,
+        'password="s3cr3tVALUE" rejected',
+        'password=ab",cd-TAIL&x=1',
+        "<Auth password=s3cr3t/>",
+        "password=:/>",
+        # A form value redact_body labels, which the next text pass must not cut.
+        "Basic CVV2=)card code<",
+    ],
 )
 def test_the_text_rule_then_redact_body_twice_is_once(shape):
     def mask(text):
@@ -893,6 +901,21 @@ class TestACredentialValueRunsToItsDelimiter:
     def test_the_value_is_masked_whole_and_once(self, rules, text, around, value):
         masked = mask_by_patterns(text, rules)
         assert masked == around % token_or_label(value)
+        assert mask_by_patterns(masked, rules) == masked
+
+    @pytest.mark.parametrize(
+        ("text", "around", "value"),
+        [
+            ("Basic CVV2=[CVV-MASKED] code", "Basic CVV2=[CVV-MASKED] code", None),
+            ("password=abc[SECRET-MASKED] x", "password=%s[SECRET-MASKED] x", "abc"),
+            ('password=abc"[SECRET-MASKED]', 'password=%s"[SECRET-MASKED]', "abc"),
+        ],
+    )
+    def test_a_value_never_runs_into_a_label(self, rules, text, around, value):
+        # A `]` ends a value: run into a label another path wrote, it cut the
+        # label (`Basic [SECRET-MASKED]] code`).
+        masked = mask_by_patterns(text, rules)
+        assert masked == (around if value is None else around % token_or_label(value))
         assert mask_by_patterns(masked, rules) == masked
 
     def test_a_placeholder_after_a_separator_is_the_label(self, rules):

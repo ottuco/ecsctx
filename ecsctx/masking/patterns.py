@@ -197,13 +197,17 @@ _VALUE_END = r"\s&;,)\]}>"
 _PLAIN = rf"[^{_VALUE_END}\"'\\]"
 # A backslash and the character it escapes, unless that is a quote.
 _ESCAPED = r"\\[^\"']"
+# A value never runs into a label masking wrote (`abc[SECRET-MASKED]`): a `]`
+# ends it, so it would cut the label (`[SECRET-MASKED]]`), and a label that
+# redact_body wrote after a short value made it long enough to mask again.
+_NOT_A_LABEL = r"(?!(?-i:\[[A-Z0-9-]+-MASKED[\]:]))"
 # Quotes, escaped or not, with more of the value after them: `abc\"def` is
 # one value. A quote closes the string the value sits in where nothing of the
 # value follows it (`{"note": "password=abc"}`), or where what follows is the
 # structure redact_body keeps at a value's end: a JSON key's `":`, or an XML
 # element's `/>` (`<Auth apikey=\"…\"/>` in a JSON string).
-_INNER_QUOTES = rf"(?:\\?[\"'])+(?!:|/>)(?={_PLAIN}|{_ESCAPED})"
-_VALUE_UNIT = rf"(?:{_PLAIN}|{_ESCAPED}|{_INNER_QUOTES})"
+_INNER_QUOTES = rf"(?:\\?[\"'])+(?!:|/>)(?={_NOT_A_LABEL}(?:{_PLAIN}|{_ESCAPED}))"
+_VALUE_UNIT = rf"(?:{_NOT_A_LABEL}(?:{_PLAIN}|{_ESCAPED}|{_INNER_QUOTES}))"
 # A value's first character: never a quote, which is the structure around a
 # value, nor an opening bracket: `{` and `[` open a container (JSON text the
 # key walk re-serialised), `[` also a label masking already wrote.

@@ -1070,7 +1070,8 @@ one to its unescaped closing quote, spaces and all. A backslash, `@`, `#` or an
 apostrophe inside a value no longer ends it early, leaving the rest in clear. A
 double-quoted value is masked as the JSON string it decodes to, so it carries
 the token the same value gets under a key. A value never starts with a quote
-or an opening bracket (`{`, `[`, `(`, `<`). After `Authorization:` (or
+or an opening bracket (`{`, `[`, `(`, `<`), and never runs into a label masking
+already wrote (`abc[SECRET-MASKED]`). After `Authorization:` (or
 `Proxy-Authorization:`, `authorization=`) the scheme and the credential are one
 value — `Authorization: Bearer abc…` carries the token the header gets under its
 key, not one for `Bearer` with the credential beside it.
