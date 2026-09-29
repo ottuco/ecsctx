@@ -892,6 +892,11 @@ QUOTED_VALUES = [
     ("{'password': 'it\\'s'}", "{'password': '%s'}", "it\\'s"),
     ("{'password': \"it's here\"}", "{'password': \"%s\"}", "it's here"),
     ('Authorization: "Bearer abc123"', 'Authorization: "%s"', "Bearer abc123"),
+    # JSON in a JSON string: a value between escaped quotes runs to its
+    # matching one, masked as what it decodes to, twice.
+    ('{\\"password\\": \\"correct horse battery staple\\"}', '{\\"password\\": \\"%s\\"}', "correct horse battery staple"),
+    ('{\\"password\\": \\"a\\\\\\"b c\\"}', '{\\"password\\": \\"%s\\"}', 'a"b c'),
+    ('note=password=\\"s3cr3t value\\"&x=1', 'note=password=\\"%s\\"&x=1', "s3cr3t value"),
 ]
 
 

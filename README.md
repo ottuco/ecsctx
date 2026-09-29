@@ -1070,7 +1070,9 @@ to whitespace, `&`, `;`, `,`, a closing bracket or a closing quote (a quote
 followed by a JSON key's `":` or an element's `/>` is structure too); a quoted
 one to its unescaped closing quote, spaces and all. An empty pair of quotes is
 no value: doubled as CSV and SQL escape a quote (`password=""s3cret`), they
-are structure before it. A backslash, `@`, `#` or an
+are structure before it. A value between escaped quotes — JSON in a JSON
+string, `{\"password\": \"correct horse\"}` — runs to its matching escaped
+quote too. A backslash, `@`, `#` or an
 apostrophe inside a value no longer ends it early, leaving the rest in clear. A
 double-quoted value is masked as the JSON string it decodes to, so it carries
 the token the same value gets under a key. A value never starts with a quote

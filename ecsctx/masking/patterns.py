@@ -222,6 +222,14 @@ _UNQUOTED_VALUE = rf"{_VALUE_START}{_VALUE_UNIT}*"
 _USERINFO_PART = r"[^\s/?#\"'<>]"
 
 
+# A character of a value between escaped quotes -- JSON in a JSON string,
+# `{\\"password\\": \\"a b\\"}` -- read as the inner string reads it: an
+# escaped backslash with the (escaped) character it escapes, another escape, or
+# a plain character. The value ends at an escaped quote no inner backslash
+# escapes.
+_ESCAPED_QUOTED_UNIT = r'(?:\\\\(?:\\\\|\\"|\\[^\\"]|[^\\"])|\\[^\\"]|[^\\"])'
+
+
 def _quoted_body(quote: str) -> str:
     """A quoted value's characters, up to the unescaped closing quote the named
     group ``quote`` opened: escape-aware, so `ab\"cd` is one value."""
@@ -1001,10 +1009,26 @@ def _unquoted_value_quote(prefix: str) -> str:
     return quote.group() if quote else ""
 
 
+def _mask_escaped_quoted(value: str, keyword: str) -> str:
+    """A value between escaped quotes -- JSON in a JSON string -- masked as it
+    decodes from the outer string and then the inner one, so it carries the
+    token it gets under its key. Written back as it was when masking leaves it
+    as it is."""
+    inner = value
+    if "\\" in value:
+        with contextlib.suppress(ValueError):
+            outer = json.loads('"' + value + '"')
+            inner = json.loads('"' + outer + '"')
+    masked = _mask_credential(inner, keyword)
+    return value if masked == inner else masked
+
+
 def _cred_kv(m: re.Match) -> str:
     prefix, keyword, val = m.group("prefix"), m.group("key"), m.group("value")
     if quote := m.group("quote"):
         return f"{prefix}{_mask_quoted(val, quote, keyword)}"
+    if m.group("escaped"):
+        return f"{prefix}{_mask_escaped_quoted(val, keyword)}"
     if quote := _unquoted_value_quote(prefix):
         if val in _LITERALS:
             return m.group(0)
@@ -1380,7 +1404,9 @@ _RULE_TABLE = (
     # quote a closing one matches runs to it (`quote`); any other, to its
     # delimiter. An empty quoted value is none: quotes doubled as CSV and SQL
     # escape one (`password=""s3cret`) are structure before the value. The
-    # quotes around a JSON-escaped key are the key's. After
+    # quotes around a JSON-escaped key are the key's, and a value between
+    # escaped quotes (`escaped`: JSON in a JSON string) runs to its matching
+    # one. After
     # Authorization (`auth`) the scheme is part of the value, as it is of the
     # header under its key -- `Authorization: Bearer x` masks `Bearer x`, the
     # token `mask_secret` gives it -- and is never the whole value while more
@@ -1390,10 +1416,11 @@ _RULE_TABLE = (
     _rule(
         "default",
         rf"\b(?P<prefix>(?P<key>(?P<auth>{_AUTH_KEYWORD})|{_OTHER_CRED_KEYWORD})(?:\\?[\"']|\s)*[:=]\s*"
-        rf"(?:(?P<quote>(?<!\\)[\"'])(?={_quoted_body('quote')}+(?P=quote))|(?:\\?[\"'])+)?)"
-        rf"(?P<value>(?(quote){_quoted_body('quote')}+|(?!{_WHOLE_TOKEN})"
+        rf"(?:(?P<quote>(?<!\\)[\"'])(?={_quoted_body('quote')}+(?P=quote))"
+        rf"|(?P<escaped>\\\")(?={_ESCAPED_QUOTED_UNIT}+\\\")|(?:\\?[\"'])+)?)"
+        rf"(?P<value>(?(quote){_quoted_body('quote')}+|(?(escaped){_ESCAPED_QUOTED_UNIT}+|(?!{_WHOLE_TOKEN})"
         rf"(?(auth)(?:{_AUTH_SCHEME}[ \t]+(?={_VALUE_START})(?!{_WHOLE_TOKEN}))?(?!{_AUTH_SCHEME}[ \t]+\S))"
-        rf"{_UNQUOTED_VALUE}))",
+        rf"{_UNQUOTED_VALUE})))",
         _cred_kv,
         _has_credential,
         _sub_near_credential_words,
