@@ -191,16 +191,41 @@ class TestACredentialKeywordThatNamesACvv:
 # that make no other card number.
 CARD_VALUES = [
     "26888535-1296-4273-8ba1-c634e90bf52fvpc",
-    "4111111111111111 12345678901",
     "ref 4111111111111111 99 88 77",
-    # Read again, the last four and the group after them look like a card.
-    "512345000000000812-12345678901",
-    # Stars that show no more than a truncation it writes: none of the digits,
-    # or another masker's last four.
-    "**** 4111111111111111 12345678901",
+    # Stars that show no more than a truncation it writes: another masker's
+    # last four.
     "************1111 4111111111111111",
 ]
 CARD_LABEL = "[CARD-MASKED]"
+# A truncation's first six or last four with the bare digits beside them,
+# however joined, twelve or more: they can spell a whole card number. The
+# last fours of truncations with nothing but separators and stars between
+# them count together. 0.15.4 refused each of these.
+REFUSED_BESIDE_A_TRUNCATIONS_DIGITS = [
+    "4111111111  111111******1111",
+    "4111111111, 111111******1111",
+    "4111111111,111111******1111",
+    "4111111111 | 111111******1111",
+    "6011090364  901962******1111",
+    "********3782  82246310005",
+    "411111******3782 82246310005",
+    "************5018  00000009",
+    "********4111 ********1111 ********1111 ********1111",
+    # The same, masked from the card numbers they come from.
+    "4111111111  1111111111111111",
+    "4111111111113782 82246310005",
+    # Once shown, now refused: the last four and an eleven-digit number after
+    # them make fifteen.
+    "4111111111111111 12345678901",
+    "512345000000000812-12345678901",
+    "**** 4111111111111111 12345678901",
+]
+# What stays: a short group beside a truncation, under twelve digits with it.
+KEPT_BESIDE_A_TRUNCATION = [
+    "**** 1111 12 25",
+    "411111******1111 12/25",
+    "450875******1019 000",
+]
 # Digits and stars another masker left, showing digits a truncation of their
 # length hides -- more than the first six and last four -- with no run the scan
 # could truncate: refused, as 0.15.4 refused them.
@@ -259,6 +284,16 @@ class TestACardKeysValueIsMaskedOnce:
     def test_a_card_numbers_digits_beside_a_truncation_are_refused(self, value):
         assert mask_card_value(value) == CARD_LABEL
         assert MaskPIIFilter()._mask_dict({"card_number": value}) == {"card_number": CARD_LABEL}
+
+    @pytest.mark.parametrize("value", REFUSED_BESIDE_A_TRUNCATIONS_DIGITS)
+    def test_a_truncations_digits_with_those_beside_it_are_refused(self, value):
+        assert mask_card_value(value) == CARD_LABEL
+        assert MaskPIIFilter()._mask_dict({"card_number": value}) == {"card_number": CARD_LABEL}
+
+    @pytest.mark.parametrize("value", KEPT_BESIDE_A_TRUNCATION)
+    def test_a_short_group_beside_a_truncation_is_kept(self, value):
+        assert mask_card_value(value) == value
+        assert MaskPIIFilter()._mask_dict({"card_number": value}) == {"card_number": value}
 
 
 # Below twelve digits a value cannot be a card number as written, but its stars

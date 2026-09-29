@@ -869,6 +869,41 @@ def _digits_beside_truncations(masked: str) -> int:
     )
 
 
+# A letter: a word ends the digits a truncation's shown ones are counted with.
+_LETTER = re.compile(r"[^\W\d_]")
+
+
+def _card_digits_showing(masked: str) -> int:
+    """The most digits of one card number ``masked`` shows around its
+    truncations, however they are joined: a truncation's first six with the
+    bare digits before it, back to the previous truncation or a word; its
+    last four with the bare digits after it, up to the next truncation or a
+    word; and the last fours of truncations with nothing but separators and
+    stars between them. `4111111111  111111******1111` shows sixteen."""
+    most = before = chain = 0
+    after = None
+    end = 0
+    for group in _MARK_GROUP.finditer(masked):
+        if _LETTER.search(masked, end, group.start()):
+            before, after, chain = 0, None, 0
+        end = group.end()
+        marks = group.group()
+        if _WRITTEN_TRUNCATION.fullmatch(marks):
+            if marks[0] != "*":
+                most = max(most, before + 6)
+                chain = 0
+            chain += 4
+            before, after = 0, 4
+            most = max(most, chain)
+        elif digits := sum(character.isdigit() for character in marks):
+            before += digits
+            chain = 0
+            if after is not None:
+                after += digits
+                most = max(most, after)
+    return most
+
+
 def _overexposes_a_card(text: str, masked: str) -> bool:
     """Whether ``masked``, the card rule's output for ``text``, shows more than
     the first six and last four of a Luhn-valid reading of ``text``: any stretch
@@ -954,6 +989,7 @@ def mask_card_value(value) -> str:
             and (truncated_before or not _overexposes_a_card(text, scanned))
             and _hides_as_truncations(scanned)
             and _digits_beside_truncations(scanned) < _MIN_PAN_DIGITS
+            and _card_digits_showing(scanned) < _MIN_PAN_DIGITS
         ):
             return scanned
         # The scan found nothing to truncate, yet the value carries twelve or

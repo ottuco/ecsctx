@@ -1172,10 +1172,13 @@ last four, no run of card-number length is left beside the truncations, dots
 and slashes joining it too (`4111.1111.1111.1111`), and fewer than twelve
 digits show outside the truncations however they are joined — double spaces,
 commas, another masker's `X`s (`411111******1111, 4111,1111,1111,1111` is
-refused). One residual remains: a value already in the card rule's output
-shape reads as its own output and is shown, whoever wrote it —
-`450875******1019 000` could, in theory, be a 19-digit number another masker
-cut oddly.
+refused). Nor may a card number show around a truncation: its first six with
+the digits before it, its last four with the digits after it, and the last
+fours of truncations side by side each count together, however joined, and
+twelve refuse the value (`4111111111  111111******1111`,
+`4111111111111111 12345678901`). One residual remains: a short group beside a
+truncation, under twelve digits with it — `450875******1019 000` could, in
+theory, be a 19-digit number another masker cut oddly.
 
 ### Structural fields (never scanned)
 
