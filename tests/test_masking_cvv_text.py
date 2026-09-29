@@ -242,3 +242,48 @@ class TestACardKeysValueIsMaskedOnce:
     def test_digits_and_stars_another_masker_left_are_refused(self, value):
         assert mask_card_value(value) == CARD_LABEL
         assert MaskPIIFilter()._mask_dict({"card_number": value}) == {"card_number": CARD_LABEL}
+
+
+# Below twelve digits a value cannot be a card number as written, but its stars
+# can stand for the rest of one: a group of digits and stars long enough to be
+# a card number is shown only in a truncation's shape -- the first six at most,
+# four stars or more, the last four at most.
+STARRED_REFUSED = [
+    # Eleven digits of fifteen.
+    "45087****001019",
+    # Eight of twelve, beside another number: a truncation keeps the first six
+    # or none.
+    "4508****1019 12",
+    "4111********1111",
+]
+STARRED_KEPT = [
+    "411111******1111",
+    "**********1234",
+    "[CARD-MASKED:411111******1111]",
+    # An upstream system's truncation, as test_masking_bare_pan pins it.
+    "411111****1111",
+    # The card rule's own output, read again.
+    "411111******1111 x5",
+    "****623691**********1234",
+    # Too short to be a card number, or no group holding both.
+    "****1234",
+    "12**34",
+    "**** **** **** 1111",
+]
+PLAIN_SHORT = ["12345678901", "4111"]
+
+
+class TestAStarredValueBelowTwelveDigits:
+    """Below twelve digits mask_card_value read a value through unscanned, so
+    another masker's `45087****001019` -- eleven digits of fifteen -- was shown
+    as written."""
+
+    @pytest.mark.parametrize("value", STARRED_REFUSED)
+    def test_one_whose_stars_could_hide_a_card_number_is_refused(self, value):
+        assert mask_card_value(value) == CARD_LABEL
+        assert MaskPIIFilter()._mask_dict({"card_number": value}) == {"card_number": CARD_LABEL}
+
+    @pytest.mark.parametrize("value", STARRED_KEPT + PLAIN_SHORT)
+    def test_one_in_a_truncations_shape_or_too_short_is_kept(self, value):
+        assert mask_card_value(value) == value
+        assert MaskPIIFilter()._mask_dict({"card_number": value}) == {"card_number": value}

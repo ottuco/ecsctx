@@ -820,17 +820,32 @@ def _holds_a_written_run(text: str) -> bool:
 # whose stars run into an earlier truncation's).
 _MARK_GROUP = re.compile(r"[\d*]+")
 _WRITTEN_TRUNCATION = re.compile(r"\d{6}\*{5,}\d{4}|\*{8,}\d{4}")
+# What any truncation may show, the card rule's or an upstream system's: the
+# first six at most, four stars or more, the last four at most; stars before or
+# after hide more (test_masking_bare_pan pins an upstream `123456****7890`).
+# Written so each run of stars has one reading: a long one never backtracks.
+_TRUNCATION_SHAPE = re.compile(r"(?:\**\d{6})?\*{4,}(?:\d{1,4}\**)?")
 
 
 def _hides_as_truncations(masked: str) -> bool:
-    """Whether every group of digits and stars in ``masked`` that holds both
-    is a truncation the card rule writes. Another masker's `4508750****001019`
+    """Whether the stars in ``masked`` hide what a truncation hides.
+
+    Where twelve digits or more show, every group of digits and stars that
+    holds both is a truncation the card rule writes: beside other digits even
+    a short one completes a card number (another masker's `4508750****001019`
     shows thirteen digits of seventeen, and `****1111 1234 5670` twelve of
-    sixteen."""
+    sixteen). Where fewer show, a group long enough to stand for a card number
+    has a truncation's shape (`_TRUNCATION_SHAPE`): another masker's
+    `45087****001019` shows eleven digits of fifteen, while `****1234`
+    completes none."""
+    if sum(character.isdigit() for character in masked) >= _MIN_PAN_DIGITS:
+        shape, shortest = _WRITTEN_TRUNCATION, 1
+    else:
+        shape, shortest = _TRUNCATION_SHAPE, _MIN_PAN_DIGITS
     return all(
-        _WRITTEN_TRUNCATION.fullmatch(group)
+        shape.fullmatch(group)
         for group in _MARK_GROUP.findall(masked)
-        if "*" in group and group.strip("*")
+        if len(group) >= shortest and "*" in group and group.strip("*")
     )
 
 
@@ -870,7 +885,8 @@ def mask_card_value(value) -> str:
     `scheme` read through. Collapsing the object was how `holder`, `track2` and
     `pinBlock` stayed out of a log without ever being classified; they are
     classified now, and this function is deliberately permissive below twelve
-    digits, so it must not be handed a whole container again.
+    digits -- only stars that could stand for a card number's other digits are
+    judged there -- so it must not be handed a whole container again.
 
     What is *not* a PAN is shown. Collapsing every non-PAN value to a label
     made a gateway token, a scheme name and an error string all look identical
@@ -888,8 +904,9 @@ def mask_card_value(value) -> str:
             return _truncate_pan(_digits_only(text))
         if sum(character.isdigit() for character in text) < _MIN_PAN_DIGITS:
             # Too few digits to be a PAN whatever else it holds: 12 is the
-            # shortest one issued (ISO/IEC 7812; Maestro issues from 12).
-            return value
+            # shortest one issued (ISO/IEC 7812; Maestro issues from 12) --
+            # unless stars stand for the rest of one in no truncation's shape.
+            return value if _hides_as_truncations(text) else f"[{make_label('card')}]"
         # Enough digits to hide one, but not a clean PAN: scan rather than
         # collapse, so an embedded PAN is truncated and its context survives --
         # unless what the scan shows could still be one: a run of card-number
@@ -913,7 +930,7 @@ def mask_card_value(value) -> str:
             (scanned != text or truncated_before)
             and not _holds_a_written_run(_MASKED_REST.sub(" ", scanned))
             and (truncated_before or not _overexposes_a_card(text, scanned))
-            and (sum(character.isdigit() for character in scanned) < _MIN_PAN_DIGITS or _hides_as_truncations(scanned))
+            and _hides_as_truncations(scanned)
         ):
             return scanned
         # The scan found nothing to truncate, yet the value carries twelve or

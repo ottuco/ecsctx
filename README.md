@@ -887,8 +887,12 @@ builds itself — is masked as the key it would sit under masks it:
 - `mask_card_value(value)` — a card key's value: a PAN truncated
   (`411111******1111`), anything that is not one left readable, and a value
   that could still hide one refused as `[CARD-MASKED]`. Masking its output
-  again changes nothing. A value of twelve digits or more with stars in any
-  shape but a truncation's (another masker's `4508750****001019`) is refused.
+  again changes nothing. A group of digits and stars long enough to be a
+  card number is shown only in a truncation's shape — the first six at most,
+  four stars or more, the last four at most — so another masker's
+  `45087****001019` (eleven digits of fifteen) is refused. In a value with
+  twelve digits or more, every group of digits and stars must be one the card
+  rule writes (`4508750****001019` is refused).
 - `mask_secret(value)` — a credential key's value: the bare token
   (`ptok:v1:…`) where PII tokenization is configured, `[SECRET-MASKED]` where
   it is not. It is `[SECRET-MASKED]` either way for a value shaped like a card
