@@ -398,8 +398,14 @@ def redact_body(text: str) -> str:
     hint_re, json_re, form_re = _get_compiled()
     if not hint_re.search(text):
         return text
-    text = json_re.sub(_mask_json_value, text)
-    return form_re.sub(_mask_form_value, text)
+    masked = form_re.sub(_mask_form_value, json_re.sub(_mask_json_value, text))
+    if masked != text and "=" in masked:
+        # A credential masked there can uncover a card, CVV or SAD field the
+        # form field pass read as part of the field holding it
+        # (`"password": "password="paymentCvv=…`): one more pass masks it,
+        # so one call leaves nothing a second would mask.
+        masked = _FORM_FIELD.sub(_mask_card_form_field, masked)
+    return masked
 
 
 # Any form field: its key as a form writes one (`card[number]` too), not

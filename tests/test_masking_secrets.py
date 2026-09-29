@@ -623,6 +623,14 @@ class TestAFormValueRunsToItsEnd:
         masked = mask_by_patterns(text, _TEXT_RULES)
         assert redact_body(masked) == masked
 
+    def test_a_field_inside_another_fields_value_is_masked_in_one_pass(self):
+        # The JSON rule rewrote the field holding it, uncovering it after the
+        # form field pass had gone by: a second call labelled the CVV.
+        text = '"password": "password="paymentCvv=cvv=123https://u:p@h/'
+        masked = f'"password": "{token_or_label("password=")}"paymentCvv=[CVV-MASKED]'
+        assert redact_body(text) == masked
+        assert redact_body(masked) == masked
+
     def test_a_single_quote_before_a_form_value_is_its_own(self):
         # Closed by another, it is a quoted value: normalized, it carries the
         # token the key walk gives the value inside.
@@ -748,6 +756,33 @@ def test_no_output_holds_the_card_number_or_a_hash_of_anything_holding_it(mode, 
     ],
 )
 def test_the_text_rule_then_redact_body_twice_is_once(shape):
+    def mask(text):
+        return redact_body(mask_by_patterns(text, _TEXT_RULES))
+
+    once = mask(shape)
+    assert mask(once) == once
+
+
+# An accepted residual, the same at 354f70f: after a scheme word, redact_body
+# hashes a form value the text rules left (a label with more after it, a lone
+# quote), and the scheme word's bare-space rule then reads `password=<token>`
+# as its credential and hashes it again -- a token of a token, correlation
+# only. Skipping `key=<token>` there would let through a credential glued to a
+# key name (`Token abc123abc123api_key=...`). Strict xfail: fixing it fails
+# here, to be promoted into the test above.
+@pytest.mark.parametrize(
+    "shape",
+    [
+        'Bearer password=[SECRET-MASKED]"x',
+        '123Authorization: Bearer password=[SECRET-MASKED]"note=#',
+        "x Bearer note=password=[CVV-MASKED]'",
+        "Bearer password='",
+    ],
+)
+def test_a_scheme_words_rule_reads_what_redact_body_wrote_again(shape, mode, request):
+    if mode == "keyset":
+        request.applymarker(pytest.mark.xfail(strict=True, reason="rule 8 re-reads redact_body's key=<token>"))
+
     def mask(text):
         return redact_body(mask_by_patterns(text, _TEXT_RULES))
 
