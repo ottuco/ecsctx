@@ -118,6 +118,18 @@ class TestCardAndCvvParamsInAUrl:
         )
         assert redact_url(url) == url
 
+    def test_migs_card_number_is_truncated(self):
+        url = "https://migs.example/vpcpay?vpc_CardNum=4111111111111111&vpc_CardSecurityCode=123&vpc_Amount=100"
+        assert redact_url(url) == (
+            "https://migs.example/vpcpay?vpc_CardNum=411111******1111&vpc_CardSecurityCode=[CVV-MASKED]&vpc_Amount=100"
+        )
+
+    def test_a_card_num_key_is_a_card_key_in_the_key_walk(self):
+        assert MaskPIIFilter()._mask_dict({"card_num": "4111111111111111", "card_id": "42"}) == {
+            "card_num": "411111******1111",
+            "card_id": "42",
+        }
+
     def test_the_fragment_is_read_as_the_query(self):
         assert redact_url("https://h/cb#cvv=123&x=1") == "https://h/cb#cvv=[CVV-MASKED]&x=1"
 

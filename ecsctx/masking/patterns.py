@@ -1784,11 +1784,13 @@ _SAFE_KEYS_JOINED = _joined_names(SAFE_KEYS)
 
 
 def _is_card_key(lowered: str, joined: str, words: list[str]) -> bool:
+    # `cardnum` ends the key: MIGS's `vpc_CardNum`, `card_num`. `card_id` is an
+    # id, not a number, and stays unclassified.
     return (
         lowered == "card"
         or "pan" in words
         or "cardnumber" in joined
-        or joined.endswith("cardno")
+        or joined.endswith(("cardno", "cardnum"))
     )
 
 

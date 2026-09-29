@@ -189,6 +189,10 @@ class TestKeyNames:
             ("pan", "card"),
             ("card_number", "card"),
             ("cardNumber", "card"),
+            # MIGS's `vpc_CardNum`, and the short spellings of a card number.
+            ("vpc_CardNum", "card"),
+            ("card_num", "card"),
+            ("cardNum", "card"),
                             ("telephone", "phone"),
             ("mobile", "phone"),
             ("tel", "phone"),
