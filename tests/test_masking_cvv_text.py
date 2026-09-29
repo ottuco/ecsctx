@@ -146,3 +146,30 @@ class TestCardAndCvvFieldsInAFormBody:
 
     def test_in_a_json_string_the_strings_structure_stays(self):
         assert redact_body('{"note": "cvv=456"}') == '{"note": "cvv=[CVV-MASKED]"}'
+
+
+# A credential keyword whose name the key rule reads as a CVV or other SAD.
+CARD_SECRET_KEYWORDS = [
+    ("cvv_token=123", "cvv_token=[CVV-MASKED]"),
+    ('{"cvv_token": "123"}', '{"cvv_token": "[CVV-MASKED]"}'),
+    ("card_cvv_secret: 4829", "card_cvv_secret: [CVV-MASKED]"),
+    ("cvv_token 12345678", "cvv_token [CVV-MASKED]"),
+    ("pin_password=1234", "pin_password=[SAD-MASKED]"),
+    ("track2_token=4111111111111111=2512", "track2_token=[SAD-MASKED]"),
+]
+
+
+class TestACredentialKeywordThatNamesACvv:
+    """`cvv_token=123` matched the credential rule, which tokenized it: a
+    keyed hash of a CVV. Under its key, and in a URL, it was `[CVV-MASKED]`."""
+
+    @pytest.mark.parametrize(("text", "masked"), CARD_SECRET_KEYWORDS)
+    def test_it_is_the_label_its_key_gives(self, text, masked):
+        rules = rules_for(ALL_PACKS)
+        once = mask_by_patterns(text, rules)
+        assert once == masked
+        assert mask_by_patterns(once, rules) == once
+
+    def test_the_key_walk_and_a_url_agree(self):
+        assert MaskPIIFilter()._mask_dict({"cvv_token": "123"}) == {"cvv_token": LABEL}
+        assert redact_url("https://h/p?cvv_token=123") == f"https://h/p?cvv_token={LABEL}"

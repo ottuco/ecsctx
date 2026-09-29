@@ -1078,7 +1078,9 @@ or an opening bracket (`{`, `[`, `(`, `<`), and never runs into a label masking
 already wrote (`abc[SECRET-MASKED]`). After `Authorization:` (or
 `Proxy-Authorization:`, `authorization=`) the scheme and the credential are one
 value — `Authorization: Bearer abc…` carries the token the header gets under its
-key, not one for `Bearer` with the credential beside it.
+key, not one for `Bearer` with the credential beside it. A credential keyword that
+names a CVV or PIN (`cvv_token=123`, `pin_password=1234`) gives that label
+(`[CVV-MASKED]`, `[SAD-MASKED]`), as the key does, never a token.
 
 A URL's userinfo in text — a DSN in an exception,
 `postgresql://user:password@db:5432/app` — is masked part by part as

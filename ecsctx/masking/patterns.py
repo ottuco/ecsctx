@@ -944,7 +944,22 @@ def _mask_pem(match: re.Match) -> str:
     return mask_by_field_type(stripped, "pem_key")
 
 
-def _mask_quoted(value: str, quote: str) -> str:
+# What a credential keyword names when the key rule reads it as a CVV or other
+# SAD (`cvv_token`, `pin_password`): its value is that type's label, as under
+# the key and in a URL, never a keyed hash of a CVV.
+_NEVER_TOKENIZED = frozenset({"cvv", "sad"})
+
+
+def _credential_type(keyword: str) -> str:
+    field_type = classify_key(keyword, ALL_PACKS)
+    return field_type if field_type in _NEVER_TOKENIZED else "secret"
+
+
+def _mask_credential(value: str, keyword: str) -> str:
+    return mask_by_field_type(value, _credential_type(keyword))
+
+
+def _mask_quoted(value: str, quote: str, keyword: str) -> str:
     """A quoted credential value, masked as what it decodes to when it is a
     JSON string with an escape in it -- so `{"password": "a\\"b"}` carries
     the token `a"b` gets under the key. Written back as it was when masking
@@ -952,14 +967,14 @@ def _mask_quoted(value: str, quote: str) -> str:
     if quote == '"' and "\\" in value:
         with contextlib.suppress(ValueError):
             decoded = json.loads(f'"{value}"')
-            masked = mask_secret(decoded)
+            masked = _mask_credential(decoded, keyword)
             return value if masked == decoded else masked
-    return mask_secret(value)
+    return _mask_credential(value, keyword)
 
 
 def _cred_quoted(m: re.Match) -> str:
     q, kw, sep, val = m.group("q"), m.group("key"), m.group("sep"), m.group("value")
-    return f"{q}{kw}{q}{sep}{q}{_mask_quoted(val, q)}{q}"
+    return f"{q}{kw}{q}{sep}{q}{_mask_quoted(val, q, kw)}{q}"
 
 
 # Values a quoted key can hold that are literals, not text: JSON's and a
@@ -987,19 +1002,19 @@ def _unquoted_value_quote(prefix: str) -> str:
 
 
 def _cred_kv(m: re.Match) -> str:
-    prefix, val = m.group("prefix"), m.group("value")
+    prefix, keyword, val = m.group("prefix"), m.group("key"), m.group("value")
     if quote := m.group("quote"):
-        return f"{prefix}{_mask_quoted(val, quote)}"
+        return f"{prefix}{_mask_quoted(val, quote, keyword)}"
     if quote := _unquoted_value_quote(prefix):
         if val in _LITERALS:
             return m.group(0)
-        return f"{prefix}{quote}{mask_secret(val)}{quote}"
-    return f"{prefix}{mask_secret(val)}"
+        return f"{prefix}{quote}{_mask_credential(val, keyword)}{quote}"
+    return f"{prefix}{_mask_credential(val, keyword)}"
 
 
 def _cred_space(m: re.Match) -> str:
     kw, val = m.group(1), m.group(2)
-    return f"{kw} {mask_secret(val)}"
+    return f"{kw} {_mask_credential(val, kw)}"
 
 
 def _cvv_quoted(m: re.Match) -> str:
@@ -1374,7 +1389,7 @@ _RULE_TABLE = (
     # left) hashed again with it.
     _rule(
         "default",
-        rf"\b(?P<prefix>(?:(?P<auth>{_AUTH_KEYWORD})|{_OTHER_CRED_KEYWORD})(?:\\?[\"']|\s)*[:=]\s*"
+        rf"\b(?P<prefix>(?P<key>(?P<auth>{_AUTH_KEYWORD})|{_OTHER_CRED_KEYWORD})(?:\\?[\"']|\s)*[:=]\s*"
         rf"(?:(?P<quote>(?<!\\)[\"'])(?={_quoted_body('quote')}+(?P=quote))|(?:\\?[\"'])+)?)"
         rf"(?P<value>(?(quote){_quoted_body('quote')}+|(?!{_WHOLE_TOKEN})"
         rf"(?(auth)(?:{_AUTH_SCHEME}[ \t]+(?={_VALUE_START})(?!{_WHOLE_TOKEN}))?(?!{_AUTH_SCHEME}[ \t]+\S))"
