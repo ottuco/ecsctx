@@ -751,13 +751,35 @@ class MaskPIIFilter(logging.Filter):
             return value if masked == text else masked
         return self._mask_value(value, (), ctx)
 
+    def _mask_rendered(self, template: str, args: Any, ctx: _Pass) -> str:
+        """``template % args`` as getMessage() would render it, masked; the
+        marker when the arguments do not fit the template -- never an
+        exception, which would lose the line and print the arguments."""
+        try:
+            rendered = template % args
+        except (TypeError, ValueError, KeyError) as error:
+            return MASKING_FAILED.format(type(error).__name__)
+        return self._mask_value(rendered, (), ctx)
+
     def filter(self, record: logging.LogRecord) -> bool:
         ctx = self._context()
         if not is_masked_object(record, ctx.packs):
             with call_packs(ctx.packs):
                 try:
-                    record.msg = self._mask_value(record.msg, (), ctx)
-                    record.args = self._mask_args(record.args, ctx)
+                    msg = self._mask_value(record.msg, (), ctx)
+                    args = self._mask_args(record.args, ctx)
+                    if record.args and isinstance(record.msg, str) and msg != record.msg:
+                        # The template itself held something to mask: in
+                        # `password=%s` the rule reads the placeholder as the
+                        # credential, and the masked template no longer takes
+                        # its arguments -- getMessage() raised, the handler
+                        # dropped the line and printed the arguments to stderr,
+                        # in clear. So the record is rendered, from the masked
+                        # arguments (a dict's keys still mask it), and masked
+                        # whole. A template masking leaves as it is keeps its
+                        # arguments, and Sentry's grouping by it.
+                        msg, args = self._mask_rendered(record.msg, args, ctx), ()
+                    record.msg, record.args = msg, args
                 except Exception as error:  # noqa: BLE001 -- nothing here may reach the caller
                     # This runs outside emit()'s handleError, so an exception
                     # here became the caller's: a failed log line failed the

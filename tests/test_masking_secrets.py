@@ -1203,3 +1203,92 @@ class TestTheCallsPacksDecide:
         configure_masking_packs(["pci"])
         text = f"password={HOLDS_A_PAN}"
         assert MaskPIIFilter(packs=("default",))._mask_string(text) == f"password={token_or_label(HOLDS_A_PAN)}"
+
+
+JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnop"
+# %-style templates a service logs, the credential after its word passed as an
+# argument (the second is pg.cs.flow's own). Masking read the placeholder as
+# the credential and rewrote the template, so getMessage() raised: the handler
+# dropped the line and printed the arguments to stderr, in clear.
+TEMPLATES = [
+    ("login password=%s", ("hunter2-s3cret",), "hunter2-s3cret"),
+    ("on_challenge_start: step_up_url=%s, has_token=%s", (f"https://centinel.example/stepup?JWT={JWT}", True), JWT),
+    ("Authorization: %s", ("Basic dXNlcjpwYXNz",), "dXNlcjpwYXNz"),
+    ("api_key=%r", ("k-123abc",), "k-123abc"),
+    ("secret: %s", ("s3cr3t-9",), "s3cr3t-9"),
+    ("gateway replied token=%s for %s", ("tok_live_abc123", "order-42"), "tok_live_abc123"),
+    ("client_secret=%-10s|", ("abc123",), "abc123"),
+    ("db postgresql://%s:%s@%s/app", ("u", "pw-9", "db"), "pw-9"),
+    ("cvv=%s", ("123",), "123"),
+    ("payment_id=%s", ("4111111111111111",), "4111111111111111"),
+    # Its value in quotes, a mapping's, a number's.
+    ('payload {"password": "%s"}', ("hunter2",), "hunter2"),
+    ("password=%(pw)s", ({"pw": "hunter2"},), "hunter2"),
+    ("api_key=%d", (12345,), "12345"),
+]
+
+
+class TestATemplateHoldingACredentialWord:
+    """Through get_logging_config(), as a service runs it, with every pack."""
+
+    @pytest.mark.parametrize(("template", "args", "secret"), TEMPLATES)
+    def test_it_is_one_masked_line_and_nothing_reaches_stderr(self, template, args, secret, capsys, logging_state):
+        import io
+        import logging
+        import logging.config
+
+        from ecsctx.contrib.django import get_logging_config
+
+        out = io.StringIO()
+        cfg = get_logging_config(use_cid_filter=False, masking_packs=("pci", "financial_ids"))
+        cfg["handlers"]["console"]["stream"] = out
+        logging.config.dictConfig(cfg)
+        logging.getLogger("app.pay").info(template, *args)
+        lines = [json.loads(line) for line in out.getvalue().splitlines()]
+        assert len(lines) == 1
+        message = lines[0]["message"]
+        assert secret not in message
+        assert "MASKING-FAILED" not in message
+        assert message.split("=")[0].split(":")[0] == template.split("=")[0].split(":")[0]
+        assert capsys.readouterr().err == ""
+
+    def test_a_template_masking_leaves_as_it_is_keeps_its_args(self):
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "user %s logged in", ("bob",), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == ("user %s logged in", ("bob",))
+
+    def test_a_rendered_template_is_masked_whole(self):
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "login password=%s", ("hunter2-s3cret",), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == (f"login password={token_or_label('hunter2-s3cret')}", ())
+        assert record.getMessage() == record.msg
+
+    def test_arguments_that_do_not_fit_the_template_are_the_marker(self):
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "password=%s %s", ("only-one",), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == ("[MASKING-FAILED: TypeError]", ())
+
+    def test_a_mapping_template_is_rendered_whole(self):
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "password=%(pw)s", ({"pw": "hunter2"},), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == (f"password={token_or_label('hunter2')}", ())
+
+    def test_a_dicts_keys_still_mask_it_when_rendered(self):
+        # Rendered from the masked arguments: from the raw ones, a card number
+        # under a card key reached the text rules alone, and the default pack
+        # has no card rule.
+        import logging
+
+        body = {"card_number": "4111111111111111"}
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "password=%s body=%s", ("hunter2", body), None)
+        MaskPIIFilter().filter(record)
+        masked = f"password={token_or_label('hunter2')} body={{'card_number': '411111******1111'}}"
+        assert (record.msg, record.args) == (masked, ())
