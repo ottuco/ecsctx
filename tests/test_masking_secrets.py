@@ -22,8 +22,11 @@ import pytest
 from django.test import RequestFactory
 from django.urls import path, re_path, resolve
 
+import ecsctx
+import ecsctx.masking
 from ecsctx.contrib.django.routes import loggable_path
-from ecsctx.masking import mask_by_field_type
+from ecsctx.masking import mask_by_field_type, mask_secret
+from ecsctx.masking import patterns as masking_patterns
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
 from ecsctx.pii import configure_pii, is_configured, tokenize
 from ecsctx.processors import mask_sensitive_data
@@ -69,6 +72,44 @@ class TestMaskByFieldType:
     def test_a_value_masking_produced_passes_through(self):
         for value in (token_or_label(SECRET), LABEL, "411111******1111"):
             assert mask_by_field_type(value, "secret") == value
+
+
+class TestMaskSecret:
+    """A credential that reaches a log outside a mapping -- a URL, a body a
+    service masks itself -- masked as a credential key's value is."""
+
+    def test_a_secret_is_its_token_or_the_label(self):
+        assert mask_secret(SECRET) == token_or_label(SECRET)
+
+    @pytest.mark.parametrize("value", CARD_SHAPED)
+    def test_a_secret_shaped_like_a_card_number_is_the_label(self, value):
+        assert mask_secret(value) == LABEL
+
+    @pytest.mark.parametrize("value", PLACEHOLDERS)
+    def test_a_placeholder_is_the_label(self, value):
+        assert mask_secret(value) == LABEL
+
+    def test_an_empty_value_stays_empty(self):
+        assert mask_secret("") == ""
+
+    @pytest.mark.parametrize("value", [None, True, False])
+    def test_a_null_or_a_flag_comes_back_as_it_is(self, value):
+        assert mask_secret(value) is value
+
+    def test_anything_else_is_masked_as_its_text(self):
+        assert mask_secret(4111111111111111) == LABEL
+        assert mask_secret(20260929) == token_or_label("20260929")
+
+    def test_it_masks_as_the_key_walk_does(self):
+        for value in (SECRET, *CARD_SHAPED, *PLACEHOLDERS, ""):
+            assert mask_secret(value) == _walk({"password": value})["password"]
+
+
+@pytest.mark.parametrize("name", ["mask_secret", "mask_card_value"])
+def test_exported_from_the_masking_package_and_the_root(name):
+    assert getattr(ecsctx, name) is getattr(ecsctx.masking, name) is getattr(masking_patterns, name)
+    assert name in ecsctx.__all__
+    assert name in ecsctx.masking.__all__
 
 
 def _walk(data: dict) -> dict:

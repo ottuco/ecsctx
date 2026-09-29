@@ -45,6 +45,7 @@ from ecsctx.masking.patterns import (
     known_clean,
     mask_by_patterns,
     mask_card_value,
+    mask_secret,
     name_context,
     pan_shaped,
     rules_for,
@@ -347,10 +348,12 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     A credential is the exception: shaped like a PAN it is masked whole, in
     every pack. Truncation shows ten digits of it -- the saved card's
     sixteen-digit gateway token, a numeric api key -- and a hash of something
-    that may be a PAN is what FAQ 1117 forbids.
+    that may be a PAN is what FAQ 1117 forbids. It goes through `mask_secret`,
+    as a credential does on every other path -- here before the `pci` branch,
+    which would truncate it.
     """
     if field_type == "secret" and pan_shaped(text):
-        return f"[{make_label('secret')}]"
+        return mask_secret(text)
     if "pci" in ctx.packs and get_field_rule(field_type).tokenizable:
         if pan_shaped(text):
             return mask_card_value(text)
