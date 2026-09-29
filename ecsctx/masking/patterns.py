@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterator
 from functools import lru_cache
 from heapq import merge
 from itertools import accumulate, pairwise
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from ecsctx.masking.tokens import _TOKEN, _TRUNCATED_PAN, make_label, mask_by_field_type
 
@@ -766,6 +766,23 @@ def mask_card_value(value) -> str:
     return f"[{make_label('card')}]"
 
 
+def mask_secret(value: Any) -> Any:
+    """A credential masked as a credential key's value is: its bare token
+    (``ptok:v1:…``) where PII tokenization is configured, ``[SECRET-MASKED]``
+    where it is not, and ``[SECRET-MASKED]`` either way for a value shaped
+    like a card number or a placeholder another masker left.
+
+    For a credential that reaches a log outside a mapping, where no key sits
+    next to it: a URL's path or query, a body masked before it is logged, a
+    value a service masks itself. A null or a flag comes back as it is, as
+    under a key; anything else is masked as its text.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    text = str(value)
+    return mask_by_field_type(text, "secret")
+
+
 def _mask_pem(match: re.Match) -> str:
     """Token computed over the base64 body only — strip the BEGIN/END lines
     and all whitespace first, so the same key re-wrapped at a different line
@@ -779,7 +796,7 @@ def _mask_pem(match: re.Match) -> str:
 
 def _cred_quoted(m: re.Match) -> str:
     q, kw, sep, val = m.group(1), m.group(2), m.group(3), m.group(4)
-    return f"{q}{kw}{q}{sep}{q}{mask_by_field_type(val, 'secret')}{q}"
+    return f"{q}{kw}{q}{sep}{q}{mask_secret(val)}{q}"
 
 
 # Values a quoted key can hold that are literals, not text: JSON's and a
@@ -807,13 +824,13 @@ def _cred_kv(m: re.Match) -> str:
     if quote := _unquoted_value_quote(prefix):
         if val in _LITERALS:
             return m.group(0)
-        return f"{prefix}{quote}{mask_by_field_type(val, 'secret')}{quote}"
-    return f"{prefix}{mask_by_field_type(val, 'secret')}"
+        return f"{prefix}{quote}{mask_secret(val)}{quote}"
+    return f"{prefix}{mask_secret(val)}"
 
 
 def _cred_space(m: re.Match) -> str:
     kw, val = m.group(1), m.group(2)
-    return f"{kw} {mask_by_field_type(val, 'secret')}"
+    return f"{kw} {mask_secret(val)}"
 
 
 def _cvv_quoted(m: re.Match) -> str:

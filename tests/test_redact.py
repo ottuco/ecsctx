@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from django.test import override_settings
 
 from ecsctx.contrib.net import (
@@ -51,7 +52,13 @@ class TestRedactUrl:
         assert redact_url(123) == 123
 
     def test_unparseable_url_is_fully_redacted(self):
-        assert redact_url("http://[::1") == "[REDACTED]"
+        assert redact_url("http://[::1") == "[SECRET-MASKED]"
+
+    def test_other_params_are_left_as_written(self):
+        # Re-encoding every param rewrote `%20` as `+`, and an empty or bare
+        # param as another shape.
+        url = "https://h/pay?q=a%20b+c&password=s3cret&flag&empty=&next=%2Fhome"
+        assert redact_url(url) == "https://h/pay?q=a%20b+c&password=[SECRET-MASKED]&flag&empty=&next=%2Fhome"
 
 
 class TestRedactBody:
@@ -76,6 +83,80 @@ class TestRedactBody:
         body = '{"status": "ok", "id": 42}'
         assert redact_body(body) == body
 
+    def test_an_escaped_quote_does_not_end_the_value(self):
+        # `"[^"]*"` stopped at the escaped quote: the tail shipped in clear,
+        # after a marker that broke the JSON.
+        masked = redact_body('{"password": "a\\"b-tail", "status": "ok"}')
+        assert json.loads(masked) == {"password": "[SECRET-MASKED]", "status": "ok"}
+        assert "tail" not in masked
+
+    @pytest.mark.parametrize(
+        ("body", "masked"),
+        [
+            ('{"url": "https://x?secret=abc"}', '{"url": "https://x?secret=[SECRET-MASKED]"}'),
+            # An empty value stays empty, and the string still closes.
+            ('{"url": "https://x?secret=", "b": "c"}', '{"url": "https://x?secret=", "b": "c"}'),
+        ],
+    )
+    def test_a_form_value_inside_a_json_string_ends_with_the_string(self, body, masked):
+        # `[^&\s]*` ran on through the closing quote and brace.
+        assert redact_body(body) == masked
+        assert json.loads(masked)
+        assert redact_body(masked) == masked
+
+    def test_an_escaped_quote_does_not_end_a_form_value_inside_a_json_string(self):
+        # Only an unescaped quote ends the JSON string. Stopped at the escaped
+        # one, the capture kept its backslash, dropping it closed the string,
+        # and the rest of the secret shipped in clear.
+        masked = redact_body('{"note": "client_secret=a\\"b-tail&x=1"}')
+        assert "b-tail" not in masked
+        assert json.loads(masked) == {"note": "client_secret=[SECRET-MASKED]&x=1"}
+        assert redact_body(masked) == masked
+
+    @pytest.mark.parametrize(
+        ("body", "masked"),
+        [
+            (
+                '<Auth password="s3cr3tVALUE" authkey="k3yVALUE" apikey="ap1VALUE"/>',
+                '<Auth password="[SECRET-MASKED]" authkey="[SECRET-MASKED]" apikey="[SECRET-MASKED]"/>',
+            ),
+            ('error: client_secret="s3cr3tVALUE" rejected', 'error: client_secret="[SECRET-MASKED]" rejected'),
+            ('password="s3cr3tVALUE"&x=1', 'password="[SECRET-MASKED]"&x=1'),
+            ('status=error&password=ab"cd-TAIL&x=1', "status=error&password=[SECRET-MASKED]&x=1"),
+        ],
+    )
+    def test_a_quoted_form_value_is_masked_between_its_quotes(self, body, masked):
+        # A value runs to `&` or whitespace, as in 0.15.3; the quotes at its
+        # ends, and an element's `/>`, are structure and stay as written.
+        assert redact_body(body) == masked
+        assert redact_body(masked) == masked
+
+    @pytest.mark.parametrize(
+        ("body", "masked"),
+        [
+            # A backslash before a line break is no JSON escape, so the body
+            # fails json.loads and reaches this rule as text.
+            ('{"password": "abc-SECRET\\\nmore"}', '{"password": "[SECRET-MASKED]"}'),
+            # A body cut before the value's closing quote: masked to the end.
+            ('{"password": "abc-SECRET\\"}', '{"password": "[SECRET-MASKED]"'),
+            ('{"password": "a\\"b-tail"}', '{"password": "[SECRET-MASKED]"}'),
+            ('{"password": "abc\\\\"}', '{"password": "[SECRET-MASKED]"}'),
+        ],
+    )
+    def test_a_json_value_runs_to_its_closing_quote_or_the_end(self, body, masked):
+        # Without an unescaped closing quote the value masked nothing; 0.15.3's
+        # `"[^"]*"` masked both of the first two.
+        assert redact_body(body) == masked
+        assert redact_body(masked) == masked
+
+    def test_a_quote_that_closes_a_value_and_opens_the_next_key_serves_both(self):
+        # Malformed JSON with no separator between members: consumed with the
+        # empty value, the quote hid the next key, and its value shipped in
+        # clear, as it did in 0.15.3.
+        masked = redact_body('{"password": ""password": "hunter2"}')
+        assert masked == '{"password": ""password": "[SECRET-MASKED]"}'
+        assert redact_body(masked) == masked
+
 
 class TestLoggableBody:
     def test_non_textual_body_is_omitted(self):
@@ -94,7 +175,23 @@ class TestLoggableBody:
         body = '{"access_token": "' + secret + '"}'
         logged = loggable_body(_FakeResponse(body, "application/json"))
         assert secret not in logged
-        assert "[REDACTED]" in logged
+        assert "[SECRET-MASKED]" in logged
+
+    def test_a_form_secret_with_a_quote_inside_a_json_field_is_masked_whole(self):
+        # The key walk's credential rule stops at the quote; redact_body must
+        # take the rest of the value, as 0.15.3's form rule did.
+        body = json.dumps({"note": 'client_secret=a"b-tail&x=1'})
+        logged = loggable_body(_FakeResponse(body, "application/json"))
+        assert "b-tail" not in logged
+        assert json.loads(logged) == {"note": "client_secret=[SECRET-MASKED]&x=1"}
+
+    def test_a_form_value_the_key_walk_masked_inside_a_json_field_is_left_as_written(self):
+        # The key walk's text rule writes `password="[SECRET-MASKED]"`; escaped
+        # in the JSON string, it was then hashed (or relabelled) as a value.
+        body = json.dumps({"note": 'password="4111111111111111"&x=1'})
+        logged = loggable_body(_FakeResponse(body, "application/json"))
+        assert json.loads(logged) == {"note": 'password="[SECRET-MASKED]"&x=1'}
+        assert redact_body(logged) == logged
 
 
 class TestRedactionConfig:
@@ -142,7 +239,7 @@ class TestDjangoSettingsBridge:
     def test_explicit_call_wins_over_django_settings(self):
         configure_redaction(extra_secret_keys=["svc_key"])
         with override_settings(ECSCTX_REDACT_EXTRA_SECRET_KEYS=["merchant_pin"]):
-            assert "[REDACTED]" in redact_body('{"svc_key": "aaa"}')
+            assert redact_body('{"svc_key": "aaa"}') == '{"svc_key": "[SECRET-MASKED]"}'
             assert redact_body('{"merchant_pin": "1234"}') == '{"merchant_pin": "1234"}'
 
     def test_django_settings_win_over_env(self, monkeypatch):
@@ -209,7 +306,7 @@ class TestUrlHost:
 class TestRedactUrlSecrets:
     def test_a_secret_in_the_path_is_masked(self):
         assert redact_url("https://h/pbl/card/tok_9f8e/", secrets=["tok_9f8e"]) == (
-            "https://h/pbl/card/[REDACTED]/"
+            "https://h/pbl/card/[SECRET-MASKED]/"
         )
 
     def test_a_secret_in_the_query_and_repeated(self):
@@ -217,8 +314,13 @@ class TestRedactUrlSecrets:
         assert "tok_1" not in url
 
     def test_a_bare_string_is_one_secret_and_empty_ones_are_ignored(self):
-        assert redact_url("https://h/x/abc", secrets="abc") == "https://h/x/[REDACTED]"
+        assert redact_url("https://h/x/abc", secrets="abc") == "https://h/x/[SECRET-MASKED]"
         assert redact_url("https://h/x/abc", secrets=["", None]) == "https://h/x/abc"
+
+    def test_the_longest_secret_is_masked_first(self):
+        # A shorter secret it contains, masked first, left the rest in clear.
+        url = redact_url("https://h/a/tok_12345/b", secrets=["tok_1", "tok_12345"])
+        assert url == "https://h/a/[SECRET-MASKED]/b"
 
     def test_without_secrets_the_path_is_untouched(self):
         assert redact_url("https://h/checkout/8231045567ab") == "https://h/checkout/8231045567ab"

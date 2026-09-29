@@ -24,6 +24,8 @@ from ecsctx.formatters import ECSFormatter
 from ecsctx.masking import (
     MaskPIIFilter,
     install_maskers,
+    mask_card_value,
+    mask_secret,
     uninstall_maskers,
 )
 from ecsctx.pii import (
@@ -81,6 +83,8 @@ __all__ = [
     "configure_masking",
     "configure_masking_from_env",
     "safe_tokenize",
+    "mask_card_value",
+    "mask_secret",
     # Root-fields config
     "configure_root_fields",
     "configure_root_fields_from_env",

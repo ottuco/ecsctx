@@ -29,7 +29,7 @@ from ecsctx.masking.exemptions import (
 )
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.install import install_maskers, uninstall_maskers
-from ecsctx.masking.patterns import ALL_PACKS, PACK_NAMES
+from ecsctx.masking.patterns import ALL_PACKS, PACK_NAMES, mask_card_value, mask_secret
 from ecsctx.masking.tokens import mask_by_field_type, safe_tokenize
 
 __all__ = [
@@ -47,5 +47,7 @@ __all__ = [
     "masking_is_configured",
     "safe_tokenize",
     "mask_by_field_type",
+    "mask_card_value",
+    "mask_secret",
     "key_field_type",
 ]
