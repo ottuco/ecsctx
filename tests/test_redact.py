@@ -131,6 +131,24 @@ class TestRedactBody:
         assert redact_body(body) == masked
         assert redact_body(masked) == masked
 
+    @pytest.mark.parametrize(
+        ("body", "masked"),
+        [
+            # A backslash before a line break is no JSON escape, so the body
+            # fails json.loads and reaches this rule as text.
+            ('{"password": "abc-SECRET\\\nmore"}', '{"password": "[SECRET-MASKED]"}'),
+            # A body cut before the value's closing quote: masked to the end.
+            ('{"password": "abc-SECRET\\"}', '{"password": "[SECRET-MASKED]"'),
+            ('{"password": "a\\"b-tail"}', '{"password": "[SECRET-MASKED]"}'),
+            ('{"password": "abc\\\\"}', '{"password": "[SECRET-MASKED]"}'),
+        ],
+    )
+    def test_a_json_value_runs_to_its_closing_quote_or_the_end(self, body, masked):
+        # Without an unescaped closing quote the value masked nothing; 0.15.3's
+        # `"[^"]*"` masked both of the first two.
+        assert redact_body(body) == masked
+        assert redact_body(masked) == masked
+
 
 class TestLoggableBody:
     def test_non_textual_body_is_omitted(self):

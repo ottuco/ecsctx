@@ -222,9 +222,12 @@ def _get_compiled() -> tuple:
     hint_re = re.compile("|".join(keys), re.IGNORECASE)
     # "access_token": "..."  ->  "access_token": "<masked>"
     # The value is read past an escaped quote: `"[^"]*"` stopped at the one in
-    # "a\"b" and left the rest of the value in clear.
+    # "a\"b" and left the rest of the value in clear. Past any escaped
+    # character, too, and to the end of the text when no quote closes it: a
+    # body json.loads rejects -- a backslash before a line break, a body cut
+    # mid-value -- is exactly the one that reaches this rule as text.
     json_re = re.compile(
-        r'("(?:' + "|".join(keys) + r')"\s*:\s*)"([^"\\]*(?:\\.[^"\\]*)*)"',
+        r'("(?:' + "|".join(keys) + r')"\s*:\s*)"([^"\\]*(?:\\[\s\S][^"\\]*)*\\?)(?:"|\Z)',
         re.IGNORECASE,
     )
     # access_token=...  ->  access_token=<masked>  (form-encoded bodies)

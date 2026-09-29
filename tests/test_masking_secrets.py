@@ -376,3 +376,23 @@ class TestAFormValueInQuotes:
         assert "VALUE" not in masked
         assert "TAIL" not in masked
         assert redact_body(masked) == masked
+
+
+class TestAJsonValueTheParserRejects:
+    """A body json.loads rejects reaches redact_body as text: a value holding
+    an escape JSON does not know, or one cut before its closing quote."""
+
+    def test_a_value_that_does_not_decode_is_masked_as_written(self):
+        value = "abc-SECRET\\\nmore"
+        masked = redact_body(f'{{"password": "{value}"}}')
+        assert masked == f'{{"password": {json.dumps(token_or_label(value))}}}'
+        assert redact_body(masked) == masked
+
+    def test_a_value_cut_before_its_closing_quote_is_masked_to_the_end(self):
+        masked = redact_body(f'{{"id": 1, "password": "{SECRET}')
+        assert masked == f'{{"id": 1, "password": "{token_or_label(SECRET)}"'
+        assert redact_body(masked) == masked
+
+    @pytest.mark.parametrize("value", CARD_SHAPED)
+    def test_a_card_number_cut_before_its_closing_quote_is_the_label(self, value):
+        assert redact_body(f'{{"password": "{value}') == f'{{"password": "{LABEL}"'
