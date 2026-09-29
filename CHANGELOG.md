@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.15.4 (2026-09-29)
+
+### Features
+- feat(masking): mask_secret masks a credential outside a mapping as its key would (48c0061)
+
+### Fixes
+- Merge pull request #68 from ottuco/fix/secret-masking (068dbb8)
+- fix(net): literal secrets are masked in one pass (daa0813)
+- fix(net): a closed JSON value that holds a card number is the label (5de3593)
+- fix(net): a form value runs to & or whitespace, and only its end structure stays (2cfa7d5)
+- fix(net): a form value in JSON-escaped quotes is masked as it unescapes (d22df7d)
+- fix(masking): a marker in quotes is masked already, never hashed (f3b683b)
+- fix(net): a JSON value's closing quote is left for the key it may open (53b9b67)
+- fix(net): a JSON credential value runs to its closing quote or the end (27cefbf)
+- fix(net): a quote ends a form value only where it could close a JSON string (d8b99bd)
+- fix(masking): a quoted card number or placeholder is its label, not a hash of it bare (2d7e065)
+- fix(net): a form value ends at an unescaped quote only (d7847ee)
+- fix(net): credentials in URLs and bodies are masked as secrets, not [REDACTED] (3d61523)
+- fix(masking): a card-shaped or placeholder credential is its label on every path (12c5685)
+
+### Other
+- docs(masking): mask_secret, mask_card_value and the net boundary's output (87e0335)
+
+
 ## v0.15.3 (2026-09-29)
 
 ### Fixes
