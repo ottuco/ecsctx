@@ -158,8 +158,8 @@ class TestTheCredentialTextRules:
 
     @pytest.mark.parametrize("value", ["[REDACTED]", "***"])
     def test_a_placeholder_under_a_quoted_key_is_the_label(self, value):
-        # Rules 3 and 8 never take one: their value starts with a credential
-        # character, which `[` and `*` are not.
+        # Rules 3 and 8 never take `[REDACTED]`: a value never starts with `[`,
+        # which opens a label. `***` after `=` is the label too (below).
         assert mask_by_patterns(CREDENTIAL_TEXTS[0] % value, _TEXT_RULES) == CREDENTIAL_TEXTS[0] % LABEL
 
     def test_an_empty_value_stays_empty(self):
@@ -326,10 +326,10 @@ class TestAQuotedCardNumberOrPlaceholderIsTheLabel:
 
     @pytest.mark.parametrize("value", QUOTED_CARDS)
     def test_a_credential_text_rule(self, value):
-        # The rule's value takes no quote -- they stay in its prefix -- so it
-        # never hashed them.
+        # A quoted value runs to its closing quote: the quotes stay, and all
+        # that is between them, spaces too, is the value.
         text = f"login with password={value} failed"
-        assert mask_by_patterns(text, _TEXT_RULES) == text.replace(value.strip("\"' "), LABEL)
+        assert mask_by_patterns(text, _TEXT_RULES) == f"login with password={value[0]}{LABEL}{value[0]} failed"
 
     @pytest.mark.parametrize("value", QUOTED)
     def test_a_route_parameter(self, value):
@@ -664,22 +664,34 @@ def _pan_candidates(text: str) -> set[str]:
     }
 
 
-def _outputs(text: str) -> list[str]:
+def _outputs(text: str, *, text_rules: bool = True) -> list[str]:
     once = redact_body(text)
-    return [
+    outputs = [
         once,
         redact_body(once),
-        redact_body(mask_by_patterns(text, _TEXT_RULES)),
         mask_sensitive_data(None, "info", {"event": once})["event"],
         loggable_body(_Reply(text)),
     ]
+    if text_rules:
+        outputs.append(redact_body(mask_by_patterns(text, _TEXT_RULES)))
+    return outputs
 
 
+# Without `pci` a credential text rule hashes a value that holds a card number,
+# the accepted default-pack residual (TestACredentialThatHoldsACardNumber). Of
+# these shapes one puts the card number in a credential value's own
+# characters, since a value runs to its delimiter: `%22` is part of it.
+_HASHED_WITHOUT_PCI = {f"password=%22{PAN}%22&x=1"}
+
+
+@pytest.mark.parametrize("packs", [["default"], sorted(ALL_PACKS)], ids=["default", "every-pack"])
 @pytest.mark.parametrize("shape", PAN_SHAPES)
-def test_no_output_holds_the_card_number_or_a_hash_of_anything_holding_it(mode, shape):
+def test_no_output_holds_the_card_number_or_a_hash_of_anything_holding_it(mode, packs, shape):
+    configure_masking_packs(packs)
     # Tokens exist only with a keyset; without one, the label stands in.
     candidates = _pan_candidates(shape) if mode == "keyset" else set()
-    for output in _outputs(shape):
+    text_rules = "pci" in packs or shape not in _HASHED_WITHOUT_PCI
+    for output in _outputs(shape, text_rules=text_rules):
         assert PAN not in output
         assert not candidates & set(re.findall(r"ptok:v1:[A-Za-z0-9_-]{43}", output))
 
@@ -743,6 +755,15 @@ class TestACredentialThatHoldsACardNumber:
     def test_with_pci_a_uuid_keeps_its_token(self):
         configure_masking_packs(["pci"])
         assert _every_path(A_UUID) == _as_masked(token_or_label(A_UUID))
+
+    def test_without_pci_a_percent_encoded_one_in_text_is_hashed_too(self):
+        # A value runs to its delimiter, `%22` and all: without `pci` it is
+        # hashed, as any credential that holds a card number is; with `pci`
+        # it is the label.
+        text = "password=%224111111111111111%22&x=1"
+        assert mask_by_patterns(text, _DEFAULT_RULES) == f"password={token_or_label('%224111111111111111%22')}&x=1"
+        configure_masking_packs(["pci"])
+        assert mask_by_patterns(text, _TEXT_RULES) == f"password={LABEL}&x=1"
 
     def test_masked_twice_it_is_masked_once(self):
         configure_masking_packs(["pci"])
@@ -814,3 +835,79 @@ class TestATokenShapedValueThatHoldsACardNumber:
         configure_masking_packs(packs)
         real = tokenize(SECRET, "secret") if is_configured() else LABEL
         assert _every_path(real) == _as_masked(real)
+
+
+_DEFAULT_RULES = rules_for(frozenset({"default"}))
+# Where each tail shipped: past a character the old value class did not know
+# (a backslash, `@`, an apostrophe), or a key the old rules could not read
+# (a JSON-escaped one). (text, the text around the value, the value masked.)
+TAILS = [
+    ("password=ab\\cd-TAIL1", "password=%s", "ab\\cd-TAIL1"),
+    # A JSON string: masked as what it decodes to, `ab\cd-TAIL2`.
+    ('password: "ab\\\\cd-TAIL2"', 'password: "%s"', "ab\\cd-TAIL2"),
+    ('password=abc\\"def-TAIL4', "password=%s", 'abc\\"def-TAIL4'),
+    ('{"password": "ab\\"cd-TAIL5"}', '{"password": "%s"}', 'ab"cd-TAIL5'),
+    ('{\\"password\\": \\"hunter2-TAIL3\\"}', '{\\"password\\": \\"%s\\"}', "hunter2-TAIL3"),
+    ("Bearer abc123\\def456-TAIL9", "Bearer %s", "abc123\\def456-TAIL9"),
+    ('{"password": "it\'s-a-secret-TAIL"}', '{"password": "%s"}', "it's-a-secret-TAIL"),
+    ("password=p@ss-TAIL", "password=%s", "p@ss-TAIL"),
+]
+# Where an unquoted value ends, and what stays inside one.
+DELIMITED = [
+    ("password=abc&x=1", "password=%s&x=1", "abc"),
+    ("password=abc;x=1", "password=%s;x=1", "abc"),
+    ("password=abc, x=1", "password=%s, x=1", "abc"),
+    ("password=abc\tx=1", "password=%s\tx=1", "abc"),
+    ("(password=abc)", "(password=%s)", "abc"),
+    ("[password=abc]", "[password=%s]", "abc"),
+    ("{password=abc}", "{password=%s}", "abc"),
+    ("<password=abc>", "<password=%s>", "abc"),
+    ('{"note": "password=abc"}', '{"note": "password=%s"}', "abc"),
+    ("password=abc' x", "password=%s' x", "abc"),
+    ("password=abc#frag~!$*", "password=%s", "abc#frag~!$*"),
+    ('password=ab"cd-TAIL', "password=%s", 'ab"cd-TAIL'),
+    ("password=ab''cd-TAIL", "password=%s", "ab''cd-TAIL"),
+    ("password=ptok:v1:hunter2", "password=%s", "ptok:v1:hunter2"),
+    ('{\\"api_key\\": 12345}', '{\\"api_key\\": \\"%s\\"}', "12345"),
+]
+# A quoted value runs to its unescaped closing quote, spaces and all.
+QUOTED_VALUES = [
+    ('password="a b&c" x', 'password="%s" x', "a b&c"),
+    ("password='it\\'s' x", "password='%s' x", "it\\'s"),
+    ("{'password': 'it\\'s'}", "{'password': '%s'}", "it\\'s"),
+    ("{'password': \"it's here\"}", "{'password': \"%s\"}", "it's here"),
+    ('Authorization: "Bearer abc123"', 'Authorization: "%s"', "Bearer abc123"),
+]
+
+
+@pytest.mark.parametrize("rules", [_DEFAULT_RULES, _TEXT_RULES], ids=["default", "every-pack"])
+class TestACredentialValueRunsToItsDelimiter:
+    """A credential value in text is everything up to its delimiter, as a
+    form value in `redact_body` is: an unquoted one ends at whitespace, `&`,
+    `;`, `,`, a closing quote or bracket; a quoted one at its unescaped
+    closing quote. A fixed class of value characters left the rest of a
+    value in clear after a character outside it."""
+
+    @pytest.mark.parametrize(("text", "around", "value"), TAILS + DELIMITED + QUOTED_VALUES)
+    def test_the_value_is_masked_whole_and_once(self, rules, text, around, value):
+        masked = mask_by_patterns(text, rules)
+        assert masked == around % token_or_label(value)
+        assert mask_by_patterns(masked, rules) == masked
+
+    def test_a_placeholder_after_a_separator_is_the_label(self, rules):
+        # A star is a value character now; a placeholder is still the label.
+        assert mask_by_patterns("password=*** x", rules) == f"password={LABEL} x"
+
+    def test_a_json_escaped_value_gets_the_token_it_gets_under_its_key(self, rules):
+        masked = mask_by_patterns('{"password": "ab\\"cd-TAIL5"}', rules)
+        assert json.loads(masked) == _walk({"password": 'ab"cd-TAIL5'})
+
+    @pytest.mark.parametrize("text", ['password=""', "password=''", 'password=\\"\\"', "password=", 'password: "" x'])
+    def test_an_empty_value_stays_empty(self, rules, text):
+        assert mask_by_patterns(text, rules) == text
+
+    @pytest.mark.parametrize("text", ['password="abc', 'password: "abc def', "password='abc x"])
+    def test_a_quote_nothing_closes_is_read_as_an_unquoted_value(self, rules, text):
+        masked = mask_by_patterns(text, rules)
+        assert "abc" not in masked
+        assert mask_by_patterns(masked, rules) == masked

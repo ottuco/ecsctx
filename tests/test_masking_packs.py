@@ -463,7 +463,7 @@ class TestCredentialScanMatchesFullScan:
         "basic", "Digest", "credentials", "Authorization", "authorisation_header",
         "secret", "client_secret", "password", "PASSWD", "key", "monkey", "keyboard",
         "tokenization", "abc123", "abcdefghij", "a1b2c3d4e5f6", "eyJhbGciOi.x.y",
-        "12345678", "value", "İ", "straße", "==", "/+~.",
+        "12345678", "value", "İ", "straße", "==", "/+~.", "\\", '\\"', "@", "#",
     )
 
     def _credential_rules(self):

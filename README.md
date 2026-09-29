@@ -1047,6 +1047,16 @@ a person's, under a container named by a thing (`payment_method.name`,
 `merchant.name`, `items[].name`). Booleans are never masked. A dataclass or
 namedtuple is masked by its field names and rendered back to its repr text.
 
+A credential value found in text (`password=…`, `"token": "…"`, `Bearer …`)
+runs to its delimiter, as a form value in `redact_body` does: an unquoted one
+to whitespace, `&`, `;`, `,`, a closing bracket or a closing quote (a quote
+followed by a JSON key's `":` or an element's `/>` is structure too); a quoted
+one to its unescaped closing quote, spaces and all. A backslash, `@`, `#` or an
+apostrophe inside a value no longer ends it early, leaving the rest in clear. A
+double-quoted value is masked as the JSON string it decodes to, so it carries
+the token the same value gets under a key. A value never starts with a quote
+or an opening bracket (`{`, `[`, `(`, `<`).
+
 A digit run that touches a letter is never a phone number — it is part of an
 id. The card rule still matches a PAN followed by a letter, because Track 2
 data puts a `D` separator right after it.

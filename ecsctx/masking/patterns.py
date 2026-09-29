@@ -25,6 +25,8 @@ nothing survived, and a truncation carries the BIN and the last four).
 
 from __future__ import annotations
 
+import contextlib
+import json
 import re
 from collections import deque
 from collections.abc import Callable, Iterator
@@ -159,9 +161,36 @@ _GENERIC_PII_KEY_WORDS = r"billing|shipping|customer|contact|udf"
 
 
 
-# Credential value characters: token / base64url / JWT / hex (no whitespace).
-_CRED_CHARS = r"A-Za-z0-9._~+/\-"
-_CRED_VALUE = rf"[{_CRED_CHARS}]"
+# Where a credential value in text ends: as a form value does in
+# contrib.net's redact_body, at its delimiter, not at the first character
+# outside a fixed class -- a backslash, `@` or an apostrophe left the rest of
+# the value in clear. An unquoted value ends at whitespace, `&`, `;`, `,`, a
+# closing bracket or a closing quote; `#` and anything else stays inside it,
+# since masking too much is the safe side to err on.
+_VALUE_END = r"\s&;,)\]}>"
+# A character of an unquoted value: neither an end, a quote nor a backslash.
+_PLAIN = rf"[^{_VALUE_END}\"'\\]"
+# A backslash and the character it escapes, unless that is a quote.
+_ESCAPED = r"\\[^\"']"
+# Quotes, escaped or not, with more of the value after them: `abc\"def` is
+# one value. A quote closes the string the value sits in where nothing of the
+# value follows it (`{"note": "password=abc"}`), or where what follows is the
+# structure redact_body keeps at a value's end: a JSON key's `":`, or an XML
+# element's `/>` (`<Auth apikey=\"…\"/>` in a JSON string).
+_INNER_QUOTES = rf"(?:\\?[\"'])+(?!:|/>)(?={_PLAIN}|{_ESCAPED})"
+_VALUE_UNIT = rf"(?:{_PLAIN}|{_ESCAPED}|{_INNER_QUOTES})"
+# A value's first character: never a quote, which is the structure around a
+# value, nor an opening bracket: `{` and `[` open a container (JSON text the
+# key walk re-serialised), `[` also a label masking already wrote.
+_VALUE_START = rf"(?:[^{_VALUE_END}\"'\\\[{{(<]|{_ESCAPED})"
+_UNQUOTED_VALUE = rf"{_VALUE_START}{_VALUE_UNIT}*"
+
+
+def _quoted_body(quote: str) -> str:
+    """A quoted value's characters, up to the unescaped closing quote the named
+    group ``quote`` opened: escape-aware, so `ab\"cd` is one value."""
+    return rf"(?:(?!(?P={quote}))[^\\]|\\[\s\S])"
+
 
 # A value that is already a PII token (ptok:v1:…), which a key rule or an
 # earlier pass put there: masking it again would tokenize "ptok" and break it.
@@ -169,10 +198,7 @@ _CRED_VALUE = rf"[{_CRED_CHARS}]"
 # a sentence may go on after it: "password=ptok:v1:…." ends at the full stop.
 # Not one with a card-number run in it: that is `ptok:v1:` typed before a card
 # number, and the rule masks it as any other value (mask_by_field_type).
-_WHOLE_TOKEN = rf"(?-i:{_CARDLESS_TOKEN})(?=[.,;)]*(?![{_CRED_CHARS}:]))"
-# Any other value typed after "ptok:" is the credential, up to its end, colons
-# and all: "ptok:v1:hunter2" is one value. The characters after the prefix:
-_AFTER_PTOK = rf"[{_CRED_CHARS}:]"
+_WHOLE_TOKEN = rf"(?-i:{_CARDLESS_TOKEN})(?=\.*(?!{_VALUE_UNIT}))"
 
 # ISO country codes in the SWIFT IBAN registry, and the length of each one's
 # IBANs.
@@ -854,33 +880,52 @@ def _mask_pem(match: re.Match) -> str:
     return mask_by_field_type(stripped, "pem_key")
 
 
+def _mask_quoted(value: str, quote: str) -> str:
+    """A quoted credential value, masked as what it decodes to when it is a
+    JSON string with an escape in it -- so `{"password": "a\\"b"}` carries
+    the token `a"b` gets under the key. Written back as it was when masking
+    leaves it as it is: an escaped quote in a label would end the string."""
+    if quote == '"' and "\\" in value:
+        with contextlib.suppress(ValueError):
+            decoded = json.loads(f'"{value}"')
+            masked = mask_secret(decoded)
+            return value if masked == decoded else masked
+    return mask_secret(value)
+
+
 def _cred_quoted(m: re.Match) -> str:
-    q, kw, sep, val = m.group(1), m.group(2), m.group(3), m.group(4)
-    return f"{q}{kw}{q}{sep}{q}{mask_secret(val)}{q}"
+    q, kw, sep, val = m.group("q"), m.group("key"), m.group("sep"), m.group("value")
+    return f"{q}{kw}{q}{sep}{q}{_mask_quoted(val, q)}{q}"
 
 
 # Values a quoted key can hold that are literals, not text: JSON's and a
 # Python repr's. None of them is a secret.
 _LITERALS = frozenset({"null", "true", "false", "None", "True", "False"})
 _SEPARATOR = re.compile(r"[:=]")
+# The quote closing a key, JSON-escaped where the key sits in a JSON string.
+_KEY_QUOTE = re.compile(r"\\?[\"']")
 
 
 def _unquoted_value_quote(prefix: str) -> str:
     """The quote closing the key in ``prefix`` (key, separator, spacing) when
     the value after it is unquoted — JSON or a repr, whose text must stay
-    parseable once masked. Empty for ``key=value`` text, or when the value's
-    own opening quote is in the prefix."""
+    parseable once masked; escaped as the key's is (`{\\"api_key\\": 1}` in a
+    JSON string). Empty for ``key=value`` text, or when the value's own opening
+    quote is in the prefix."""
     separator = _SEPARATOR.search(prefix)
     if separator is None:
         return ""
     before, after = prefix[: separator.start()], prefix[separator.end() :]
     if any(q in after for q in "\"'"):
         return ""
-    return next((q for q in before if q in "\"'"), "")
+    quote = _KEY_QUOTE.search(before)
+    return quote.group() if quote else ""
 
 
 def _cred_kv(m: re.Match) -> str:
-    prefix, val = m.group(1), m.group(2)
+    prefix, val = m.group("prefix"), m.group("value")
+    if quote := m.group("quote"):
+        return f"{prefix}{_mask_quoted(val, quote)}"
     if quote := _unquoted_value_quote(prefix):
         if val in _LITERALS:
             return m.group(0)
@@ -1169,19 +1214,24 @@ _RULE_TABLE = (
         _mask_pem,
         _has_pem,
     ),
-    # 2. Credential — quoted key ("token": "abc123").
+    # 2. Credential — quoted key ("token": "abc123"), the value to its
+    # unescaped closing quote.
     _rule(
         "default",
-        rf"([\"'])({_CRED_KEYWORD})\1(\s*:\s*)\1([^\"']*)\1",
+        rf"(?P<q>[\"'])(?P<key>{_CRED_KEYWORD})(?P=q)(?P<sep>\s*:\s*)(?P=q)"
+        rf"(?P<value>{_quoted_body('q')}*)(?P=q)",
         _cred_quoted,
         _has_credential,
         _sub_near_credential_words,
     ),
-    # 3. Credential — ":" / "=" (secret_key=abc123).
+    # 3. Credential — ":" / "=" (secret_key=abc123). A value that opens with a
+    # quote a closing one matches runs to it (`quote`); any other, to its
+    # delimiter. The quotes around a JSON-escaped key are the key's.
     _rule(
         "default",
-        rf"\b({_CRED_KEYWORD}[\"'\s]*[:=][\"'\s]*)(?!{_WHOLE_TOKEN})"
-        rf"((?:ptok:{_AFTER_PTOK}+|{_CRED_VALUE}+)={{0,2}})",
+        rf"\b(?P<prefix>{_CRED_KEYWORD}(?:\\?[\"']|\s)*[:=]\s*"
+        rf"(?:(?P<quote>(?<!\\)[\"'])(?={_quoted_body('quote')}*(?P=quote))|\\?[\"'])?)"
+        rf"(?P<value>(?(quote){_quoted_body('quote')}*|(?!{_WHOLE_TOKEN}){_UNQUOTED_VALUE}))",
         _cred_kv,
         _has_credential,
         _sub_near_credential_words,
@@ -1215,12 +1265,12 @@ _RULE_TABLE = (
         _has_id,
     ),
     # 8. Credential — bare space (Bearer abc12345). A value of eight or more
-    # characters, "ptok:" counted among them (Bearer ptok:hunter2).
+    # characters with a digit among them, "ptok:" counted too (Bearer
+    # ptok:hunter2), to its delimiter.
     _rule(
         "default",
-        
-        rf"\b({_CRED_KEYWORD})\s+(?!{_WHOLE_TOKEN})(?=(?:ptok:{_AFTER_PTOK}*|{_CRED_VALUE}*)\d)"
-        rf"((?:ptok:{_AFTER_PTOK}{{3,}}|{_CRED_VALUE}{{8,}})={{0,2}})",
+        rf"\b({_CRED_KEYWORD})\s+(?!{_WHOLE_TOKEN})(?=(?:(?!\d){_VALUE_UNIT})*\d)"
+        rf"({_VALUE_START}{_VALUE_UNIT}{{7,}})",
         _cred_space,
         _has_credential,
         _sub_near_credential_words,
