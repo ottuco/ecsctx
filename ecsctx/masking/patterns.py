@@ -814,6 +814,26 @@ def _holds_a_written_run(text: str) -> bool:
     return any(sum(character.isdigit() for character in run) >= _MIN_PAN_DIGITS for run in _WRITTEN_RUN.findall(text))
 
 
+# A group of digits and stars, a truncation keeping one per digit; and a
+# truncation the card rule writes: the first six, stars and the last four of 15
+# digits or more, or eight stars or more and the last four (of fewer, or of one
+# whose stars run into an earlier truncation's).
+_MARK_GROUP = re.compile(r"[\d*]+")
+_WRITTEN_TRUNCATION = re.compile(r"\d{6}\*{5,}\d{4}|\*{8,}\d{4}")
+
+
+def _hides_as_truncations(masked: str) -> bool:
+    """Whether every group of digits and stars in ``masked`` that holds both
+    is a truncation the card rule writes. Another masker's `4508750****001019`
+    shows thirteen digits of seventeen, and `****1111 1234 5670` twelve of
+    sixteen."""
+    return all(
+        _WRITTEN_TRUNCATION.fullmatch(group)
+        for group in _MARK_GROUP.findall(masked)
+        if "*" in group and group.strip("*")
+    )
+
+
 def _overexposes_a_card(text: str, masked: str) -> bool:
     """Whether ``masked``, the card rule's output for ``text``, shows more than
     the first six and last four of a Luhn-valid reading of ``text``: any stretch
@@ -878,10 +898,22 @@ def mask_card_value(value) -> str:
         # before it count with them), or a Luhn-valid reading the rule leaves
         # in free text, showing more than its first six and last four.
         scanned = mask_by_patterns(text, _CARD_RULE_ONLY)
+        # This function's own output on a later pass -- the formatter's,
+        # redact_body's over a card param -- is a value the scan leaves as it
+        # is, holding a truncation the card rule writes. It is refused only for
+        # a run of card-number length, or for digits and stars in another
+        # shape (_hides_as_truncations), which the first pass refuses too, so
+        # each output is a fixed point. Its Luhn readings were judged by the
+        # pass that truncated it; read again, a truncation's last four join
+        # the digits after them into readings that pass never saw.
+        truncated_before = scanned == text and any(
+            _WRITTEN_TRUNCATION.fullmatch(group) for group in _MARK_GROUP.findall(text)
+        )
         if (
-            scanned != text
+            (scanned != text or truncated_before)
             and not _holds_a_written_run(_MASKED_REST.sub(" ", scanned))
-            and not _overexposes_a_card(text, scanned)
+            and (truncated_before or not _overexposes_a_card(text, scanned))
+            and (sum(character.isdigit() for character in scanned) < _MIN_PAN_DIGITS or _hides_as_truncations(scanned))
         ):
             return scanned
         # The scan found nothing to truncate, yet the value carries twelve or

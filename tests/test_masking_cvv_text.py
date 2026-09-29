@@ -19,7 +19,7 @@ import pytest
 
 from ecsctx.contrib.net import loggable_request_body, redact_body, redact_url
 from ecsctx.masking.filters import MaskPIIFilter
-from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
+from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, mask_card_value, rules_for
 from ecsctx.pii import configure_pii
 
 LABEL = "[CVV-MASKED]"
@@ -185,3 +185,60 @@ class TestACredentialKeywordThatNamesACvv:
     def test_the_key_walk_and_a_url_agree(self):
         assert MaskPIIFilter()._mask_dict({"cvv_token": "123"}) == {"cvv_token": LABEL}
         assert redact_url("https://h/p?cvv_token=123") == f"https://h/p?cvv_token={LABEL}"
+
+
+# What mask_card_value truncates and shows: a card number with digits around it
+# that make no other card number.
+CARD_VALUES = [
+    "26888535-1296-4273-8ba1-c634e90bf52fvpc",
+    "4111111111111111 12345678901",
+    "ref 4111111111111111 99 88 77",
+    # Read again, the last four and the group after them look like a card.
+    "512345000000000812-12345678901",
+    # Stars that show no more than a truncation it writes: none of the digits,
+    # or another masker's last four.
+    "**** 4111111111111111 12345678901",
+    "************1111 4111111111111111",
+]
+CARD_LABEL = "[CARD-MASKED]"
+# Digits and stars another masker left, showing digits a truncation of their
+# length hides -- more than the first six and last four -- with no run the scan
+# could truncate: refused, as 0.15.4 refused them.
+REFUSED_WITH_STARS = [
+    "4508750**0001019",
+    "4508750****001019",
+    "450875****0001019",
+    "4508750000****1019",
+    "1234567****1234567",
+    "450875****1019****1234",
+    "****1111 1234 5670",
+    # Beside a card number the scan truncates.
+    "4508750****001019 x 4111111111111111",
+]
+
+
+class TestACardKeysValueIsMaskedOnce:
+    """mask_card_value refused its own output: a value holding a truncation
+    beside other digits, twelve in all, was `[CARD-MASKED]` on the next pass
+    -- the formatter's, or redact_body's over a card param -- though the pass
+    before had judged the same digits safe to show."""
+
+    @pytest.mark.parametrize("value", CARD_VALUES)
+    def test_mask_card_value_is_a_fixed_point(self, value):
+        once = mask_card_value(value)
+        assert "*" in once
+        assert mask_card_value(once) == once
+
+    @pytest.mark.parametrize("value", CARD_VALUES)
+    def test_the_key_walk_twice_is_once(self, value):
+        once = MaskPIIFilter()._mask_dict({"card_number": value})
+        assert MaskPIIFilter()._mask_dict(once) == once
+
+    def test_a_card_param_in_a_body_twice_is_once(self):
+        once = redact_body(f"vpc_CardNum={CARD_VALUES[0]} x")
+        assert redact_body(once) == once
+
+    @pytest.mark.parametrize("value", REFUSED_WITH_STARS)
+    def test_digits_and_stars_another_masker_left_are_refused(self, value):
+        assert mask_card_value(value) == CARD_LABEL
+        assert MaskPIIFilter()._mask_dict({"card_number": value}) == {"card_number": CARD_LABEL}
