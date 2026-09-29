@@ -225,9 +225,11 @@ def _get_compiled() -> tuple:
     # "a\"b" and left the rest of the value in clear. Past any escaped
     # character, too, and to the end of the text when no quote closes it: a
     # body json.loads rejects -- a backslash before a line break, a body cut
-    # mid-value -- is exactly the one that reaches this rule as text.
+    # mid-value -- is exactly the one that reaches this rule as text. The
+    # closing quote is looked for, not taken: in `""password": "…"` it also
+    # opens the next key, whose value it hid.
     json_re = re.compile(
-        r'("(?:' + "|".join(keys) + r')"\s*:\s*)"([^"\\]*(?:\\[\s\S][^"\\]*)*\\?)(?:"|\Z)',
+        r'("(?:' + "|".join(keys) + r')"\s*:\s*)"([^"\\]*(?:\\[\s\S][^"\\]*)*\\?)(?="|\Z)',
         re.IGNORECASE,
     )
     # access_token=...  ->  access_token=<masked>  (form-encoded bodies)
@@ -330,7 +332,11 @@ def _mask_json_value(match: re.Match) -> str:
         value = json.loads(f'"{raw}"')
     except ValueError:
         value = raw  # an escape JSON does not know: masked as it is written
-    return match.group(1) + json.dumps(mask_secret(value))
+    masked = json.dumps(mask_secret(value))
+    if match.end() < len(match.string):
+        # The value's closing quote is still in the text: write only the rest.
+        masked = masked[:-1]
+    return match.group(1) + masked
 
 
 def _mask_form_value(match: re.Match) -> str:

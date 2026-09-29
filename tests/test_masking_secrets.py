@@ -396,3 +396,32 @@ class TestAJsonValueTheParserRejects:
     @pytest.mark.parametrize("value", CARD_SHAPED)
     def test_a_card_number_cut_before_its_closing_quote_is_the_label(self, value):
         assert redact_body(f'{{"password": "{value}') == f'{{"password": "{LABEL}"'
+
+
+class TestAdjacentJsonMembers:
+    """Malformed JSON with no separator between two members, where one quote
+    both closes a value and opens the next key: consumed with the first
+    value, it hid the next key, whose value shipped in clear."""
+
+    def test_the_next_value_is_masked_too(self):
+        masked = redact_body('{"password": ""password": "hunter2"}')
+        assert masked == f'{{"password": ""password": "{token_or_label("hunter2")}"}}'
+        assert redact_body(masked) == masked
+
+    def test_masked_twice_it_is_masked_once(self):
+        # A randomized check's counterexample: the first pass left the second
+        # value in clear, and the second pass, no longer blind to it, masked it.
+        body = '#password=#password=[SECRET-MASKED]"password": ""password": "\\ \\\'[REDACTED]}\']}'
+        once = redact_body(body)
+        assert "[REDACTED]}" not in once
+        assert redact_body(once) == once
+
+    def test_a_well_formed_body_keeps_one_closing_quote_per_value(self):
+        body = '{"password": "abc", "client_secret": "", "nested": {"api_key": "k-1"}, "status": "ok"}'
+        masked = redact_body(body)
+        assert masked == (
+            f'{{"password": "{token_or_label("abc")}", "client_secret": "", '
+            f'"nested": {{"api_key": "{token_or_label("k-1")}"}}, "status": "ok"}}'
+        )
+        assert json.loads(masked)
+        assert redact_body(masked) == masked

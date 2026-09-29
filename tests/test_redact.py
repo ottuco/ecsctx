@@ -149,6 +149,14 @@ class TestRedactBody:
         assert redact_body(body) == masked
         assert redact_body(masked) == masked
 
+    def test_a_quote_that_closes_a_value_and_opens_the_next_key_serves_both(self):
+        # Malformed JSON with no separator between members: consumed with the
+        # empty value, the quote hid the next key, and its value shipped in
+        # clear, as it did in 0.15.3.
+        masked = redact_body('{"password": ""password": "hunter2"}')
+        assert masked == '{"password": ""password": "[SECRET-MASKED]"}'
+        assert redact_body(masked) == masked
+
 
 class TestLoggableBody:
     def test_non_textual_body_is_omitted(self):
