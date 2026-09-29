@@ -425,3 +425,31 @@ class TestAdjacentJsonMembers:
         )
         assert json.loads(masked)
         assert redact_body(masked) == masked
+
+
+# What masking itself wrote, in quotes: the credential text rule keeps a
+# value's quotes around its label (`password="[SECRET-MASKED]"`), and a JSON
+# string escapes them.
+QUOTED_MARKERS = ['"[SECRET-MASKED]"', "'[SECRET-MASKED]'", '"411111******1111"', '" [CARD-MASKED] "']
+
+
+class TestAMarkerInQuotesIsMaskedAlready:
+    """Masked already once its quotes are dropped, a value is left as it is:
+    hashed, every one of them would be one token shared by every record."""
+
+    @pytest.mark.parametrize("value", QUOTED_MARKERS)
+    def test_mask_secret(self, value):
+        assert mask_secret(value) == value
+
+    def test_mask_secret_on_a_quoted_token(self):
+        value = f'"{token_or_label(SECRET)}"'
+        assert mask_secret(value) == value
+
+    @pytest.mark.parametrize("value", QUOTED_MARKERS)
+    def test_the_key_walk(self, value):
+        assert _walk({"password": value})["password"] == value
+
+    @pytest.mark.parametrize("value", QUOTED_MARKERS)
+    def test_a_json_body(self, value):
+        body = json.dumps({"password": value, "status": "ok"})
+        assert redact_body(body) == body

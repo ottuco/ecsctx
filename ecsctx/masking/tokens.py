@@ -117,6 +117,11 @@ def mask_by_field_type(value: str, field_type: str) -> str:
         # whitespace and one layer of matching quotes first, so '"4111…"'
         # was a keyed hash of the bare card number.
         bare = normalize_value(value, "secret")
+        if already_masked(bare):
+            # Masking's own output in quotes (the credential text rule keeps
+            # a value's quotes around its label): hashed, every such label
+            # would be one token shared by every record.
+            return value
         if pan_shaped(bare) or _PLACEHOLDER.fullmatch(bare):
             return f"[{label}]"
     token = safe_tokenize(value, field_rule.field_type)
