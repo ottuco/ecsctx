@@ -1055,6 +1055,9 @@ class TestAUrlsUserinfoAndFragmentInRedactUrl:
             "https://user@api.host.example/v1/pay",
             "https://key:@api.host/",
             "https://h/cb#access_token=abc123&state=xyz",
+            # A token before a fragment: a whole token, not one run on into it.
+            "https://h/cb?password=x1#access_token=abc123",
+            "https://h/cb?password=x1#section",
         ],
     )
     def test_masked_twice_or_by_the_text_rules_it_is_masked_once(self, url):

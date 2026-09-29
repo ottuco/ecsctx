@@ -231,8 +231,10 @@ def _quoted_body(quote: str) -> str:
 # Only the exact shape, all of it (case-sensitive, as ecsctx emits it), though
 # a sentence may go on after it: "password=ptok:v1:…." ends at the full stop.
 # Not one with a card-number run in it: that is `ptok:v1:` typed before a card
-# number, and the rule masks it as any other value (mask_by_field_type).
-_WHOLE_TOKEN = rf"(?-i:{_CARDLESS_TOKEN})(?=\.*(?!{_VALUE_UNIT}))"
+# number, and the rule masks it as any other value (mask_by_field_type). A `#`
+# after it opens a URL's fragment (redact_url's `?password=<token>#…`): `#` is
+# part of a value, but read on into the fragment the token was hashed again.
+_WHOLE_TOKEN = rf"(?-i:{_CARDLESS_TOKEN})(?=\.*(?:#|(?!{_VALUE_UNIT})))"
 
 # ISO country codes in the SWIFT IBAN registry, and the length of each one's
 # IBANs.
