@@ -58,6 +58,13 @@ KEYED = [
     ("cvv=482912", "cvv=[CVV-MASKED]"),
     ("cvv=123abc&x=1", "cvv=[CVV-MASKED]&x=1"),
     ('{"cvv": "4829 12"}', '{"cvv": "[CVV-MASKED]"}'),
+    # camelCase, glued to a word other than "card", as the key rule reads it.
+    ("paymentCvv=123", "paymentCvv=[CVV-MASKED]"),
+    ("savedCardCvv: 123", "savedCardCvv: [CVV-MASKED]"),
+    ("paymentSecurityCode=123", "paymentSecurityCode=[CVV-MASKED]"),
+    ("newCvv=123", "newCvv=[CVV-MASKED]"),
+    ('{"newCvv2": "123"}', '{"newCvv2": "[CVV-MASKED]"}'),
+    ("storedCardCode 1234", "storedCardCode [CVV-MASKED]"),
 ]
 # Named about a CVV, not one: or not a CVV's value.
 LEFT_ALONE = [
@@ -69,6 +76,9 @@ LEFT_ALONE = [
     "cvv: required",
     "cvv=12",
     "discard code=1234",
+    "paymentCvvResult=1234",
+    "newCvvRequired=123",
+    "RECVV=123",
 ]
 
 

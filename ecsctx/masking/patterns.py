@@ -158,12 +158,14 @@ _CRED_KEYWORD = rf"(?:{_AUTH_KEYWORD}|{_OTHER_CRED_KEYWORD})"
 # thing under different names depending on card scheme/vendor terminology. The
 # key rule's words (_is_cvv_key): cvv, cvc, cvn, cvd and their "2"s, csc, cav2,
 # security code, verification value, card code, cv number; glued to "card"
-# (`cardCvv`, `CardSecurityCode`) or after a prefix ending in `_` or `-`
-# (`vpc_CardSecurityCode`, `x-cvv`), where `\b` cannot find the word. The rules
-# need the keyword to end the key, so `cvv_required=true` names something
-# about one and is left alone.
+# (`cardCvv`, `CardSecurityCode`), after a prefix ending in `_` or `-`
+# (`vpc_CardSecurityCode`, `x-cvv`), or after a camelCase word (`paymentCvv`,
+# `savedCardCvv`: a lower-case letter or digit, then the keyword's capital,
+# case-sensitive), where `\b` cannot find the word. The rules need the keyword
+# to end the key, so `cvv_required=true` names something about one and is left
+# alone.
 _CVV_KEYWORD = (
-    r"(?:[\w-]{0,64}[_-])?(?:card[-_]?)?"
+    r"(?:[\w-]{0,64}[_-]|(?-i:[A-Za-z0-9]{0,63}[a-z0-9](?=[A-Z])))?(?:card[-_]?)?"
     r"(?:cv[vcnd]2?|csc|cav2|security[-_.\s]?code|verification[-_.\s]?value|card[-_.\s]?code|cv[-_.\s]?number)"
 )
 
@@ -1259,7 +1261,7 @@ def _cvv_word_starts(lowered: str) -> list[int]:
 # bounded key prefix (128), its separator, and rule 2's opening quote.
 _CRED_REACH = 130
 # ...and a CVV match before its CVV word: the bounded key prefix (64) and its
-# separator, `card_`, and rule 4's opening quote.
+# separator, or a camelCase word (64), `card_`, and rule 4's opening quote.
 _CVV_REACH = 72
 
 

@@ -847,7 +847,7 @@ receives the CVV a saved-card payment sends, so the keyed CVV rules are
 
 | Pack | Content rules | On by default |
 |------|---------------|---------------|
-| `default` | PEM keys, credentials (`token=…`, `"secret": …`, `Bearer …`), keyed CVV (`cvv=123`, `"securityCode": "123"`, `CVV 123`, `vpc_CardSecurityCode=123`), a URL's userinfo, phone numbers, emails, JWTs | always |
+| `default` | PEM keys, credentials (`token=…`, `"secret": …`, `Bearer …`), keyed CVV (`cvv=123`, `"securityCode": "123"`, `CVV 123`, `vpc_CardSecurityCode=123`, `paymentCvv=123`), a URL's userinfo, phone numbers, emails, JWTs | always |
 | `pci` | PANs (truncated), bare 3–4 digit CVV groups beside card context | no |
 | `financial_ids` | IBANs, SSNs, payment/transaction/auth ids (content and key names) | no |
 
