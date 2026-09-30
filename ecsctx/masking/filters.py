@@ -41,14 +41,10 @@ from ecsctx.masking.patterns import (
     _SAFE_KEYS_JOINED,
     ALL_PACKS,
     SAFE_KEYS,
-    WALLET_LABEL,
     _joined_names,
     classify_key,
     holds_pan_run,
-    holds_wallet,
     int_is_pan,
-    is_wallet_text,
-    is_wallet_token,
     known_clean,
     mask_by_patterns,
     mask_card_value,
@@ -57,8 +53,10 @@ from ecsctx.masking.patterns import (
     pan_shaped,
     rules_for,
     scalar_rules,
+    value_rules_in_force,
 )
 from ecsctx.masking.tokens import make_label, mask_by_field_type
+from ecsctx.masking.value_rules import label_of, label_within, text_label
 
 _IS_MASKED_ = "_IS_MASKED_"
 
@@ -140,6 +138,19 @@ class _Pass(NamedTuple):
     rules: tuple
     exempt: tuple
     safe: frozenset[str]  # the service's own safe keys (ECSCTX_MASK_SAFE_KEYS)
+    # The value rules in force (ECSCTX_MASK_VALUE_RULES), looked up the first
+    # time a mapping or JSON text asks, at most once a call: `[None]` until
+    # then. None looks them up at every ask.
+    values: list | None = None
+
+
+def _value_rules(ctx: _Pass) -> tuple:
+    cell = ctx.values
+    if cell is None:
+        return value_rules_in_force()
+    if cell[0] is None:
+        cell[0] = value_rules_in_force()
+    return cell[0]
 
 
 # Walked though not exemptable: a card object, and a credential, CVV or SAD key
@@ -487,17 +498,22 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
 
 
 # What JSON text can start with: nearly every string starts with something
-# else, and is no wallet token.
+# else, and no value rule is asked about it.
 _JSON_STARTS = frozenset("{[ \t\r\n")
 
 
-def _is_wallet(value: Any) -> bool:
-    """A wallet token's payment data, as a mapping or as JSON text: the SAD
-    label under any key (patterns.is_wallet_token)."""
+def _value_label(value: Any, ctx: _Pass) -> str | None:
+    """The label of a value a value rule in force matches, as a mapping or as
+    JSON text (value_rules): under any key, a credential's or a card's
+    included, never hashed, never shown."""
     kind = type(value)
     if kind is dict:
-        return is_wallet_token(value)
-    return kind is str and value[:1] in _JSON_STARTS and is_wallet_text(value)
+        rules = _value_rules(ctx)
+        return label_of(value, rules) if rules else None
+    if kind is str and value[:1] in _JSON_STARTS:
+        rules = _value_rules(ctx)
+        return text_label(value, rules) if rules else None
+    return None
 
 
 def _mask_card_list_element(value: Any) -> Any:
@@ -557,7 +573,7 @@ class MaskPIIFilter(logging.Filter):
         packs in force (config.call_packs), so the card check
         mask_by_field_type makes follows them as well as the process's."""
         packs = self._packs_in_force()
-        return _Pass(packs, rules_for(packs), _get_exempt_patterns(), get_masking_safe_keys())
+        return _Pass(packs, rules_for(packs), _get_exempt_patterns(), get_masking_safe_keys(), [None])
 
     def _mask_string(self, text: str, ctx: _Pass | None = None, *, scalar: bool = False) -> str:
         # No already_masked() early-exit here: that helper is a whole-string
@@ -604,10 +620,10 @@ class MaskPIIFilter(logging.Filter):
             if path == () and key in self._skip_keys:
                 result[key] = self._mask_skipped(key, value, ctx)
                 continue
-            if _is_wallet(value):
+            if (label := _value_label(value, ctx)) is not None:
                 # Under any key, a credential's or a card's included: never
                 # hashed, never shown.
-                result[key] = WALLET_LABEL
+                result[key] = label
                 continue
             if isinstance(value, bool):
                 # One bit: never PII, SAD or a credential, whatever its key or
@@ -691,10 +707,15 @@ class MaskPIIFilter(logging.Filter):
                 # Never below a card, credential, CVV or SAD container: a broad
                 # exempt prefix must not expose `…token.name_on_card`.
                 result[key] = self._mask_value(value, child_path, ctx)
-            elif isinstance(value, str) and value[:1] in _JSON_STARTS and holds_wallet(value):
-                # JSON text holding a wallet token deeper, under a key that
-                # would hash it whole or show it: the label.
-                result[key] = WALLET_LABEL
+            elif (
+                isinstance(value, str)
+                and value[:1] in _JSON_STARTS
+                and (rules := _value_rules(ctx))
+                and (label := label_within(value, rules)) is not None
+            ):
+                # JSON text holding a value a rule matches deeper, under a key
+                # that would hash it whole or show it: the label.
+                result[key] = label
             elif field_type == "card" and not isinstance(value, _CONTAINERS):
                 result[key] = mask_card_value(value)
             elif (field_rule.exemptable or field_type in _WALKED_TYPES) and isinstance(
@@ -776,12 +797,16 @@ class MaskPIIFilter(logging.Filter):
         if verbatim_digits and _is_reference_number(value):
             return value
         # The two exact types nearly every value is, first: this runs for
-        # every value of every record. Each is a wallet token's payment data
-        # before anything else reads it (`_is_wallet`, spelled out here).
+        # every value of every record. Each is a value rule's label before
+        # anything else reads it (`_value_label`, spelled out here).
         kind = type(value)
         if kind is str:
-            if value[:1] in _JSON_STARTS and is_wallet_text(value):
-                return WALLET_LABEL
+            if (
+                value[:1] in _JSON_STARTS
+                and (rules := _value_rules(ctx))
+                and (label := text_label(value, rules)) is not None
+            ):
+                return label
             if inherited == "card":
                 return _mask_card_list_element(value)
             if inherited is not None:
@@ -792,8 +817,8 @@ class MaskPIIFilter(logging.Filter):
             # is a field value, and its key has already had its say.
             return self._mask_string(value, ctx, scalar=path != ())
         if kind is dict:
-            if is_wallet_token(value):
-                return WALLET_LABEL
+            if (rules := _value_rules(ctx)) and (label := label_of(value, rules)) is not None:
+                return label
             return self._mask_dict(value, path, ctx, inherited)
         if isinstance(value, dict):
             return self._mask_dict(value, path, ctx, inherited)

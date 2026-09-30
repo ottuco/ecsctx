@@ -51,6 +51,7 @@ from ecsctx.masking.tokens import (
     make_label,
     mask_by_field_type,
 )
+from ecsctx.masking.value_rules import ValueRule, hinted, label_of
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -1064,22 +1065,18 @@ def _mask_userinfo(userinfo: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Wallet tokens
+# Value rules in text
 # ---------------------------------------------------------------------------
-# An Apple Pay or Google Pay token carries the device card number and the
-# payment cryptogram, encrypted: Sensitive Authentication Data, never hashed,
-# the same label in every pack. Found by shape, never by a key name, so an
-# unrelated `paymentData` reads through and a token under any key is caught.
-WALLET_LABEL = f"[{make_label('sad')}]"
-# Apple Pay's PKPaymentToken `paymentData`: its `version`, and the encrypted
-# `data`. Its `signature` and `header` are useless without `data`, so the
-# whole object is the label.
+# A JSON object written in text -- JSON, a Python repr, or JSON in a JSON
+# string -- is asked of the value rules in force (value_rules), and one a rule
+# matches is that rule's label, never a token. Nothing configured, nothing
+# runs.
+
+# The wallet shapes, until they move out of core: an Apple Pay token's
+# `paymentData` (`version` EC_v1 or RSA_v1, with the encrypted `data`) and a
+# Google Pay payment method token (`protocolVersion`, with `signedMessage`).
 _APPLE_PAY_VERSIONS = frozenset({"EC_v1", "RSA_v1"})
-# Google Pay's payment method token: its `protocolVersion` and the
-# `signedMessage` holding the encrypted payload.
 _GOOGLE_PAY_VERSIONS = frozenset({"ECv1", "ECv2", "ECv2SigningOnly"})
-# Every token names one of those versions: text without one holds none.
-_WALLET_VERSION = re.compile(r"EC_v1|RSA_v1|ECv[12]")
 
 
 def is_wallet_token(value: Any) -> bool:
@@ -1093,111 +1090,102 @@ def is_wallet_token(value: Any) -> bool:
     return isinstance(protocol, str) and protocol in _GOOGLE_PAY_VERSIONS and "signedMessage" in value
 
 
-def _wallet_json(text: str) -> Any:
-    """``text`` parsed, when it is a JSON object or list naming a wallet
-    version -- None otherwise. Cheap for every other string: most do not
-    start with a bracket."""
-    first = text[:1]
-    if first.isspace():
-        first = text.lstrip()[:1]
-    if first not in ("{", "[") or _WALLET_VERSION.search(text) is None:
-        return None
-    try:
-        return json.loads(text)
-    except (ValueError, RecursionError):
-        return None
+_BUILT_IN_VALUE_RULES = (ValueRule("sad", is_wallet_token, hints=("EC_v1", "RSA_v1", "ECv1", "ECv2")),)
 
 
-def is_wallet_text(text: str) -> bool:
-    """Whether ``text`` is a wallet token as JSON: MPGS's `paymentToken`,
-    Google Pay's `tokenizationData.token`."""
-    return is_wallet_token(_wallet_json(text))
+def value_rules_in_force() -> tuple:
+    """The value rules masking asks: the service's (config's
+    ``ECSCTX_MASK_VALUE_RULES``). Imported here: config imports this module
+    as it loads."""
+    from ecsctx.masking.config import get_masking_value_rules
+
+    return _BUILT_IN_VALUE_RULES + get_masking_value_rules()
 
 
-def holds_wallet(value: Any, depth: int = 0) -> bool:
-    """Whether a wallet token is anywhere in ``value``: a mapping, a list, or
-    JSON text, however deep."""
-    if depth > 64:
-        return False
-    if isinstance(value, dict):
-        return is_wallet_token(value) or any(holds_wallet(item, depth + 1) for item in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(holds_wallet(item, depth + 1) for item in value)
-    if isinstance(value, str):
-        parsed = _wallet_json(value)
-        return parsed is not None and holds_wallet(parsed, depth + 1)
-    return False
-
-
-def _wallet_object(quote: str, string: str, space: str, character: str) -> str:
-    """A wallet token as an object in text, its version and payload among its
-    own members. A member's value is a string, a scalar, or an object or list
-    holding strings, anything but a bracket, and one more level of either:
-    Google Pay's signing key holds a list, and that is as deep as either
-    token goes. Every alternative starts on a character of its own and no
-    loop takes a closing bracket, so a failed match never backtracks into
-    another reading."""
+def _json_object(string: str, space: str, character: str) -> str:
+    """A JSON object as text: members whose value is a string, a scalar, or
+    an object or list holding strings, anything but a bracket, and one more
+    level of either -- as deep as an object a rule is asked about goes; a
+    deeper one is read from inside. Every alternative starts on a character
+    of its own and no loop takes a closing bracket, so a failed match never
+    backtracks into another reading."""
     flat = rf"(?:{string}|{character})*"
     nested = rf"(?:{string}|{character}|\{{{flat}\}}|\[{flat}\])*"
     value = rf"(?:{string}|[-+.\w]+|\{{{nested}\}}|\[{nested}\])"
     member = rf"{string}{space}:{space}{value}"
-
-    def among_members(key: str) -> str:
-        return rf"(?={space}(?:{member}{space},{space})*{quote}{key}{quote}{space}:)"
-
-    def version(key: str, versions: str) -> str:
-        return (
-            rf"(?={space}(?:{member}{space},{space})*{quote}{key}{quote}{space}:{space}"
-            rf"{quote}(?:{versions}){quote}{space}[,}}])"
-        )
-
-    apple = version("version", "EC_v1|RSA_v1") + among_members("data")
-    google = version("protocolVersion", "ECv1|ECv2|ECv2SigningOnly") + among_members("signedMessage")
-    return rf"\{{(?:{apple}|{google}){space}{member}(?:{space},{space}{member})*{space}\}}"
+    return rf"\{{{space}{member}(?:{space},{space}{member})*{space}\}}"
 
 
 # As written: JSON, or a Python repr's quotes. Escaped: JSON in a JSON string
 # (MPGS's `paymentToken`), its quotes `\"`, a pretty-printed one's line breaks
 # `\n`. Compiled once, as rule 2.
-_WALLET_TEXT = (
-    # Case-sensitive, as the versions and keys are: the rules compile with
-    # IGNORECASE, and the key walk reads them exactly.
-    "(?-i:(?P<plain>"
-    + _wallet_object(
-        "[\"']",
+_OBJECT_TEXT = (
+    "(?P<plain>"
+    + _json_object(
         r"(?:\"(?:[^\"\\]|\\[\s\S])*\"|'(?:[^'\\]|\\[\s\S])*')",
         r"\s*",
         r"[^{}\[\]\"']",
     )
     + ")|(?P<escaped>"
-    + _wallet_object(
-        r'\\"',
+    + _json_object(
         rf'\\"{_ESCAPED_QUOTED_UNIT}*\\"',
         r"(?:\s|\\[nrt])*",
         r'(?!\\")[^{}\[\]"]',
     )
-    + "))"
+    + ")"
 )
 
 
-def _wallet(m: re.Match) -> str:
-    """The label where the token stood: a JSON string where it was a JSON
-    value (after `:`, `,` or `[`), escaped where that JSON is itself in a
-    string; bare anywhere else -- in prose, an element's text, a string of its
-    own."""
+def _object_value(m: re.Match) -> Any:
+    """The object a match wrote, parsed: JSON, a Python repr, or JSON in a
+    JSON string as it decodes. None where it does not parse."""
+    written = m.group(0)
+    if m.group("plain") is None:
+        try:
+            return json.loads(json.loads(f'"{written}"'))
+        except (ValueError, RecursionError):
+            return None
+    try:
+        return json.loads(written)
+    except (ValueError, RecursionError):
+        pass
+    try:
+        return ast.literal_eval(written)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return None
+
+
+def _mask_object(m: re.Match, rules: tuple) -> str:
+    """The label where an object a rule matches stood: a JSON string where it
+    was a JSON value (after `:`, `,` or `[`), escaped where that JSON is
+    itself in a string; bare anywhere else -- in prose, an element's text, a
+    string of its own. An object no rule matches is read member by member,
+    so one inside it is still found."""
+    written = m.group(0)
+    label = label_of(_object_value(m), rules)
+    if label is None:
+        inner = mask_objects(written[1:-1], rules)
+        return written if inner == written[1:-1] else f"{{{inner}}}"
     text, position = m.string, m.start() - 1
     while position >= 0 and text[position].isspace():
         position -= 1
     if position < 0 or text[position] not in ":,[":
-        return WALLET_LABEL
+        return label
     quote = '"' if m.group("plain") is not None else '\\"'
-    return f"{quote}{WALLET_LABEL}{quote}"
+    return f"{quote}{label}{quote}"
 
 
-def mask_wallets(text: str) -> str:
-    """Each wallet token in ``text`` as the label: the wallet rule alone, for
-    ``contrib.net.redact_body``."""
-    return _WALLET_RULE.pattern.sub(_wallet, text) if _WALLET_VERSION.search(text) else text
+def _value_object(m: re.Match) -> str:
+    rules = value_rules_in_force()
+    return _mask_object(m, rules) if rules else m.group(0)
+
+
+def mask_objects(text: str, rules: tuple) -> str:
+    """Each JSON object written in ``text`` that one of ``rules`` matches, as
+    its label: rule 2 alone, for ``contrib.net.redact_body``."""
+    if not rules or "{" not in text or not hinted(text, rules):
+        return text
+    return _OBJECT_RULE.pattern.sub(lambda m: _mask_object(m, rules), text)
 
 
 def _mask_pem(match: re.Match) -> str:
@@ -1748,8 +1736,8 @@ def _has_credential(_text: str, lowered: str) -> bool:
     return any(word in lowered for word in _CRED_LITERALS)
 
 
-def _has_wallet_version(text: str, _lowered: str) -> bool:
-    return _WALLET_VERSION.search(text) is not None
+def _has_value_object(text: str, _lowered: str) -> bool:
+    return "{" in text and bool(rules := value_rules_in_force()) and hinted(text, rules)
 
 
 def _has_credential_container(text: str, lowered: str) -> bool:
@@ -1961,8 +1949,9 @@ def _rule(pack, regex, repl, gate, scan=None, prose_only=False):
 #   9. The XML credential element before the other credential rules — they
 #      would mask a `password=`, `"token": …` or `Bearer x` inside its text
 #      first, and the element's value, holding their token, was hashed again.
-#  10. The wallet rule before every credential rule, the XML one included —
-#      a token under `"token": …` or in `<password>` was hashed whole.
+#  10. The value rule before every credential rule, the XML one included —
+#      a value a rule matches under `"token": …` or in `<password>` was
+#      hashed whole.
 #  11. The `API-Key` scheme before the `key=value` credential rule — that
 #      would mask a `password=` inside its value first, which it never does
 #      after `Authorization:`, and the two forms would carry different tokens.
@@ -1980,16 +1969,17 @@ _RULE_TABLE = (
         _mask_pem,
         _has_pem,
     ),
-    # 2. Wallet token — an Apple Pay or Google Pay token's payment data as
-    # JSON in text (`_WALLET_TEXT`: an object whose own members name the
-    # version and carry the payload), or JSON in a JSON string: the SAD label,
-    # never a token, in every pack. Before the credential rules, which would
-    # hash one under `"token": …` first.
+    # 2. Value rules — a JSON object in text, or in a JSON string, that a
+    # value rule in force matches (`value_rules`, ECSCTX_MASK_VALUE_RULES):
+    # the rule's label, never a token, in every pack. Nothing configured,
+    # nothing runs; text holding none of the rules' hints is never parsed.
+    # Before the credential rules, which would hash one under `"token": …`
+    # first.
     _rule(
         "default",
-        _WALLET_TEXT,
-        _wallet,
-        _has_wallet_version,
+        _OBJECT_TEXT,
+        _value_object,
+        _has_value_object,
     ),
     # 3. Card, CVV and SAD — an XML element named as the key walk names one
     # (<cvv>123</cvv>, <ns2:CardSecurityCode>…</ns2:CardSecurityCode>,
@@ -2255,8 +2245,8 @@ RULES: tuple[Rule, ...] = tuple(
 )
 
 
-# The wallet rule, for mask_wallets.
-_WALLET_RULE = next(rule for rule in RULES if rule.repl is _wallet)
+# The value rule, for mask_objects.
+_OBJECT_RULE = next(rule for rule in RULES if rule.repl is _value_object)
 
 
 # Just the card rule, for mask_card_value: the value already has a card key

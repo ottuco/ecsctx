@@ -44,8 +44,9 @@ from ecsctx.masking.patterns import (
     _mask_userinfo,
     holds_pan_run,
     mask_card_elements,
+    mask_objects,
     mask_secret,
-    mask_wallets,
+    value_rules_in_force,
 )
 from ecsctx.masking.tokens import _MASKED_VALUE, _PLACEHOLDER, make_label
 
@@ -408,11 +409,12 @@ def redact_body(text: str) -> str:
     JSON or XML written with entities goes through these rules as it
     decodes, and is written back escaped.
 
-    A wallet token -- an Apple Pay or Google Pay token's payment data, as
-    JSON anywhere in the body or as JSON in a JSON string -- is
-    ``[SAD-MASKED]`` first, before a credential's rule could hash it.
+    A value a value rule in force matches (``ECSCTX_MASK_VALUE_RULES``), as
+    JSON anywhere in the body or as JSON in a JSON string, is the rule's
+    label first, before a credential's rule could hash it.
     """
-    text = mask_wallets(text)
+    if "{" in text and (rules := value_rules_in_force()):
+        text = mask_objects(text, rules)
     if "<" in text:
         text = _mask_xml_elements(text)
     if "=" in text:

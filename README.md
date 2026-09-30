@@ -1345,6 +1345,50 @@ from ecsctx.contrib.ottu.masking import SAFE_KEYS as OTTU_SAFE_KEYS
 ECSCTX_MASK_SAFE_KEYS = [*OTTU_SAFE_KEYS]
 ```
 
+### Value rules (a service's own shapes)
+
+Some values are known by their shape rather than by the key they sit under —
+a payment method's encrypted token, say — and which shapes those are is a
+service's to say: ecsctx names none. A service lists its value rules, and the
+engine asks them about every mapping the key walk meets (under any key), every
+string that is JSON text, and every JSON object written in free text or in a
+body `redact_body` masks, JSON in an XML element's text included. A matching
+value becomes the rule's label, in every pack: never hashed, and left as it is
+by a later pass. With none configured, none of this runs.
+
+A rule is any object with a `field_type` (the label it becomes: `"sad"` is
+`[SAD-MASKED]`), `matches(value)` — called with a mapping, JSON text parsed
+once — and, optionally, `hints`: literal strings a matching value's text holds
+at least one of, so text holding none is never parsed to ask. `ValueRule` is
+one:
+
+```python
+from ecsctx.masking import ValueRule
+
+def is_vault_blob(value):
+    return value.get("kind") == "vault-blob" and "payload" in value
+
+VAULT_BLOB = ValueRule("sad", is_vault_blob, hints=("vault-blob",))
+```
+
+```python
+# 1. Django settings.py: rule objects, or dotted paths to a rule or to a collection of them
+ECSCTX_MASK_VALUE_RULES = ["myservice.masking.VAULT_BLOB"]
+
+# 2. Env var, comma-separated dotted paths
+#    ECSCTX_MASK_VALUE_RULES="myservice.masking.VAULT_BLOB"
+
+# 3. Programmatic, at startup (wins over both)
+from ecsctx.masking import configure_masking_value_rules
+configure_masking_value_rules([VAULT_BLOB])
+```
+
+An item that does not import or is not a rule makes
+`configure_masking_value_rules` raise; from the setting or env var it is
+dropped with a warning and fails the Django boot check, and the others still
+apply. A rule that raises leaves the record as `[MASKING-FAILED: …]`, never
+an exception out of the log call.
+
 ### Path exemptions
 
 Some non-PII fields share a name with a sensitive key — e.g. a payment catalog's `payment_methods[*].name` ("KNET") would otherwise be tokenized. The whitelist above is key-name based and global; for finer control, exempt specific **JSON paths** from key-based tokenization. (Email/phone scrubbing still runs on exempted paths, so a real email never slips through.)

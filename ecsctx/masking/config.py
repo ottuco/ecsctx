@@ -14,7 +14,10 @@ masking is not something a service can ask for by listing other packs.
 A service's own safe key names (``ECSCTX_MASK_SAFE_KEYS``) resolve the same
 way: ``configure_masking_safe_keys()``, else the Django setting, else the
 environment variable, else none. They extend ``patterns.SAFE_KEYS``, which holds
-only names that mean the same in every service.
+only names that mean the same in every service. So do its value rules
+(``ECSCTX_MASK_VALUE_RULES``, ``ecsctx.masking.value_rules``): rule objects or
+dotted import paths, ``configure_masking_value_rules()`` first; the environment
+variable names import paths, comma-separated.
 
 The Django setting is read lazily, at log time, because logging is configured
 while settings are still being imported. Until settings are configured the
@@ -31,15 +34,19 @@ from contextvars import ContextVar
 from functools import lru_cache
 
 from ecsctx.masking.patterns import ALL_PACKS, classify_key, never_safe
+from ecsctx.masking.value_rules import load_value_rules
 
 _ENV_VAR = "ECSCTX_MASKING_PACKS"
 _SAFE_KEYS_VAR = "ECSCTX_MASK_SAFE_KEYS"
+_VALUE_RULES_VAR = "ECSCTX_MASK_VALUE_RULES"
 _ALWAYS = frozenset({"default"})
 
 _explicit: frozenset[str] | None = None
 _resolved: frozenset[str] | None = None
 _explicit_safe: frozenset[str] | None = None
 _resolved_safe: frozenset[str] | None = None
+_explicit_rules: tuple | None = None
+_resolved_rules: tuple | None = None
 _warned: set[str] = set()
 
 
@@ -267,6 +274,58 @@ def get_masking_safe_keys() -> frozenset[str]:
     return names
 
 
+# Until Django settings are configured nothing is cached, and every lookup
+# reads the env var again: remember what each env value imports.
+_loaded_env_rules = lru_cache(maxsize=8)(load_value_rules)
+
+
+def configure_masking_value_rules(rules: Iterable | str | None) -> None:
+    """The value rules this service masks by shape, wherever they are logged
+    (``ecsctx.masking.value_rules``): rule objects, or dotted import paths to
+    a rule or to a collection of them. ``None`` goes back to settings/env.
+    Raises on an item that is not one: this runs while logging is being
+    configured, where failing loudly is right."""
+    global _explicit_rules, _resolved_rules
+    if rules is None:
+        _explicit_rules = None
+    else:
+        loaded, problems = load_value_rules(rules)
+        if problems:
+            raise ValueError("; ".join(problems))
+        _explicit_rules = loaded
+    _resolved_rules = None
+
+
+def masking_value_rule_errors() -> list[str]:
+    """Items in the setting or env var that are not value rules, for the Django boot check."""
+    if _explicit_rules is not None:
+        return []
+    _ready, source, value = _configured_value(_VALUE_RULES_VAR)
+    _rules, problems = _loaded_env_rules(value) if isinstance(value, str) else load_value_rules(value)
+    return [f"{source}: {problem}. It masks nothing." for problem in problems]
+
+
+def get_masking_value_rules() -> tuple:
+    """The service's value rules. Never raises: this runs on every log line.
+
+    An item in the setting or env var that is not a rule is dropped with a
+    warning once, and the boot check reports it; the rest apply.
+    """
+    global _resolved_rules
+    if _explicit_rules is not None:
+        return _explicit_rules
+    if _resolved_rules is not None:
+        return _resolved_rules
+    settings_ready, source, value = _configured_value(_VALUE_RULES_VAR)
+    rules, problems = _loaded_env_rules(value) if isinstance(value, str) else load_value_rules(value)
+    if problems and source not in _warned:
+        _warned.add(source)
+        warnings.warn(f"{source}: {'; '.join(problems)}. It masks nothing.", RuntimeWarning, stacklevel=2)
+    if settings_ready:
+        _resolved_rules = rules
+    return rules
+
+
 def key_field_type(key: str) -> str | None:
     """The field type the engine gives a key name, under this service's packs
     and safe keys -- or None for a name it leaves to the content rules.
@@ -289,9 +348,11 @@ def key_field_type(key: str) -> str | None:
 
 def _reset_masking_config() -> None:
     """Forget every choice. For tests."""
-    global _explicit, _resolved, _explicit_safe, _resolved_safe
+    global _explicit, _resolved, _explicit_safe, _resolved_safe, _explicit_rules, _resolved_rules
     _explicit = None
     _resolved = None
     _explicit_safe = None
     _resolved_safe = None
+    _explicit_rules = None
+    _resolved_rules = None
     _warned.clear()
