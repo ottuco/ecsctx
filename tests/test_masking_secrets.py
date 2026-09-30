@@ -906,6 +906,73 @@ class TestAPaymentIdThatHoldsACardNumber:
         assert mask_by_patterns(text % A_UUID, rules_for(ALL_PACKS)) == text % _payment_id(A_UUID)
 
 
+def _email(value: str) -> str:
+    return tokenize(value, "email") if is_configured() else "[EMAIL-MASKED]"
+
+
+def _phone(value: str) -> str:
+    return tokenize(value, "phone") if is_configured() else "[PHONE-MASKED]"
+
+
+def _message(text: str, packs) -> str:
+    record = logging.LogRecord("t", logging.INFO, __file__, 0, text, None, None)
+    MaskPIIFilter(packs=packs).filter(record)
+    return record.getMessage()
+
+
+# An email or a phone number found in text, holding a card-number run.
+CARD_IN_AN_EMAIL_OR_PHONE = [
+    ("reply to 4111111111111111@example.com now", "reply to [EMAIL-MASKED] now", _email, "4111111111111111@example.com"),
+    ("reply to jane+4111111111111111@example.com now", "reply to [EMAIL-MASKED] now", _email, "jane+4111111111111111@example.com"),
+    # Past the 15 digits E.164 allows a phone number, as in a phone field.
+    ("call +4111111111111111 now", "call [PHONE-MASKED] now", _phone, "+4111111111111111"),
+]
+
+
+class TestAnEmailOrPhoneThatHoldsACardNumber:
+    """An email or a phone number the text rules found was hashed whatever it
+    held: with `pci`, `4111111111111111@example.com` was a keyed hash of an
+    address holding a card number, the correlation PCI DSS FAQ 1117 warns
+    about, where the key walk gives the label. With `pci` it is the label, as
+    under its key, and a phone number is judged as a phone field judges one:
+    a "+"-led run of up to E.164's 15 digits is the number, and keeps its
+    token. Without `pci` a service receives no card numbers, and each keeps
+    its token."""
+
+    @pytest.mark.parametrize(("text", "masked", "_type", "_value"), CARD_IN_AN_EMAIL_OR_PHONE)
+    def test_with_pci_it_is_the_label(self, text, masked, _type, _value):
+        assert _message(text, ALL_PACKS) == masked
+        assert _message(masked, ALL_PACKS) == masked
+
+    @pytest.mark.parametrize(("text", "masked", "_type", "_value"), CARD_IN_AN_EMAIL_OR_PHONE)
+    def test_in_a_pci_process_a_default_filter_labels_it_too(self, text, masked, _type, _value):
+        configure_masking_packs(["pci"])
+        assert _message(text, ("default",)) == masked
+
+    @pytest.mark.parametrize(("text", "_masked", "type_", "value"), CARD_IN_AN_EMAIL_OR_PHONE)
+    def test_without_pci_it_keeps_its_token(self, text, _masked, type_, value):
+        assert _message(text, ("default",)) == text.replace(value, type_(value))
+
+    @pytest.mark.parametrize(
+        ("value", "type_"),
+        [
+            ("jane.roe@example.com", _email),
+            ("jane+orders@example.com", _email),
+            ("+96550000000", _phone),
+            ("+44 20 7946 0958", _phone),
+            ("+86 138 0013 8000", _phone),
+        ],
+    )
+    @pytest.mark.parametrize("packs", [("default",), tuple(sorted(ALL_PACKS))], ids=["default", "pci"])
+    def test_an_ordinary_one_keeps_its_token_either_way(self, value, type_, packs):
+        assert _message(f"reply to {value} now", packs) == f"reply to {type_(value)} now"
+
+    def test_under_its_key_it_reads_the_same(self):
+        configure_masking_packs(["pci"])
+        masked = _walk({"email": "4111111111111111@example.com", "phone": "+4111111111111111", "mobile": "+44 20 7946 0958"})
+        assert masked == {"email": "[EMAIL-MASKED]", "phone": "[PHONE-MASKED]", "mobile": _phone("+44 20 7946 0958")}
+
+
 @pytest.mark.parametrize("packs", [["default"], sorted(ALL_PACKS)], ids=["default", "every-pack"])
 class TestATokenShapedValueThatHoldsACardNumber:
     """`ptok:v1:` typed before a card number, in a token's exact shape, passed

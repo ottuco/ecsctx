@@ -94,10 +94,12 @@ def already_masked(text: str) -> bool:
 
 
 # The types judged here for a card number inside the value, with the `pci`
-# pack: every path a credential or a payment id takes into a log ends in
-# mask_by_field_type, as the key walk's own `pci` branch judges a PII leaf
-# (filters._mask_pii_leaf).
-_PAN_CHECKED_TYPES = frozenset({"secret", "payment_id"})
+# pack: every path a credential, a payment id, an email or a phone number
+# takes into a log ends in mask_by_field_type, as the key walk's own `pci`
+# branch judges a PII leaf (filters._mask_pii_leaf). The email and phone text
+# rules hashed one whatever it held: `4111111111111111@example.com`,
+# `+4111111111111111`.
+_PAN_CHECKED_TYPES = frozenset({"secret", "payment_id", "email", "phone"})
 # A truncation the card rule writes, its first six and last four showing. As a
 # credential it is ten digits of a saved card's sixteen-digit gateway token.
 _SHOWN_TRUNCATION = re.compile(r"\d{6}\*{4,}\d{4}")
@@ -124,10 +126,13 @@ def mask_by_field_type(value: str, field_type: str) -> str:
     is written and as a URL or form encoding decodes it (``%22…%22``, ``+``).
     With `pci` among the call's packs, and the process's -- a filter's own
     ``packs=`` for the call, with the process's (``config.packs_in_force``)
-    -- a credential or payment id that holds a card-number run anywhere
-    (``holds_pan_run``) is the label too. Applied here, where every caller
-    passes -- the key walk, the credential and payment-id text rules, a
-    route parameter, ``ecsctx.contrib.net`` -- rather than by each of them.
+    -- a credential, payment id, email or phone number that holds a
+    card-number run anywhere (``holds_pan_run``) is the label too, a phone
+    number read as a phone field reads one: a "+"-led run of up to E.164's
+    15 digits is the number itself. Applied here, where every caller passes
+    -- the key walk, the credential, payment-id, email and phone text rules,
+    a route parameter, ``ecsctx.contrib.net`` -- rather than by each of
+    them.
     """
     field_rule = get_field_rule(field_type)
     label = make_label(field_rule.field_type)
@@ -144,9 +149,16 @@ def mask_by_field_type(value: str, field_type: str) -> str:
         # encoding decodes it, as redact_url and redact_body read it before
         # they mask: `%224111…%22` in text was a keyed hash of a card number
         # in quotes, `4111+1111+…` of one with its spaces encoded.
-        forms = [normalize_value(value, field_type)]
-        if "%" in value or "+" in value:
-            forms.append(normalize_value(unquote_plus(value), field_type))
+        if field_type == "phone":
+            # As written, as the key walk reads a phone field: a phone
+            # number's "+" is its country code, not an encoded space, and
+            # decoded or joined up with an extension a real number read as
+            # a card-number run.
+            forms = [value]
+        else:
+            forms = [normalize_value(value, field_type)]
+            if "%" in value or "+" in value:
+                forms.append(normalize_value(unquote_plus(value), field_type))
         if field_type == "secret" and any(
             _SHOWN_TRUNCATION.fullmatch(bare) or _TRUNCATION_AFTER_A_SCHEME.fullmatch(bare) for bare in forms
         ):
@@ -172,7 +184,7 @@ def mask_by_field_type(value: str, field_type: str) -> str:
                     return f"[{label}]" if holds_pan_run(bare) else value
                 if pan_shaped(bare) or _PLACEHOLDER.fullmatch(bare):
                     return f"[{label}]"
-        if _pci_in_force() and any(holds_pan_run(bare) for bare in forms):
+        if _pci_in_force() and any(holds_pan_run(bare, phone=field_type == "phone") for bare in forms):
             # Without `pci` among the call's packs and the process's it is
             # hashed: a default-pack service receives no card numbers, and
             # the label would stand in for 7% of the 64-hex signatures
