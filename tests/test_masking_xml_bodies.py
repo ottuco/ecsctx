@@ -355,8 +355,14 @@ class TestAnElementsEndTagIsFoundOnce:
             "<password>" * 16000 + "</x>",
             "".join(f"<p{i}_password>" for i in range(8000)) + "</x>",
             "<cvv>" * 16000 + "</x>",
+            # redact_body's credential names, `key` among them, and a body is
+            # redacted before it is capped (loggable_body): every byte a
+            # gateway sends reaches it.
+            "<key>" * 16000 + "</x>",
+            "<token>" * 16000 + "</x>",
+            "".join(f"<k{i}_key><t{i}_token>" for i in range(2000)) + "</x>",
         ],
-        ids=["one_name", "distinct_names", "cvv"],
+        ids=["one_name", "distinct_names", "cvv", "key", "token", "distinct_keys_and_tokens"],
     )
     def test_many_start_tags_nothing_closes_take_linear_time(self, text):
         for mask in (_default_text, _text, redact_body):
