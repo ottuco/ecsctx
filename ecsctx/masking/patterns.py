@@ -314,6 +314,7 @@ def _digits_only(text: str) -> str:
 # tokenize. Stated directly rather than via mask_by_field_type('', 'cvv'),
 # which made these rules depend on how an empty value is rendered.
 _CVV_LABEL = f"[{make_label('cvv')}]"
+_SECRET_LABEL = f"[{make_label('secret')}]"
 
 
 
@@ -1374,7 +1375,16 @@ def _phone(m: re.Match) -> str:
 
 
 def _userinfo(m: re.Match) -> str:
-    return f"{m.group(1)}{_mask_userinfo(m.group(2))}@"
+    scheme, userinfo = m.group("scheme"), m.group("userinfo")
+    if m.group("user") is not None:
+        # A user alone is an account (`ssh://git@host`) -- unless it is shaped
+        # like a card number or holds a card-number run: a saved card's
+        # gateway token, as redact_url reads it, and never its hash.
+        user = unquote(userinfo)
+        if not (pan_shaped(user) or holds_pan_run(user)):
+            return m.group(0)
+        return f"{scheme}{_SECRET_LABEL}@"
+    return f"{scheme}{_mask_userinfo(userinfo)}@"
 
 
 # How far before an email's local part a URL's scheme can end when what is
@@ -1822,14 +1832,18 @@ _RULE_TABLE = (
     ),
     # 14. URL userinfo (postgresql://user:password@host), each part masked as
     # redact_url masks it, the scheme, host and port kept: a DSN in exception
-    # text. Only with a password, empty or not (`https://key:@host`), or a
-    # token alone, as masking left a user: `ssh://git@host` names an account.
-    # Bounded: a scheme is at most 32 characters and starts no longer run of
-    # scheme characters, so a long run is read once.
+    # text. With a password, empty or not (`https://key:@host`), or a token
+    # alone, as masking left a user. A user alone (`user`) names an account
+    # (`ssh://git@host`) and is left to the other rules -- unless it is shaped
+    # like a card number or holds a card-number run, which is the label, as
+    # redact_url gives it (#160054). Bounded: a scheme is at most 32
+    # characters and starts no longer run of scheme characters, so a long run
+    # is read once.
     _rule(
         "default",
-        rf"(?<![A-Za-z0-9+.\-])([A-Za-z][A-Za-z0-9+.\-]{{0,31}}://)"
-        rf"((?-i:{_TOKEN})(?::{_USERINFO_PART}*)?|[^\s/?#:\"'<>]*:{_USERINFO_PART}*)@",
+        rf"(?<![A-Za-z0-9+.\-])(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]{{0,31}}://)"
+        rf"(?P<userinfo>(?-i:{_TOKEN})(?::{_USERINFO_PART}*)?|[^\s/?#:\"'<>]*:{_USERINFO_PART}*"
+        rf"|(?P<user>[^\s/?#:\"'<>@]+))@",
         _userinfo,
         _has_userinfo,
     ),

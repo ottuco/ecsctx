@@ -1233,6 +1233,34 @@ class TestAUrlsUserinfoInText:
         email = tokenize("john@example.com", "email") if is_configured() else "[EMAIL-MASKED]"
         assert mask_by_patterns("GET https://john@example.com/v1", _TEXT_RULES) == f"GET https://{email}/v1"
 
+    @pytest.mark.parametrize("rules", [_DEFAULT_RULES, _TEXT_RULES], ids=["default", "every-pack"])
+    @pytest.mark.parametrize(
+        "user",
+        [
+            # A saved card's gateway token, Luhn-valid and not, as redact_url
+            # masks it: the label.
+            *CARD_SHAPED,
+            "4111-1111-1111-1111",
+            # A user holding a card-number run.
+            "abc4111111111111111xyz",
+            "4111111111111111%40corp",
+        ],
+    )
+    def test_a_user_alone_shaped_like_or_holding_a_card_number_is_the_label(self, rules, user):
+        # #160054: in free text it shipped whole, while redact_url masked it.
+        text = f"GET https://{user}@api.host.example/v1 failed"
+        masked = mask_by_patterns(text, rules)
+        assert masked == f"GET https://{LABEL}@api.host.example/v1 failed"
+        assert mask_by_patterns(masked, rules) == masked
+
+    def test_a_card_shaped_user_reads_as_redact_url_writes_it(self):
+        url = f"https://{CARD_SHAPED[1]}@host.example/v1"
+        assert mask_by_patterns(url, _TEXT_RULES) == unquote(redact_url(url))
+
+    @pytest.mark.parametrize("text", ["clone ssh://git@10.0.0.5/repo.git", "GET https://u12345@gateway/x"])
+    def test_any_other_user_alone_is_still_left_to_the_other_rules(self, text):
+        assert mask_by_patterns(text, _TEXT_RULES) == text
+
 
 # Values whose card number R4 now reads as part of the credential: 0.15.4's
 # value class stopped at `@`, `\` or `%`, and the card rule truncated it.
