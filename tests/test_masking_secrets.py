@@ -1264,6 +1264,15 @@ class TestTheCallsPacksDecide:
         MaskPIIFilter(packs=ALL_PACKS)._mask_string("password=p@ss4111111111111111")
         assert mask_secret(HOLDS_A_PAN) == token_or_label(HOLDS_A_PAN)
 
+    def test_a_default_filter_in_a_pci_process_masks_a_card_number_in_any_field(self):
+        # The key walk's pci branch and a bare int read the filter's packs
+        # alone: a card number typed into the name box was hashed.
+        configure_masking_packs(["pci"])
+        masked = MaskPIIFilter(packs=("default",))._mask_dict(
+            {"customer_name": PAN, "customer_email": HOLDS_A_PAN, "ref": int(PAN)}
+        )
+        assert masked == {"customer_name": "411111******1111", "customer_email": "[EMAIL-MASKED]", "ref": "411111******1111"}
+
     def test_a_default_filter_in_a_pci_process_labels_it_too(self):
         configure_masking_packs(["pci"])
         text = f"password={HOLDS_A_PAN}"

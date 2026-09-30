@@ -171,10 +171,15 @@ def call_packs(packs: frozenset[str]) -> _CallPacks:
 
 def packs_in_force() -> frozenset[str]:
     """The packs of the masking call in progress and the process's
-    (get_masking_packs), together: in a pci-configured process every filter
-    labels a value that holds a card number, and a filter built with pci
-    labels it in any process. A default handler ahead of a pci one masks the
-    record in place, so what it hashes the pci handler logs. Never raises."""
+    (get_masking_packs), together, for the pci checks on a value: a
+    credential or payment id holding a card number is its label
+    (tokens.mask_by_field_type), and the key walk truncates or labels a card
+    number under a PII key or as a bare int (filters._pci_in_force reads the
+    same union). So in a pci-configured process a default filter masks those
+    as a pci one does, and a default handler ahead of a pci one no longer
+    hashes, in the record they share, what the pci handler then logs. The
+    content rules a filter runs stay its own packs' (rules_for): a default
+    filter has no card rule for a card number in free text. Never raises."""
     packs = _CALL_PACKS.get()
     process = get_masking_packs()
     return process if packs is None else packs | process

@@ -382,6 +382,13 @@ def _listed(key: str, safe: frozenset[str]) -> bool:
     return lowered in safe or _joined_key(lowered) in _joined_names(safe)
 
 
+def _pci_in_force(ctx: _Pass) -> bool:
+    """Whether `pci` is among this call's packs or the process's, as
+    config.packs_in_force reads it for mask_by_field_type: in a pci process a
+    default filter hashed a card number typed into the name box."""
+    return "pci" in ctx.packs or "pci" in get_masking_packs()
+
+
 def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     """One PII leaf, except that cardholder data outranks the key it arrived
     under.
@@ -419,7 +426,7 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     """
     if field_type == "secret" and pan_shaped(text):
         return mask_secret(text)
-    if "pci" in ctx.packs and get_field_rule(field_type).tokenizable:
+    if _pci_in_force(ctx) and get_field_rule(field_type).tokenizable:
         if pan_shaped(text):
             return mask_card_value(text)
         if holds_pan_run(text, phone=field_type == "phone"):
@@ -728,7 +735,7 @@ class MaskPIIFilter(logging.Filter):
             # See scalar= below: the same reasoning, for strings -- except an
             # int that is a card number, which the card rule would have
             # truncated had it arrived as text.
-            if isinstance(value, int) and not isinstance(value, bool) and "pci" in ctx.packs and int_is_pan(value):
+            if isinstance(value, int) and not isinstance(value, bool) and _pci_in_force(ctx) and int_is_pan(value):
                 return mask_card_value(value)
             return value
         if isinstance(value, str):
