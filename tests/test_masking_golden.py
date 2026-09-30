@@ -20,7 +20,8 @@ import random
 from pathlib import Path
 
 from ecsctx.contrib.net import redact_body
-from ecsctx.masking.config import configure_masking_packs
+from ecsctx.contrib.ottu.masking import WALLET_RULES
+from ecsctx.masking.config import configure_masking_packs, configure_masking_value_rules
 from ecsctx.masking.filters import MaskPIIFilter, _Pass
 from ecsctx.masking.patterns import (
     ALL_PACKS,
@@ -33,10 +34,10 @@ from ecsctx.pii import _reset as _reset_pii
 from ecsctx.pii import configure_pii
 from ecsctx.processors import mask_sensitive_data
 from tests import (
+    test_contrib_ottu_wallets,
     test_masking_cvv_bare,
     test_masking_filter,
     test_masking_secrets,
-    test_masking_wallets,
 )
 from tests.test_masking_xml_bodies import KPAY_BODIES
 
@@ -87,7 +88,7 @@ FRAGMENTS = (
     "https://4111111111111111@h.example/", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln", "GB33BUKB20201555555555",
     "123-45-6789", "payment_id=abc12345", "[SECRET-MASKED]", "ptok:v1:" + "A" * 43, " ", "|", ",", ":", "'", '"', "{",
     "}", "[", "]", "(", ")", "\\", "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----",
-    json.dumps(test_masking_wallets.APPLE_PAY), json.dumps(json.dumps(test_masking_wallets.GOOGLE_PAY)),
+    json.dumps(test_contrib_ottu_wallets.APPLE_PAY), json.dumps(json.dumps(test_contrib_ottu_wallets.GOOGLE_PAY)),
 )
 
 
@@ -132,7 +133,7 @@ def _events() -> list[dict]:
     events = [BENCH_EVENT, *_bench_fixtures()]
     events += [case[1] for case in test_masking_filter.DICT_KEY_VALUE_MASKING_CASES]
     events.append(
-        {"payload": {"paymentData": test_masking_wallets.APPLE_PAY, "note": json.dumps(test_masking_wallets.GOOGLE_PAY)}}
+        {"payload": {"paymentData": test_contrib_ottu_wallets.APPLE_PAY, "note": json.dumps(test_contrib_ottu_wallets.GOOGLE_PAY)}}
     )
     events += [
         {"http": {"request": {"body": {"content": body.replace("{password}", "S3cretPassw0rd")}}}}
@@ -149,7 +150,7 @@ RECORDS = [
     ("password=%(pw)s", ({"pw": ["a", "b"]},)),
     ("paid %.f KWD by %d", (10.5, 5551234567)),
     ("sent to %s", ("jane@example.com",)),
-    ("apple pay token %s", (json.dumps(test_masking_wallets.APPLE_PAY),)),
+    ("apple pay token %s", (json.dumps(test_contrib_ottu_wallets.APPLE_PAY),)),
     ("retried with Bearer %s", ("abc123def456",)),
     ("%s", ({"card_number": "4111111111111111", "cvv": "123"},)),
 ]
@@ -179,6 +180,9 @@ def _changed(text: str, masked: str) -> str | None:
 
 
 def _outputs(tmp: Path) -> dict:
+    # As an Ottu service runs: its wallet shapes are value rules it lists,
+    # no longer core's, and the corpus holds wallet tokens.
+    configure_masking_value_rules(WALLET_RULES)
     texts, events = _texts(), _events()
     outputs: dict = {}
     for mode in ("no-keyset", "keyset"):

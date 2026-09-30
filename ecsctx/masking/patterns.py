@@ -51,7 +51,7 @@ from ecsctx.masking.tokens import (
     make_label,
     mask_by_field_type,
 )
-from ecsctx.masking.value_rules import ValueRule, hinted, label_of
+from ecsctx.masking.value_rules import hinted, label_of
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -1068,29 +1068,9 @@ def _mask_userinfo(userinfo: str) -> str:
 # Value rules in text
 # ---------------------------------------------------------------------------
 # A JSON object written in text -- JSON, a Python repr, or JSON in a JSON
-# string -- is asked of the value rules in force (value_rules), and one a rule
-# matches is that rule's label, never a token. Nothing configured, nothing
-# runs.
-
-# The wallet shapes, until they move out of core: an Apple Pay token's
-# `paymentData` (`version` EC_v1 or RSA_v1, with the encrypted `data`) and a
-# Google Pay payment method token (`protocolVersion`, with `signedMessage`).
-_APPLE_PAY_VERSIONS = frozenset({"EC_v1", "RSA_v1"})
-_GOOGLE_PAY_VERSIONS = frozenset({"ECv1", "ECv2", "ECv2SigningOnly"})
-
-
-def is_wallet_token(value: Any) -> bool:
-    """Whether ``value`` is a wallet token's payment data, as a mapping."""
-    if not isinstance(value, dict):
-        return False
-    version = value.get("version")
-    if isinstance(version, str) and version in _APPLE_PAY_VERSIONS and "data" in value:
-        return True
-    protocol = value.get("protocolVersion")
-    return isinstance(protocol, str) and protocol in _GOOGLE_PAY_VERSIONS and "signedMessage" in value
-
-
-_BUILT_IN_VALUE_RULES = (ValueRule("sad", is_wallet_token, hints=("EC_v1", "RSA_v1", "ECv1", "ECv2")),)
+# string -- is asked of the service's value rules (value_rules), and one a
+# rule matches is that rule's label, never a token. ecsctx names no shape of
+# its own: nothing configured, nothing runs.
 
 
 def value_rules_in_force() -> tuple:
@@ -1099,7 +1079,7 @@ def value_rules_in_force() -> tuple:
     as it loads."""
     from ecsctx.masking.config import get_masking_value_rules
 
-    return _BUILT_IN_VALUE_RULES + get_masking_value_rules()
+    return get_masking_value_rules()
 
 
 def _json_object(string: str, space: str, character: str) -> str:
@@ -1117,8 +1097,8 @@ def _json_object(string: str, space: str, character: str) -> str:
 
 
 # As written: JSON, or a Python repr's quotes. Escaped: JSON in a JSON string
-# (MPGS's `paymentToken`), its quotes `\"`, a pretty-printed one's line breaks
-# `\n`. Compiled once, as rule 2.
+# (a field whose value is itself JSON), its quotes `\"`, a pretty-printed
+# one's line breaks `\n`. Compiled once, as rule 2.
 _OBJECT_TEXT = (
     "(?P<plain>"
     + _json_object(
@@ -2262,7 +2242,7 @@ def _by_identity(cache: dict, rules: tuple, build: Callable[[tuple], Any]) -> An
 
     Never on its hash: a tuple of rules hashes every rule, and a compiled
     pattern hashes its whole program, on every call -- 30 µs a string for
-    the default pack once the wallet rule was in it, which lru_cache paid on
+    the default pack once a large rule was in it, which lru_cache paid on
     each lookup. Keeping ``rules`` in the entry keeps its id from being
     reused; a cache past its bound is emptied, not evicted, as _clean is.
     """
@@ -2508,7 +2488,7 @@ _TRACK_TAILS = frozenset({
     "", "1", "2", "3", "one", "two", "three", "data", "equivalent", "equivalentdata", "image", "raw", "stripe",
 })
 
-# A wallet's payment cryptogram and a 3DS authentication value: one-time values
+# A tokenized card's payment cryptogram and a 3DS authentication value: one-time values
 # that authenticate a transaction, which nothing reads in a log. Matched at the
 # END of the key, so a verdict about one (`cavvResponseCode`) is not one.
 _SAD_KEY_ENDING = re.compile(r"(?:cryptogram|cavv|tavv|aav|ucaf(?:authenticationdata)?)(?:value|data)?$")

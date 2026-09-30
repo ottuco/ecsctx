@@ -94,8 +94,8 @@ def _body(name: str, password: str) -> str:
 
 
 def _outside_udf9(body: str) -> str:
-    """The body without udf9's text: the wallet token's own rule is the next
-    test file's (test_masking_wallets.py)."""
+    """The body without udf9's text: the wallet token is Ottu's value rule's
+    (test_contrib_ottu_wallets.py)."""
     head, _, rest = body.partition("<udf9>")
     return head + rest.partition("</udf9>")[2]
 

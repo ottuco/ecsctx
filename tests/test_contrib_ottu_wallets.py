@@ -1,4 +1,5 @@
-"""A wallet token's payment data is `[SAD-MASKED]` in every pack (#160054).
+"""With Ottu's WALLET_RULES, a wallet token's payment data is `[SAD-MASKED]`
+in every pack (#160054).
 
 An Apple Pay or Google Pay token carries the device card number and the
 payment cryptogram, encrypted. It is never hashed: the whole token is the SAD
@@ -7,6 +8,11 @@ a key name, so an unrelated `paymentData` stays readable and the token is
 masked under any key -- `paymentData`, TAP's `token_data`, MPGS's
 `paymentToken` (a JSON string), Google Pay's `tokenizationData.token`, KPay's
 `<udf9>`.
+
+The shapes are Ottu's, not ecsctx's: `ecsctx.contrib.ottu.masking.WALLET_RULES`,
+value rules a service lists in ECSCTX_MASK_VALUE_RULES. Every test here runs
+with them configured, but the last, which runs with nothing configured: core
+masks no wallet token of its own accord.
 
 - Apple Pay (PKPaymentToken's `paymentData`): an object whose `version` is
   `EC_v1` or `RSA_v1`, with the encrypted `data`. `signature` and `header`
@@ -24,7 +30,8 @@ import logging
 import pytest
 
 from ecsctx.contrib.net import loggable_request_body, redact_body
-from ecsctx.masking.config import configure_masking_packs
+from ecsctx.contrib.ottu.masking import WALLET_RULES
+from ecsctx.masking.config import configure_masking_packs, configure_masking_value_rules
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
 from ecsctx.pii import configure_pii
@@ -79,6 +86,11 @@ def mode(request, token_keyset_path):
 def packs(request):
     configure_masking_packs(request.param)
     return frozenset(request.param)
+
+
+@pytest.fixture(autouse=True)
+def wallet_rules():
+    configure_masking_value_rules(WALLET_RULES)
 
 
 def _walk(event: dict) -> dict:
@@ -254,3 +266,23 @@ class TestBodies:
 
     def test_a_credential_element_holding_a_token_is_the_label_not_its_hash(self):
         assert redact_body(f"<password>{json.dumps(APPLE_PAY)}</password>") == f"<password>{SAD}</password>"
+
+
+class TestNothingConfigured:
+    """Core names no wallet shape: without WALLET_RULES in
+    ECSCTX_MASK_VALUE_RULES, a wallet token is not the label -- the opt-in is
+    explicit."""
+
+    @pytest.fixture(autouse=True)
+    def no_value_rules(self, wallet_rules):
+        configure_masking_value_rules(())
+
+    def test_a_token_is_not_labelled_by_core(self, packs):
+        assert _walk({"paymentData": APPLE_PAY}) != {"paymentData": SAD}
+        assert SAD not in _text(f"apple pay token {json.dumps(APPLE_PAY)} received", packs)
+        assert SAD not in redact_body(json.dumps({"paymentData": APPLE_PAY}))
+        assert SAD not in _walk({"google_pay": json.dumps(GOOGLE_PAY)})["google_pay"]
+
+    def test_the_setting_opts_in(self):
+        configure_masking_value_rules(["ecsctx.contrib.ottu.masking.WALLET_RULES"])
+        assert _walk({"paymentData": APPLE_PAY}) == {"paymentData": SAD}

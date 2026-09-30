@@ -863,7 +863,7 @@ receives the CVV a saved-card payment sends, so the keyed CVV rules are
 
 | Pack | Content rules | On by default |
 |------|---------------|---------------|
-| `default` | PEM keys, wallet tokens (Apple Pay / Google Pay payment data, `[SAD-MASKED]`), credentials (`token=…`, `"secret": …`, `Bearer …`, `API-Key …`, `<password>…</password>`, `password=['a', 'b']`), keyed CVV (`cvv=123`, `"securityCode": "123"`, `CVV 123`, `vpc_CardSecurityCode=123`, `paymentCvv=123`), an XML element named as a card, CVV or SAD key (`<cvv>123</cvv>`, `<pin>1234</pin>`, `<cardNumber>…</cardNumber>` truncated), a URL's userinfo, phone numbers, emails, JWTs | always |
+| `default` | PEM keys, a JSON object a service's [value rule](#value-rules-a-services-own-shapes) matches (its label), credentials (`token=…`, `"secret": …`, `Bearer …`, `API-Key …`, `<password>…</password>`, `password=['a', 'b']`), keyed CVV (`cvv=123`, `"securityCode": "123"`, `CVV 123`, `vpc_CardSecurityCode=123`, `paymentCvv=123`), an XML element named as a card, CVV or SAD key (`<cvv>123</cvv>`, `<pin>1234</pin>`, `<cardNumber>…</cardNumber>` truncated), a URL's userinfo, phone numbers, emails, JWTs | always |
 | `pci` | PANs (truncated), a bare 3–4 digit CVV beside a card number or its truncation (`4111111111111111 123`, `411111******1111\|12/27\|123`) or after a CVV word (`the cvv is 123`) | no |
 | `financial_ids` | IBANs, SSNs, payment/transaction/auth ids (content and key names) | no |
 
@@ -1011,12 +1011,10 @@ from ecsctx.contrib.net import (
   element's text, written with entities, goes through these rules as it
   decodes and is written back escaped.
 
-  A wallet token is `[SAD-MASKED]` before anything else reads it: an Apple
-  Pay token's `paymentData` (an object with `version` `EC_v1` or `RSA_v1`
-  and the encrypted `data`) or a Google Pay payment method token (an object
-  or JSON string with `protocolVersion` `ECv1`, `ECv2` or `ECv2SigningOnly`
-  and a `signedMessage`), as JSON anywhere in the body — KPay's `<udf9>` —
-  or as JSON in a JSON string (MPGS's `paymentToken`).
+  A value a service's [value rule](#value-rules-a-services-own-shapes)
+  matches is its label before anything else reads it, as JSON anywhere in
+  the body — an XML element's text included — or as JSON in a JSON
+  string.
 - `redact_url(url, secrets=[token])` also masks literal values anywhere in
   the URL, longest first — a saved-card token in a path such as
   `/card/<token>/`.
@@ -1119,7 +1117,7 @@ safe keys (the expiry spellings in the whitelist below).
 | **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no`, `card_num` (MIGS's `vpc_CardNum`) | 12–19 digit runs (`pci`); an XML element so named (`default`) | `411111******1111` |
 | **CVV** | containing `cvv`, `cvc`, `security code`, `verification value`, or the words `csc`, `cvd`, `cvn`, `card code` — unless what follows names something *about* one (`cvv_required`, `cvvResult`, `cardSecurityCodeError`) | keyed CVV and an XML element so named (`default`), a bare 3–4 digit group beside a card number or its truncation, or after a CVV word (`pci`) | `[CVV-MASKED]` |
 | **SAD** | track data (`track2`, `trackData`, `raw_track`; not `track_id`), `pin`/`pinBlock`, EMV/chip data, and ending in `cryptogram`, `cavv`, `tavv`, `aav`, `ucaf` | an XML element so named (`default`) | `[SAD-MASKED]` |
-| **Wallet tokens** | none: found by shape under any key — an Apple Pay `paymentData` (`version` `EC_v1`/`RSA_v1` with `data`) or a Google Pay token (`protocolVersion` `ECv1`/`ECv2`/`ECv2SigningOnly` with `signedMessage`), as an object or as JSON text | the same shapes as JSON in text, or in a JSON string (`default`) | `[SAD-MASKED]`, the whole token |
+| **A service's value rules** | none: found by shape under any key, as a mapping or as JSON text ([value rules](#value-rules-a-services-own-shapes)) | the same shapes as JSON in text, or in a JSON string (`default`) | the rule's label, the whole value |
 | **National ids** | `civil_id`, `national_id`, `passport`, `iqama`, `qid`, `cpr`, `nid`, `emirates_id`, `ssn`, `tin`, `tax_id`, `aadhaar`, `id_number` | — | `[SSN-MASKED…]` |
 | **IBAN / SSN / payment ids** | `payment_id`, `transaction_id`, `auth_id` (`financial_ids`) | `financial_ids` | `[IBAN-MASKED…]`, … |
 
@@ -1132,17 +1130,10 @@ and last four, expiry and scheme read through, and the CVV, track data and PIN
 are destroyed — collapsing it threw away the one form PCI DSS 3.5.1 permits us
 to keep.
 
-A **wallet token** — an Apple Pay token's payment data or a Google Pay payment
-method token — is `[SAD-MASKED]` whole, in every pack and under any key (a
-`paymentData`, TAP's `token_data`, MPGS's `paymentToken` as a JSON string,
-Google Pay's `tokenizationData.token`), never hashed: it carries the device
-card number and the payment cryptogram, encrypted. Its `signature` and
-`header` are useless without the encrypted data, so the whole object is the
-label rather than `data` alone. It is found by shape, so an unrelated
-`paymentData` (`{"amount": "10.000", "currency": "KWD"}`) reads as before; a
-token hex- or base64-encoded into another field (KNET v3's and QPay's
-`encodedModel`, CyberSource's fluid data) has no shape to find, and is left to
-that field's key.
+A value a service's **value rule** matches is that rule's label whole, in
+every pack and under any key, never hashed; it is found by shape, so anything
+else under the same key reads as before. A value encoded into another field
+(hex, base64) has no shape to find, and is left to that field's key.
 
 Since 0.14.0 a **credential, CVV or SAD** key holding a container is walked as
 well, because it cannot be holding the value itself: a leaf with no rule of its
@@ -1205,8 +1196,8 @@ or SAD key, as `redact_body` masks it: `<cvv>123</cvv>` is
 `<cardNumber>` truncated — a test card that fails Luhn too, with or without
 `pci` — and a card object is read field by field. A CVV inside a credential's
 element is its label before the credential is masked, as under a credential
-key. A wallet token written as JSON in text,
-or as JSON in a JSON string, is `[SAD-MASKED]` before any credential rule reads
+key. A JSON object a service's value rule matches, written in text or as
+JSON in a JSON string, is the rule's label before any credential rule reads
 it.
 
 A URL's userinfo in text — a DSN in an exception,
@@ -1337,12 +1328,14 @@ credential word (`card_number`, `pan_no`, `card_cvv`, `db_password`,
 dropped with a warning, stays masked, and fails the Django boot check. A flag
 or status about one (`cvv_required`, `tokenization_status`) can be listed, and
 so can an expiry key, though it is safe already: nothing masks it. Ottu
-services use `ecsctx.contrib.ottu.masking.SAFE_KEYS`:
+services use `ecsctx.contrib.ottu.masking.SAFE_KEYS`, and list its
+`WALLET_RULES` as value rules beside them (below):
 
 ```python
-from ecsctx.contrib.ottu.masking import SAFE_KEYS as OTTU_SAFE_KEYS
+from ecsctx.contrib.ottu.masking import SAFE_KEYS as OTTU_SAFE_KEYS, WALLET_RULES
 
 ECSCTX_MASK_SAFE_KEYS = [*OTTU_SAFE_KEYS]
+ECSCTX_MASK_VALUE_RULES = [*WALLET_RULES]
 ```
 
 ### Value rules (a service's own shapes)
@@ -1388,6 +1381,18 @@ An item that does not import or is not a rule makes
 dropped with a warning and fails the Django boot check, and the others still
 apply. A rule that raises leaves the record as `[MASKING-FAILED: …]`, never
 an exception out of the log call.
+
+Ottu's are `ecsctx.contrib.ottu.masking.WALLET_RULES`: an Apple Pay token's
+`paymentData` (`version` `EC_v1` or `RSA_v1`, with the encrypted `data`) and
+a Google Pay payment method token (`protocolVersion` `ECv1`, `ECv2` or
+`ECv2SigningOnly`, with a `signedMessage`) are `[SAD-MASKED]` whole — under
+`paymentData`, TAP's `token_data`, MPGS's `paymentToken` (a JSON string),
+Google Pay's `tokenizationData.token`, KPay's `<udf9>`, or in a message. An
+Ottu service lists them in `ECSCTX_MASK_VALUE_RULES` next to its
+`ECSCTX_MASK_SAFE_KEYS` (above), or sets
+`ECSCTX_MASK_VALUE_RULES=ecsctx.contrib.ottu.masking.WALLET_RULES`. Core
+masks no wallet token of its own accord: without them, one is read as any
+other value is.
 
 ### Path exemptions
 
