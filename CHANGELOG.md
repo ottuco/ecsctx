@@ -1,5 +1,57 @@
 # Changelog
 
+## v0.15.5 (2026-09-30)
+
+### Fixes
+- Merge pull request #69 from ottuco/fix/masking-followups (ac3735e)
+- fix(masking): the docs name the one record that is still dropped, a dict msg with args (01082a5)
+- fix(net): redact_body masks a bare token key as the key walk does (8419a90)
+- fix(masking): a rendered record's arguments are masked with every pack (ce61e4a)
+- fix(masking): a bytes template is read as masking decodes it, and keeps its arguments (8cbc1ff)
+- fix(masking): a card key counts the digits it shows in a row, across truncations (67c59c4)
+- fix(masking): the docs say what readers besides the formatter get, and list P-1 (82940f0)
+- fix(masking): a filter's pci checks in the key walk read the process's packs too (253df69)
+- fix(masking): a credential that is a card number's truncation is the label (e6e21a5)
+- fix(masking): a card key counts a truncation's shown digits with those beside it (e5db615)
+- fix(masking): a rendered record's arguments are masked with the process's packs too (f895b68)
+- fix(masking): a record that would not format once masked is rendered and masked, never dropped (56d2e30)
+- fix(net): redact_body masks in one call a card field that masking a credential uncovers (eda09cd)
+- fix(masking): the README says where `#` ends a value, and that a token after a scheme is kept (8e916d1)
+- fix(net): a run of quotes of either kind before a form value is structure (b8242a0)
+- fix(masking): pci in force is the call's packs and the process's, together (f61d5c9)
+- fix(masking): a card key refuses twelve digits showing beside its truncations, however joined (7d867a3)
+- fix(masking): a %-style template masking rewrites is rendered and masked whole (1aa9c17)
+- fix(masking): a masked card's 4-6-5 or 4-6-4 groups, and dashed ones, are read as one (f74e41b)
+- fix(masking): a first-four mask is kept, and groups of four are read as one number (687ee5d)
+- fix(masking): stars that could hide a card number are judged below twelve digits (cf70a2c)
+- fix(masking): a card key's masked value is masked once (5b1dcd8)
+- fix(masking): a card_num key, MIGS's vpc_CardNum among them, is a card key (2ab4706)
+- fix(masking): a secret is judged as a URL or form encoding decodes it too (563db7c)
+- fix(net): quotes doubled before a form value are structure, as in text (2e4ab9d)
+- fix(masking): a credential value between escaped quotes runs to its matching one (b9fef18)
+- fix(masking): a credential keyword that names a CVV masks its value as a CVV (c3402c3)
+- fix(masking): a camelCase CVV key in text is masked (36cdd60)
+- fix(masking): the keyed CVV rules are tried only near their words (297cfaa)
+- fix(masking): a token after an Authorization scheme is not hashed again (58f3060)
+- fix(masking): a token before a URL fragment is left as it is (39bdb9f)
+- fix(masking): quotes doubled as CSV escapes one no longer hide the value after them (612f538)
+- fix(masking): a filter's own packs decide whether a credential holding a card number is its label (e0d6e3a)
+- fix(masking): a credential value in text never runs into a label (f7b2c53)
+- fix(net): card, CVV and SAD query and form params are masked by their key (b816d6e)
+- fix(masking): a keyed CVV in text is masked in every pack (69e2442)
+- fix(masking): a URL's userinfo in text is masked, keeping its host (4713c1e)
+- fix(net): redact_url masks a URL's userinfo and fragment (e493943)
+- fix(masking): an Authorization header in text is masked as one value (e35571b)
+- fix(masking): a credential value in text runs to its delimiter (f274067)
+- fix(masking): with pci, a credential or payment id that holds a card number is its label (d0a5070)
+- fix(masking): a token-shaped value that holds a card number is its label (64ad13f)
+- fix(masking): a canonical UUID is never read as a card number (4a1a273)
+
+### Other
+- docs(masking): reflow the docstrings and comments this round touched (21447a1)
+- docs(net): reflow redact_url's docstring (354f70f)
+
+
 ## v0.15.4 (2026-09-29)
 
 ### Features
