@@ -855,11 +855,13 @@ class MaskPIIFilter(logging.Filter):
                         # keeps its arguments, and Sentry's grouping by it.
                         # Rendered, the record keeps no arguments for a later
                         # handler to mask with more packs, so they are masked
-                        # with the process's packs too: a default handler
-                        # ahead of a pci one rendered `ref4111…` whole.
-                        if not get_masking_packs() <= ctx.packs:
-                            packs = ctx.packs | get_masking_packs()
-                            args = self._mask_args(record.args, ctx._replace(packs=packs, rules=rules_for(packs)))
+                        # with every pack: a default handler ahead of a pci one
+                        # rendered `ref4111…` whole, glued to a word, for the
+                        # pci handler to log. Only a record that takes this path.
+                        if ctx.packs != ALL_PACKS:
+                            every = ctx._replace(packs=ALL_PACKS, rules=rules_for(ALL_PACKS))
+                            with call_packs(ALL_PACKS):
+                                args = self._mask_args(record.args, every)
                         msg, args = self._mask_rendered(template, record.args, args, ctx), ()
                     record.msg, record.args = msg, args
                 except Exception as error:  # noqa: BLE001 -- nothing here may reach the caller

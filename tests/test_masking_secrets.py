@@ -1299,6 +1299,25 @@ class TestTheCallsPacksDecide:
         logger.warning(template, "pw-1", PAN)
         assert [PAN in stream.getvalue() for stream in streams] == [False, False]
 
+    @pytest.mark.parametrize("template", ["password=%s ref%s", "password=%s card %s"])
+    def test_in_a_default_process_too(self, template, logging_state):
+        # A pci filter built explicitly behind a default handler: the process
+        # has no pci for the union to add.
+        import io
+        import logging
+
+        logger = logging.getLogger("handlers.default.process." + template.split()[1][:3])
+        logger.propagate = False
+        streams = []
+        for packs in (("default",), ALL_PACKS):
+            stream = io.StringIO()
+            handler = logging.StreamHandler(stream)
+            handler.addFilter(MaskPIIFilter(packs=packs))
+            logger.addHandler(handler)
+            streams.append(stream)
+        logger.warning(template, "pw-1", PAN)
+        assert [PAN in stream.getvalue() for stream in streams] == [False, False]
+
     def test_a_default_handler_ahead_of_a_pci_one_leaves_it_the_label(self, logging_state):
         import io
         import logging
