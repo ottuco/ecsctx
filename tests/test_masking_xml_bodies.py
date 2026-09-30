@@ -7,12 +7,13 @@ clear -- neither the body rules nor the credential text rules read an element.
 
 `redact_body` classifies an element's local name as it classifies a query,
 form or JSON key: a credential name masks its text as `mask_secret` masks a
-credential, and a card, CVV or other SAD name by that type. The credential
-text rules gain an element form, for a string that never went through
+credential, and a card, CVV or other SAD name by that type. The text rules
+gain both element forms, for a string that never went through
 `redact_body`. Every test runs with a keyset and without one.
 """
 
 import json
+import logging
 import time
 
 import pytest
@@ -76,6 +77,16 @@ def _text(content: str) -> str:
 
 def _default_text(content: str) -> str:
     return mask_by_patterns(content, rules_for(frozenset({"default"})))
+
+
+def _message(text: str, packs: tuple[str, ...]) -> str:
+    """``text`` as a record's message, masked by a filter with ``packs``."""
+    record = logging.LogRecord("t", logging.INFO, __file__, 0, text, None, None)
+    MaskPIIFilter(packs=packs).filter(record)
+    return record.getMessage()
+
+
+PACKS = [pytest.param(("default",), id="default"), pytest.param(("default", "pci"), id="pci")]
 
 
 def _body(name: str, password: str) -> str:
@@ -263,7 +274,7 @@ class TestTheCredentialTextRule:
         assert _text("<Authorization>Bearer abc123def456</Authorization>") == f"<Authorization>{walked}</Authorization>"
 
     def test_a_token_after_the_scheme_is_not_hashed_again(self):
-        # What masking the credential alone leaves, as rule 6 reads it.
+        # What masking the credential alone leaves, as rule 7 reads it.
         text = f"<Authorization>Bearer {hmac_tokenize('abc', bytes(32), 'secret', 'test')}</Authorization>"
         assert _text(text) == text
 
@@ -314,3 +325,166 @@ class TestAnElementsEndTagIsFoundOnce:
             started = time.perf_counter()
             assert mask(text) == text
             assert time.perf_counter() - started < 0.25, mask.__name__
+
+
+# An element named as the key walk names a card, a CVV or other SAD, and its
+# text as the key walk masks that key's value.
+CARD_ELEMENTS = [
+    ("<cvv>123</cvv>", "<cvv>[CVV-MASKED]</cvv>"),
+    ("<pin>1234</pin>", "<pin>[SAD-MASKED]</pin>"),
+    # A test card that fails Luhn, which the `pci` card rule leaves in text,
+    # is a card number under its name all the same.
+    ("<cardNumber>5123450000000007</cardNumber>", "<cardNumber>512345******0007</cardNumber>"),
+    ("<cardNumber>5123450000000008</cardNumber>", "<cardNumber>512345******0008</cardNumber>"),
+    ("<cardNumber>4111111111111112</cardNumber>", "<cardNumber>411111******1112</cardNumber>"),
+    ("<pan>4111 1111 1111 1111</pan>", "<pan>411111******1111</pan>"),
+    # What a card key refuses to show: a run longer than a card number.
+    ("<cardNumber>4111111111111111111111</cardNumber>", "<cardNumber>[CARD-MASKED]</cardNumber>"),
+    (
+        '<ns2:CardSecurityCode type="x">1234</ns2:CardSecurityCode>',
+        '<ns2:CardSecurityCode type="x">[CVV-MASKED]</ns2:CardSecurityCode>',
+    ),
+    ("<securityCode>123</securityCode>", "<securityCode>[CVV-MASKED]</securityCode>"),
+    ("<CVC2>123</CVC2>", "<CVC2>[CVV-MASKED]</CVC2>"),
+    ("<track2>4111111111111111=27121010000012300</track2>", "<track2>[SAD-MASKED]</track2>"),
+    (
+        "<onlinePaymentCryptogram>AgAAAAAABk4DWZ4C28yUQAAAAAA=</onlinePaymentCryptogram>",
+        "<onlinePaymentCryptogram>[SAD-MASKED]</onlinePaymentCryptogram>",
+    ),
+    ("<cavv>AAABBEg0VhI0VniQEjRWAAAAAAA=</cavv>", "<cavv>[SAD-MASKED]</cavv>"),
+    ("<cvv><![CDATA[123]]></cvv>", "<cvv>[CVV-MASKED]</cvv>"),
+    ("<cardNumber>&#52;111111111111111</cardNumber>", "<cardNumber>411111******1111</cardNumber>"),
+]
+
+READABLE_ELEMENTS = [
+    "<amount>100.000</amount>",
+    "<amt>10.000</amt>",
+    "<expiry>2712</expiry>",
+    "<cardType>001</cardType>",
+    "<cvvResult>M</cvvResult>",
+    "<trackid>TRK1</trackid>",
+    "<currencycode>414</currencycode>",
+]
+
+
+class TestTheCardCvvAndSadTextRule:
+    """For a string that never went through `redact_body` -- a message, an
+    exception -- in every pack, as the key walk reads a key: an element named
+    as a card, a CVV or other SAD masks its text by that type. A test card
+    that fails Luhn under `<cardNumber>` is truncated, `pci` or not."""
+
+    @pytest.mark.parametrize("packs", PACKS)
+    @pytest.mark.parametrize(("element", "masked"), CARD_ELEMENTS)
+    def test_an_element_in_a_message_is_masked_by_its_name(self, element, masked, packs):
+        assert _message(f"sent {element} ok", packs) == f"sent {masked} ok"
+
+    @pytest.mark.parametrize(("element", "masked"), CARD_ELEMENTS)
+    def test_every_path_masks_it_alike(self, element, masked):
+        assert _default_text(element) == masked
+        assert _text(element) == masked
+        assert _processor(element) == masked
+        assert redact_body(element) == masked
+
+    @pytest.mark.parametrize("packs", PACKS)
+    @pytest.mark.parametrize("element", READABLE_ELEMENTS)
+    def test_an_element_no_card_key_names_stays_readable(self, element, packs):
+        text = f"sent {element} ok"
+        assert _message(text, packs) == text
+        assert redact_body(text) == text
+
+    @pytest.mark.parametrize("packs", PACKS)
+    def test_masking_twice_masks_once(self, packs):
+        text = " ".join(element for element, _ in CARD_ELEMENTS)
+        once = _message(text, packs)
+        assert _message(once, packs) == once
+        assert redact_body(once) == once
+
+    @pytest.mark.parametrize(
+        "element",
+        [
+            "<cvv>[CVV-MASKED]</cvv>",
+            "<pin>[SAD-MASKED]</pin>",
+            "<cardNumber>411111******1111</cardNumber>",
+            "<cardNumber>********0002</cardNumber>",
+            "<cardNumber>[CARD-MASKED]</cardNumber>",
+            "<cvv></cvv>",
+            "<cvv/>",
+        ],
+    )
+    @pytest.mark.parametrize("packs", PACKS)
+    def test_masking_output_passes_through(self, element, packs):
+        assert _message(element, packs) == element
+        assert redact_body(element) == element
+
+    @pytest.mark.parametrize("text", ["enter the <cvv> here", "<cvv>123", "GET /v1/cards/<str:pan>/"])
+    def test_a_start_tag_no_end_tag_closes_is_left_as_it_is(self, text):
+        assert _default_text(text) == text
+
+
+class TestACardElementHoldingElements:
+    """A card object written as XML (CyberSource's `<card>`) is read field by
+    field, as the key walk reads a card object's keys: a CVV or SAD field is
+    its label, a credential a credential, and any other field's text a card
+    value -- a card number under `<accountNumber>` truncated in every pack,
+    an expiry or a type read through."""
+
+    CARD = (
+        "<card><accountNumber>4111111111111111</accountNumber><expirationMonth>12</expirationMonth>"
+        "<expirationYear>2027</expirationYear><cvNumber>123</cvNumber><cardType>001</cardType></card>"
+    )
+    MASKED = (
+        "<card><accountNumber>411111******1111</accountNumber><expirationMonth>12</expirationMonth>"
+        "<expirationYear>2027</expirationYear><cvNumber>[CVV-MASKED]</cvNumber><cardType>001</cardType></card>"
+    )
+
+    @pytest.mark.parametrize("packs", PACKS)
+    def test_each_field_is_masked_by_its_name(self, packs):
+        assert _message(self.CARD, packs) == self.MASKED
+        assert redact_body(self.CARD) == self.MASKED
+        assert _default_text(self.CARD) == self.MASKED
+
+    def test_a_cvv_beside_the_card_number_is_its_label(self):
+        text = "<card><number>4111111111111111</number><cvv>123</cvv></card>"
+        masked = "<card><number>411111******1111</number><cvv>[CVV-MASKED]</cvv></card>"
+        assert redact_body(text) == masked
+        assert _default_text(text) == masked
+
+    def test_a_card_number_that_fails_luhn_is_truncated(self):
+        card = "<card>\n  <number>4111111111111112</number>\n</card>"
+        masked = "<card>\n  <number>411111******1112</number>\n</card>"
+        assert _default_text(card) == masked
+        assert redact_body(card) == masked
+
+    def test_a_cvv_in_an_element_no_key_rule_names_is_masked(self):
+        text = "<cardInfo><cvv>123</cvv><brand>VISA</brand></cardInfo>"
+        masked = "<cardInfo><cvv>[CVV-MASKED]</cvv><brand>VISA</brand></cardInfo>"
+        assert _default_text(text) == masked
+        assert redact_body(text) == masked
+
+    @pytest.mark.parametrize(
+        ("text", "masked"),
+        [
+            ("<cvv><value>123</value></cvv>", "<cvv>[CVV-MASKED]</cvv>"),
+            ("<pinBlock><format>0</format><data>041234FFFFFFFFFF</data></pinBlock>", "<pinBlock>[SAD-MASKED]</pinBlock>"),
+        ],
+    )
+    def test_a_cvv_or_sad_element_holding_elements_is_its_label_whole(self, text, masked):
+        assert _default_text(text) == masked
+        assert redact_body(text) == masked
+
+    def test_a_credential_in_a_card_object_is_still_a_credential(self):
+        text = "<card><token>tok_live_abc123</token></card>"
+        masked = f"<card><token>{secret('tok_live_abc123')}</token></card>"
+        assert _default_text(text) == masked
+        assert redact_body(text) == masked
+
+    @pytest.mark.parametrize("name", ["password", "token"])
+    def test_a_cvv_in_a_credential_is_its_label_before_the_credential_is_masked(self, name):
+        # As the key walk gives a CVV under a credential key its label: masked
+        # with the credential, it was part of the text the credential's token
+        # was a keyed hash of. The credential's token is taken over the
+        # masked text.
+        text = f"<{name}><cvv>123</cvv></{name}>"
+        masked = f"<{name}>{mask_secret('<cvv>[CVV-MASKED]</cvv>')}</{name}>"
+        assert _default_text(text) == masked
+        assert redact_body(text) == masked

@@ -36,18 +36,18 @@ from xml.sax.saxutils import escape as xml_escape
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import (
     _XML_START,
-    ALL_PACKS,
+    _card_field_type,
     _closing,
     _element_text,
     _end_tags,
+    _mask_card_field,
     _mask_userinfo,
-    classify_key,
     holds_pan_run,
-    mask_card_value,
+    mask_card_elements,
     mask_secret,
     mask_wallets,
 )
-from ecsctx.masking.tokens import _MASKED_VALUE, _PLACEHOLDER, make_label, mask_by_field_type
+from ecsctx.masking.tokens import _MASKED_VALUE, _PLACEHOLDER, make_label
 
 _SECRET_LABEL = f"[{make_label('secret')}]"
 
@@ -284,23 +284,6 @@ def _is_credential_key(key: str) -> bool:
 _FORM_VALUE = r"(?:(?!</)[^&\s])*"
 
 
-# What a query or form key names that is masked by its type, whatever the
-# value looks like: a CVV and the rest of Sensitive Authentication Data as
-# their labels, never a token, and a card number truncated. Classified as the
-# key walk classifies a key, every pack on: MIGS's `vpc_CardSecurityCode`, a
-# form's `card_number`, `pin`.
-_CARD_TYPES = frozenset({"cvv", "sad", "card"})
-
-
-def _card_field_type(key: str) -> str | None:
-    field_type = classify_key(key, ALL_PACKS)
-    return field_type if field_type in _CARD_TYPES else None
-
-
-def _mask_card_field(value: str, field_type: str) -> str:
-    return mask_card_value(value) if field_type == "card" else mask_by_field_type(value, field_type)
-
-
 def redact_url(url: str, *, secrets: Collection[str] | None = None) -> str:
     """Return ``url`` with its userinfo and credential-looking query and
     fragment params masked, each as ``mask_secret`` masks a credential: its
@@ -412,10 +395,12 @@ def redact_body(text: str) -> str:
     card number truncated, a CVV ``[CVV-MASKED]``.
 
     An XML element is read as a key: its local name, whatever its namespace
-    prefix and attributes, classified as a query or form key is -- a card,
-    CVV or SAD name masks its text by that type, and a credential name (as
-    ``redact_url`` reads a param's, or one of the secret keys) as a
-    credential, the label when it holds a card-number run. The text runs to
+    prefix and attributes, classified as a query or form key is. A card, CVV
+    or SAD name masks its text by that type, as the text rule does
+    (``mask_card_elements``: a card object field by field); then a
+    credential name (as ``redact_url`` reads a param's, or one of the secret
+    keys) masks its text as a credential, the label when it holds a
+    card-number run, a CVV inside it already its label. The text runs to
     the end tag, children and all, and is masked as it decodes (a CDATA
     section's content, entities resolved). Any other element's text that is
     JSON or XML written with entities goes through these rules as it
@@ -455,9 +440,13 @@ def _is_credential_element(name: str, names: frozenset[str]) -> bool:
 
 
 def _mask_xml_elements(text: str) -> str:
-    """Each element named as a card, CVV, SAD or credential key is, its text
-    masked by that type; entity-encoded text in any other leaf, through the
-    body rules as it decodes."""
+    """Each element named as a card, CVV or SAD key is, its text masked by
+    that type, as the text rule masks one (`mask_card_elements`) -- first, so
+    a CVV inside a credential's element is its label, not part of the text
+    the credential's token hashes. Then each element named as a credential
+    key is, its text masked as a credential; and entity-encoded text in any
+    other leaf, through the body rules as it decodes."""
+    text = mask_card_elements(text)
     names = _get_compiled()[3]
     parts, copied, ends = [], 0, None
     for start in _XML_START.finditer(text):
@@ -470,18 +459,13 @@ def _mask_xml_elements(text: str) -> str:
         if (closing := _closing(ends, start)) is None:
             continue
         end = closing.start()
-        local = start.group("local")
-        field_type = _card_field_type(local)
-        if field_type is None and not _is_credential_element(local, names):
+        if not _is_credential_element(start.group("local"), names):
             if (masked := _encoded_leaf(text, start.end(), end)) is not None:
                 parts += [text[copied : start.end()], masked]
                 copied = end
             continue
         value = _element_text(text[start.end() : end])
-        if field_type is not None:
-            masked = _mask_card_field(value, field_type)
-        else:
-            masked = _SECRET_LABEL if holds_pan_run(value) else mask_secret(value)
+        masked = _SECRET_LABEL if holds_pan_run(value) else mask_secret(value)
         if masked != value:
             parts += [text[copied : start.end()], masked]
             copied = end

@@ -863,7 +863,7 @@ receives the CVV a saved-card payment sends, so the keyed CVV rules are
 
 | Pack | Content rules | On by default |
 |------|---------------|---------------|
-| `default` | PEM keys, wallet tokens (Apple Pay / Google Pay payment data, `[SAD-MASKED]`), credentials (`token=…`, `"secret": …`, `Bearer …`, `API-Key …`, `<password>…</password>`, `password=['a', 'b']`), keyed CVV (`cvv=123`, `"securityCode": "123"`, `CVV 123`, `vpc_CardSecurityCode=123`, `paymentCvv=123`), a URL's userinfo, phone numbers, emails, JWTs | always |
+| `default` | PEM keys, wallet tokens (Apple Pay / Google Pay payment data, `[SAD-MASKED]`), credentials (`token=…`, `"secret": …`, `Bearer …`, `API-Key …`, `<password>…</password>`, `password=['a', 'b']`), keyed CVV (`cvv=123`, `"securityCode": "123"`, `CVV 123`, `vpc_CardSecurityCode=123`, `paymentCvv=123`), an XML element named as a card, CVV or SAD key (`<cvv>123</cvv>`, `<pin>1234</pin>`, `<cardNumber>…</cardNumber>` truncated), a URL's userinfo, phone numbers, emails, JWTs | always |
 | `pci` | PANs (truncated), a bare 3–4 digit CVV beside a card number or its truncation (`4111111111111111 123`, `411111******1111\|12/27\|123`) or after a CVV word (`the cvv is 123`) | no |
 | `financial_ids` | IBANs, SSNs, payment/transaction/auth ids (content and key names) | no |
 
@@ -893,7 +893,7 @@ duration, `declined with code 051` its code.
 
 Key names are checked in every service regardless of packs: a key named
 `card`, `pan`, `card_number`, `cvv`, `securityCode`, … masks its value wherever
-it appears. Expiry keys (`expiry`, `exp_month`, `expiry_year`, …) do not: they
+it appears, and so does an XML element of that name in text. Expiry keys (`expiry`, `exp_month`, `expiry_year`, …) do not: they
 are safe keys, and read through.
 
 ### PAN truncation (`mask_pan`)
@@ -992,14 +992,22 @@ from ecsctx.contrib.net import (
 
   An XML element is read as a key (KNET's KPay takes XML): its local name,
   whatever its namespace prefix and attributes, case-insensitively. A card,
-  CVV or SAD name masks its text by that type (`<cvv>[CVV-MASKED]</cvv>`,
-  `<cardNumber>411111******1111</cardNumber>`); a credential name — one
-  `redact_url` reads as a credential param (`password`, `pwd`, `auth`,
-  `user`, `sign`, …) or one of the secret keys — as a credential
-  (`<password>ptok:v1:…</password>`), to its end tag, children and all. A
-  start tag with no end tag is no element: a route (`/v1/cards/<str:token>/`)
-  has that shape. JSON or XML in an element's text, written with entities,
-  goes through these rules as it decodes and is written back escaped.
+  CVV or SAD name masks its text by that type, as the text rules do
+  (`<cvv>[CVV-MASKED]</cvv>`, `<cardNumber>411111******1111</cardNumber>`),
+  and a card element holding elements — a card object, CyberSource's
+  `<card>` — is read field by field: a CVV or SAD field is its label and
+  any other field's text a card value, so `<accountNumber>` is truncated
+  and an expiry reads through. Then a credential name — one `redact_url`
+  reads as a credential param (`password`, `pwd`, `auth`, `user`, `sign`,
+  `key`, …) or one of the secret keys — masks its text as a credential
+  (`<password>ptok:v1:…</password>`), to its end tag, children and all, a
+  CVV inside it already its label. So `<auth>`, `<user>`, `<signature>` and
+  `<key>` are credentials, as the same names are in a URL's query: one
+  reading of a name across a URL and a body, rather than an exception for
+  one gateway's elements. A start tag with no end tag is no element: a
+  route (`/v1/cards/<str:token>/`) has that shape. JSON or XML in an
+  element's text, written with entities, goes through these rules as it
+  decodes and is written back escaped.
 
   A wallet token is `[SAD-MASKED]` before anything else reads it: an Apple
   Pay token's `paymentData` (an object with `version` `EC_v1` or `RSA_v1`
@@ -1106,9 +1114,9 @@ safe keys (the expiry spellings in the whitelist below).
 | **Secrets** | ending in `token`, `secret`, `password`, `passwd`, `passphrase`, `passcode`, `pwd`; `authorization` (also `HTTP_AUTHORIZATION`, `Proxy-Authorization`), `cookie`, `bearer`, `basic`, `digest`, `credential(s)`, an `api`/`access`/`secret`/`private`/`hmac`/`merchant`/… `_key(s)`, `access_code` | credential forms (`default`) | `[SECRET-MASKED…]`; always the label for a PAN-shaped credential (never truncated, never hashed), for a placeholder another masker left (`[REDACTED]`, `***`) and for a token-shaped value with a card number in it; with `pci`, also for a credential or payment id that holds a card-number run anywhere |
 | **Emails / phones** | containing `email`; `phone`, `mobile`, `tel` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]` |
 | **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `card_details` (the whole key); `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
-| **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no`, `card_num` (MIGS's `vpc_CardNum`) | 12–19 digit runs (`pci`) | `411111******1111` |
-| **CVV** | containing `cvv`, `cvc`, `security code`, `verification value`, or the words `csc`, `cvd`, `cvn`, `card code` — unless what follows names something *about* one (`cvv_required`, `cvvResult`, `cardSecurityCodeError`) | keyed CVV (`default`), a bare 3–4 digit group beside a card number or its truncation, or after a CVV word (`pci`) | `[CVV-MASKED]` |
-| **SAD** | track data (`track2`, `trackData`, `raw_track`; not `track_id`), `pin`/`pinBlock`, EMV/chip data, and ending in `cryptogram`, `cavv`, `tavv`, `aav`, `ucaf` | — | `[SAD-MASKED]` |
+| **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no`, `card_num` (MIGS's `vpc_CardNum`) | 12–19 digit runs (`pci`); an XML element so named (`default`) | `411111******1111` |
+| **CVV** | containing `cvv`, `cvc`, `security code`, `verification value`, or the words `csc`, `cvd`, `cvn`, `card code` — unless what follows names something *about* one (`cvv_required`, `cvvResult`, `cardSecurityCodeError`) | keyed CVV and an XML element so named (`default`), a bare 3–4 digit group beside a card number or its truncation, or after a CVV word (`pci`) | `[CVV-MASKED]` |
+| **SAD** | track data (`track2`, `trackData`, `raw_track`; not `track_id`), `pin`/`pinBlock`, EMV/chip data, and ending in `cryptogram`, `cavv`, `tavv`, `aav`, `ucaf` | an XML element so named (`default`) | `[SAD-MASKED]` |
 | **Wallet tokens** | none: found by shape under any key — an Apple Pay `paymentData` (`version` `EC_v1`/`RSA_v1` with `data`) or a Google Pay token (`protocolVersion` `ECv1`/`ECv2`/`ECv2SigningOnly` with `signedMessage`), as an object or as JSON text | the same shapes as JSON in text, or in a JSON string (`default`) | `[SAD-MASKED]`, the whole token |
 | **National ids** | `civil_id`, `national_id`, `passport`, `iqama`, `qid`, `cpr`, `nid`, `emirates_id`, `ssn`, `tin`, `tax_id`, `aadhaar`, `id_number` | — | `[SSN-MASKED…]` |
 | **IBAN / SSN / payment ids** | `payment_id`, `transaction_id`, `auth_id` (`financial_ids`) | `financial_ids` | `[IBAN-MASKED…]`, … |
@@ -1189,7 +1197,13 @@ An XML element named by a credential keyword — `<password>s3cret</password>`,
 `<wsse:Password Type="…">…</wsse:Password>`, `<Authorization>Bearer x</Authorization>`
 — is masked to its end tag, as it decodes, in every pack, for a body that never
 went through `redact_body`; a start tag with no end tag (a route,
-`/v1/cards/<str:token>/`) is no element. A wallet token written as JSON in text,
+`/v1/cards/<str:token>/`) is no element. So is an element named as a card, CVV
+or SAD key, as `redact_body` masks it: `<cvv>123</cvv>` is
+`<cvv>[CVV-MASKED]</cvv>`, `<pin>1234</pin>` `<pin>[SAD-MASKED]</pin>`, and
+`<cardNumber>` truncated — a test card that fails Luhn too, with or without
+`pci` — and a card object is read field by field. A CVV inside a credential's
+element is its label before the credential is masked, as under a credential
+key. A wallet token written as JSON in text,
 or as JSON in a JSON string, is `[SAD-MASKED]` before any credential rule reads
 it.
 
