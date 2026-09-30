@@ -829,8 +829,10 @@ format once masked — a %-style template masking itself changes (in
 lazy translation or an exception as the message, a number masking turned into
 text under `%d`, arguments that never fit — is rendered from the masked
 arguments and masked whole, or is `[MASKING-FAILED: …]`: no line is dropped,
-and no argument reaches stderr. A template masking leaves as it is, and that
-formats, keeps its arguments.
+and no argument reaches stderr. The one exception is a dict or list message
+with arguments, which logging cannot format at all: as in stdlib, the line is
+dropped and `handleError` prints the arguments, masked. A template masking
+leaves as it is, and that formats, keeps its arguments.
 
 **Log processor path** (automatic via `mask_sensitive_data`):
 - When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`), for fraud correlation. Same input always produces the same token. Where no token can be made (PII not configured, or tokenization failing) the value becomes its type's label, `[EMAIL-MASKED]`; CVV is never tokenized and carries nothing, so it keeps a bracketed label (`[CVV-MASKED]`); a card number is never tokenized either, but its truncation IS carried, so it is bare (`411111******1111`) — under a card key, and with the `pci` pack under any key, including a name or email field. Expiry is not masked at all. A null stays null, and an empty value stays empty.
