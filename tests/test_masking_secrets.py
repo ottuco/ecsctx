@@ -158,7 +158,7 @@ class TestTheKeyWalk:
 
 
 _TEXT_RULES = rules_for(ALL_PACKS)
-# Rule 2 (a quoted key), rule 3 (`key=value`) and rule 8 (an auth scheme).
+# Rule 4 (a quoted key), rule 5 (`key=value`) and rule 11 (an auth scheme).
 CREDENTIAL_TEXTS = [
     'sent {"password": "%s"} to the gateway',
     "login with password=%s failed",
@@ -178,7 +178,7 @@ class TestTheCredentialTextRules:
 
     @pytest.mark.parametrize("value", ["[REDACTED]", "***"])
     def test_a_placeholder_under_a_quoted_key_is_the_label(self, value):
-        # Rules 3 and 8 never take `[REDACTED]`: a value never starts with `[`,
+        # Rules 5 and 11 never take `[REDACTED]`: a value never starts with `[`,
         # which opens a label. `***` after `=` is the label too (below).
         assert mask_by_patterns(CREDENTIAL_TEXTS[0] % value, _TEXT_RULES) == CREDENTIAL_TEXTS[0] % LABEL
 
