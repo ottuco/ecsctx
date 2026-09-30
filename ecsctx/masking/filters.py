@@ -33,8 +33,11 @@ from ecsctx.masking.exemptions import (
 )
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import (
+    _CRED_LITERALS,
+    _CVV_LITERALS,
     _KEY_SEPARATORS,
     _MIN_PAN_DIGITS,
+    _PAYMENT_ID_KEYWORD,
     _SAFE_KEYS_JOINED,
     ALL_PACKS,
     SAFE_KEYS,
@@ -280,6 +283,42 @@ _CONVERSION = re.compile(
     r"%(?:%|(?:\((?P<key>(?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\))?(?P<flags>[#0\- +]*)(?P<width>\*|\d+)?"
     r"(?:\.(?P<precision>\*|\d*))?[hlL]?(?P<type>[diouxXeEfFgGcrsa]))"
 )
+
+
+# A word a content rule keys a value on, before a placeholder -- a
+# credential's or an auth scheme's, a CVV's, a card's, a payment id's -- as
+# the rules' pre-checks spell them.
+_JOINING_WORD = re.compile(
+    "|".join((*map(re.escape, _CRED_LITERALS), *map(re.escape, _CVV_LITERALS), "card", r"\bpan\b", _PAYMENT_ID_KEYWORD)),
+    re.IGNORECASE,
+)
+# How far before a placeholder its key word may stand: `the cvv is %s`.
+_JOINING_REACH = 64
+# A placeholder between plain words: no text before it, or a whole word of
+# letters and a space; and no text after it, or sentence punctuation, then a
+# space and a whole word of letters.
+_PLAIN_BEFORE = re.compile(r"(?:\A|(?<![\w%])[A-Za-z]+\s+)\Z")
+_PLAIN_AFTER = re.compile(r"\A(?:[.!?)]*\Z|[.,;!?)]*\s+[A-Za-z]+(?=[\s.,;!?)]|\Z))")
+
+
+@lru_cache(maxsize=1024)
+def _may_join(template: str) -> bool:
+    """Whether rendering ``template`` can put what a content rule reads
+    across a placeholder, which neither the template nor an argument holds on
+    its own: `cvv=%s` with `123`, `card %s %s` with a card number and its CVV.
+    Not where each placeholder stands between plain words, no key word within
+    reach before it (`user %s paid %s KWD`). Cached: a service logs a fixed
+    set of templates."""
+    placeholders = [found for found in _CONVERSION.finditer(template) if found["type"] is not None]
+    for index, found in enumerate(placeholders):
+        start = placeholders[index - 1].end() if index else 0
+        end = placeholders[index + 1].start() if index + 1 < len(placeholders) else len(template)
+        before, after = template[start : found.start()], template[found.end() : end]
+        if (index and not before) or not _PLAIN_BEFORE.search(before) or not _PLAIN_AFTER.match(after):
+            return True
+        if _JOINING_WORD.search(template, max(0, found.start() - _JOINING_REACH), found.start()):
+            return True
+    return False
 
 
 def _template_of(msg: Any) -> str | None:
@@ -736,12 +775,13 @@ class MaskPIIFilter(logging.Filter):
             value = bytes(value).decode("utf-8", errors="replace")
         if verbatim_digits and _is_reference_number(value):
             return value
-        if _is_wallet(value):
-            return WALLET_LABEL
         # The two exact types nearly every value is, first: this runs for
-        # every value of every record.
+        # every value of every record. Each is a wallet token's payment data
+        # before anything else reads it (`_is_wallet`, spelled out here).
         kind = type(value)
         if kind is str:
+            if value[:1] in _JSON_STARTS and is_wallet_text(value):
+                return WALLET_LABEL
             if inherited == "card":
                 return _mask_card_list_element(value)
             if inherited is not None:
@@ -752,6 +792,8 @@ class MaskPIIFilter(logging.Filter):
             # is a field value, and its key has already had its say.
             return self._mask_string(value, ctx, scalar=path != ())
         if kind is dict:
+            if is_wallet_token(value):
+                return WALLET_LABEL
             return self._mask_dict(value, path, ctx, inherited)
         if isinstance(value, dict):
             return self._mask_dict(value, path, ctx, inherited)
@@ -883,7 +925,7 @@ class MaskPIIFilter(logging.Filter):
                         and (
                             msg != template
                             or (rendered := _render(msg, args)) is None
-                            or self._mask_value(rendered, (), ctx) != rendered
+                            or (_may_join(template) and self._mask_value(rendered, (), ctx) != rendered)
                         )
                     ):
                         # getMessage() would raise on what masking left, so the
