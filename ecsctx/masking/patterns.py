@@ -3,7 +3,7 @@
 Ported from ottu_pg's MaskPIIFilter (utils/log/filters.py), merged with
 ecsctx's own PII key-name list. Two independent detection strategies:
 
-1. Content-based (RULES): 20 ordered regexes in three packs — `default`
+1. Content-based (RULES): 21 ordered regexes in three packs — `default`
    always on, `pci` and `financial_ids` opt-in (ecsctx.masking.config) — each
    behind a literal pre-check, applied to every string the filter reaches.
    Rule order is load-bearing — see the comments on each rule and the
@@ -1333,8 +1333,21 @@ def _cvv_space(m: re.Match) -> str:
     return f"{m.group(1)} {_CVV_LABEL}"
 
 
-def _standalone_cvv(_m: re.Match) -> str:
-    return _CVV_LABEL
+def _cvv_beside_card(m: re.Match) -> str:
+    """Each field of the card's that is three or four digits alone, as the
+    label: which of `1227` and `123` after a card is its CVV no rule can
+    tell, so neither ships. A date (`12/27`), a field its word names as the
+    expiry (`exp 1227`) and a month or year of one or two digits stay."""
+    return m.group("card") + _CARD_FIELD.sub(_cvv_field, m.group("fields"))
+
+
+def _cvv_field(field: re.Match) -> str:
+    value = field.group("field")
+    return field.group("separator") + (_CVV_LABEL if _BARE_CVV.fullmatch(value) else value)
+
+
+def _cvv_after_word(m: re.Match) -> str:
+    return f"{m.group('lead')}{_CVV_LABEL}"
 
 
 def _payid_quoted(m: re.Match) -> str:
@@ -1426,9 +1439,6 @@ class Rule(NamedTuple):
     # Replaces pattern.sub for rules whose matches can only start at a few
     # positions it can find cheaply; same output as pattern.sub.
     scan: Callable[[re.Pattern, Callable, str], str] | None = None
-    # Unlike `gate`, this one DOES change the result: it says whether the rule
-    # applies to this text at all. Only the standalone-CVV rule has one.
-    precondition: Callable[[str, str], bool] | None = None
     # True for a rule that may only run over prose -- a human message, a
     # serialised body -- and never over a whole scalar field value. A field
     # value has a key to be judged by; applying a keyless shape rule to it
@@ -1511,36 +1521,37 @@ def _has_ssn_shape(text: str, _lowered: str) -> bool:
     return _SSN_SHAPE.search(text) is not None
 
 
-def _has_three_digits(text: str, _lowered: str) -> bool:
-    return _THREE_DIGITS.search(text) is not None
+def _has_card_and_digits(text: str, _lowered: str) -> bool:
+    # A truncation's stars, or a card number's digits, and three digits.
+    return _THREE_DIGITS.search(text) is not None and ("*" in text or _CARD_SHAPE.search(text) is not None)
 
 
-# Rules 18 and 19 have already run by the time rule 20 does, so a PAN in the
-# text is now a bare truncation rather than a digit run. _TRUNCATED_PAN_RE
-# below is what recognises it; these words cover a "card"/"pan" key name
-# serialised into the text, and the prose cases.
-# "cvv", "cvc" and "security" too: text that says "cvv" anywhere is card
-# context even when the keyword rules cannot reach the digits ("the cvv is
-# 123" -- rule 11 needs them adjacent).
-_CARD_CONTEXT = ("card", "pan", "cardholder", "credit", "cvv", "cvc", "security")
-_TRUNCATED_PAN_RE = re.compile(_TRUNCATED_PAN)
-
-
-def _text_has_card_context(text: str, lowered: str) -> bool:
-    """Whether this text holds anything a CVV could belong to.
-
-    A 3-4 digit group with no card anywhere near it is a status code, a count
-    or an amount, and a CVV is worth nothing without its PAN. Rules 18 and 19
-    have already run, so a PAN is a bare truncation by now -- the star run is
-    what recognises it, as the words cover a card-named key in the text.
-    """
-    if any(word in lowered for word in _CARD_CONTEXT):
-        return True
-    # A PAN the card rule has already truncated: rule 18 runs first, so by now
-    # the digit run _CARD_SHAPE looks for is gone and the truncation is the
-    # only card context left in the text. Without this, a CVV sitting beside a
-    # masked PAN stops being masked -- which is a leak, not a formatting bug.
-    return _CARD_SHAPE.search(text) is not None or _TRUNCATED_PAN_RE.search(text) is not None
+# A bare CVV's card: a card number the card rule truncated -- its first six,
+# stars and last four, or stars and the last four -- or a run of 12-19 digits
+# it left as it is (one glued to a word). The card rule runs first, so a PAN
+# in the text is its truncation by the time the bare CVV rules look.
+_CVV_CARD = r"(?:(?<![\d*])(?:\d{6})?\*{4,}\d{4}|(?<!\d)\d{12,19})(?!\d)"
+# What joins the fields of a card written out: whitespace, or `|`, `,`, `;`
+# or `:` with any whitespace around it.
+_CVV_SEPARATOR = r"(?:\s*[|,;:]\s*|\s+)"
+# A field of a card written out, after the card number: the CVV, the expiry
+# -- a month, a year, or both joined by `/` or `-`, perhaps after its word
+# (`exp 12/27`) -- or the label masking wrote for one. Never the start of a
+# longer number, a date, a time or an amount (`2026-09-30`, `10:30`,
+# `100.000`): what follows those ends the card's fields before them. A comma
+# does not: it separates the fields of a CSV row (`4111…,12,27,123`).
+_CVV_FIELD = (
+    r"(?:(?:(?:exp(?:iry|ires|iration)?(?:\s*date)?|valid(?:\s*thru)?)\s*[:=]?\s*)?\d{1,4}(?:[/-]\d{1,4})?"
+    r"|\[CVV-MASKED\])(?![\w*/-]|[.:]\d)"
+)
+_CARD_FIELD = re.compile(rf"(?P<separator>{_CVV_SEPARATOR})(?P<field>{_CVV_FIELD})", re.IGNORECASE)
+# A field that may be the CVV: three or four digits, nothing else.
+_BARE_CVV = re.compile(r"\d{3,4}")
+# The CVV after its word: three or four digits, as a field is.
+_CVV_DIGITS = r"\d{3,4}(?![\w*/-]|[.:]\d)"
+# Between a CVV word and its digits: a sign, or a word or two a sentence puts
+# there (`the cvv is 123`, `security code was 1234`, `cvv number 123`).
+_CVV_LINK = r"(?=[\s:=#-])(?:\s+(?:is|was|of|number|value|code)){0,2}\s*[:=#-]?\s*"
 
 
 # Every credential match contains one of these words, and starts inside the
@@ -1643,12 +1654,12 @@ _sub_near_credential_words = _near_words(_credential_word_starts, _CRED_REACH)
 _sub_near_cvv_words = _near_words(_cvv_word_starts, _CVV_REACH)
 
 
-def _rule(pack, regex, repl, gate, scan=None, prose_only=False, precondition=None):
-    return (pack, regex, repl, gate, scan, prose_only, precondition)
+def _rule(pack, regex, repl, gate, scan=None, prose_only=False):
+    return (pack, regex, repl, gate, scan, prose_only)
 
 
 # ---------------------------------------------------------------------------
-# The 20 content rules, in execution order. DO NOT REORDER — several rules
+# The 21 content rules, in execution order. DO NOT REORDER — several rules
 # only behave correctly because a more specific rule ran first:
 #   1. Credential/CVV/payment-id keyword rules before all shape rules —
 #      otherwise a numeric secret in the card-digit range gets masked as a
@@ -1660,11 +1671,10 @@ def _rule(pack, regex, repl, gate, scan=None, prose_only=False, precondition=Non
 #   4. Phone before the card rule — same reason.
 #   5. Email before card/CVV/SSN — a numeric-heavy address must mask as one
 #      email rather than fragment.
-#   6. SSN before standalone-CVV — a space-separated SSN's outer groups are
-#      each individually CVV-standalone-shaped.
-#   7. Standalone-CVV last — it is the loosest rule in the file (any bare
-#      3-4 digit group); widening its boundary set beyond whitespace/string-
-#      boundary over-masks.
+#   6. SSN before the bare CVV rules — a space-separated SSN's outer groups
+#      are each CVV-shaped.
+#   7. The bare CVV rules last — the card a CVV sits beside is the
+#      truncation the card rule wrote.
 #   8. URL userinfo before phone and email — a password is a credential,
 #      not a phone number, and `user:pw@host.tld` keeps its host rather than
 #      masking as an email.
@@ -1874,28 +1884,38 @@ _RULE_TABLE = (
         _ssn,
         _has_ssn_shape,
     ),
-    # 20. CVV standalone — bare 3-4 digit group, no keyword (call 123 now).
-    # The loosest rule in the file, and now doubly fenced. It never sees a
-    # whole scalar field value (prose_only): there, "000" is a PSP response
-    # code, not a CVV, and the key says which. In prose it fires only when the
-    # same text carries card context, because a 3-4 digit group with no card
-    # anywhere near it is a status, a count or an amount -- and a CVV is worth
-    # nothing without the PAN it belongs to. A keyword-anchored CVV is already
-    # rules 6, 7 and 11's job, whatever else the text holds.
+    # 20. CVV beside a card — a bare 3-4 digit group among the fields written
+    # after a card number or its truncation, up to three of them:
+    # `4111111111111111 123`, `411111******1111|12/27|123`. A CVV is worth
+    # nothing without its card and is written beside it; any other 3-4 digit
+    # group in a line that mentions a card is a status, a duration, a count,
+    # an amount or a decline code (#160054: `card list returned 200 in 350
+    # ms`). It never sees a whole scalar field value (prose_only): there,
+    # "000" is a PSP response code, and the key says what it is.
     _rule(
         "pci",
-        r"(?:^|(?<=\s))\d{3,4}(?=\s|$)",
-        _standalone_cvv,
-        _has_three_digits,
+        rf"(?P<card>{_CVV_CARD})(?P<fields>(?:{_CVV_SEPARATOR}{_CVV_FIELD}){{1,3}})",
+        _cvv_beside_card,
+        _has_card_and_digits,
         prose_only=True,
-        precondition=_text_has_card_context,
+    ),
+    # 21. CVV after its word — a bare 3-4 digit group after a CVV word, a
+    # sign or a word or two between them (`the cvv is 123`), which the keyed
+    # rules 6, 7 and 11 do not read. Tried near the CVV words, as they are.
+    _rule(
+        "pci",
+        rf"\b(?P<lead>{_CVV_KEYWORD}{_CVV_LINK}){_CVV_DIGITS}",
+        _cvv_after_word,
+        _has_cvv_keyword,
+        _sub_near_cvv_words,
+        prose_only=True,
     ),
 )
 
 
 RULES: tuple[Rule, ...] = tuple(
-    Rule(f"{index}:{repl.__name__}", pack, re.compile(regex, re.IGNORECASE), repl, gate, scan, pre, prose)
-    for index, (pack, regex, repl, gate, scan, prose, pre) in enumerate(_RULE_TABLE, start=1)
+    Rule(f"{index}:{repl.__name__}", pack, re.compile(regex, re.IGNORECASE), repl, gate, scan, prose)
+    for index, (pack, regex, repl, gate, scan, prose) in enumerate(_RULE_TABLE, start=1)
 )
 
 
@@ -1970,8 +1990,8 @@ _MAX_PASSES = 4
 def _mask_once(text: str, rules: tuple[Rule, ...]) -> str:
     lowered = _folded_lower(text)
     if lowered is None:
-        # No case-folded text to judge a precondition by, so every rule runs:
-        # masking more than necessary is the safe direction to fail in.
+        # No case-folded text to gate by, so every rule runs: masking more
+        # than necessary is the safe direction to fail in.
         for rule in rules:
             text = rule.pattern.sub(rule.repl, text)
         return text
@@ -2033,12 +2053,6 @@ def _mask_gated(text: str, lowered: str, rules: tuple[Rule, ...]) -> str:
         if verdict is None:
             verdict = verdicts[rule.gate] = rule.gate(text, lowered)
         if not verdict:
-            continue
-        # Re-asked on every version of the text, like a gate: masking a PAN
-        # replaces it with a bare truncation, which still reads as card context
-        # rather than removing it, so a later pass can only become more
-        # permissive — never less.
-        if rule.precondition is not None and not rule.precondition(text, lowered):
             continue
         if rule.scan is not None:
             masked = rule.scan(rule.pattern, rule.repl, text)

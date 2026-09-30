@@ -510,6 +510,7 @@ class TestCvvScanMatchesFullScan:
         '"', "'", ":", "=", " ", "-", "_", ",", "{", "}", "\n", "\\", "a-", "x",
         "cvv", "CVV2", "cvc", "Cvv", "csc", "cav2", "cvn", "cv", "number", "security", "Security", "code", "Code",
         "card", "Card", "verification", "value", "vpc_", "payment", "saved", "recv", "123", "4829", "482912",
+        " is ", " was ", "#", "  ",
     )
 
     def _cvv_rules(self):
@@ -521,10 +522,14 @@ class TestCvvScanMatchesFullScan:
         assert all(rule.scan is not None for rule in rules)
 
     def test_matches_on_generated_text(self):
+        # The keyed rules, and the bare CVV after its word (`pci`), which is
+        # tried near the same words.
+        rules = [*self._cvv_rules(), *(rule for rule in RULES if rule.name.endswith(":_cvv_after_word"))]
+        assert len(rules) == 4
         rng = random.Random(159942)
         for _ in range(3000):
             text = "".join(rng.choice(self.FRAGMENTS) for _ in range(rng.randint(1, 14)))
-            for rule in self._cvv_rules():
+            for rule in rules:
                 assert rule.scan(rule.pattern, rule.repl, text) == rule.pattern.sub(rule.repl, text), (rule.name, text)
 
 

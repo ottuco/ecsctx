@@ -11,12 +11,12 @@ jobs, and each one needs a replacement that does not depend on it:
 1. `already_masked()` recognised a masked value by the literal `-MASKED:` /
    `-MASKED]`, keeping a re-passed value from being masked a second time;
 2. `mask_card_value` recognised its own output via `_SINGLE_MARKER`;
-3. `_text_has_card_context` — added in this same release to stop the
-   standalone-CVV rule eating response codes — read the word "CARD" out of the
-   marker. Once the card rule fires the digit run is gone, so the marker was the
-   only card context left in the text. Miss this one and a CVV beside a masked
-   PAN silently stops being masked, which is a PCI leak, not a regression in
-   formatting.
+3. the bare CVV rule -- narrowed in this same release to stop it eating
+   response codes -- read the word "CARD" out of the marker. Once the card rule
+   fires the digit run is gone, so the truncation is the card a CVV follows
+   (since 0.15.6 the rule reads only a CVV beside one, #160054). Miss this one
+   and a CVV beside a masked PAN silently stops being masked, which is a PCI
+   leak, not a regression in formatting.
 """
 
 import pytest
@@ -148,23 +148,25 @@ class TestAValueAlreadyTruncatedUpstreamPassesThrough:
 
 
 class TestTheCvvBesideAMaskedPanStillMasks:
-    """The leak this change opens if `_text_has_card_context` is not taught the
-    bare shape. The card rule runs before the standalone CVV rule, so by the time the CVV rule looks
-    at the text the PAN is already truncated and `_CARD_SHAPE` no longer
-    matches — the truncation itself is the only card context left.
+    """The leak this change opens if the bare CVV rule is not taught the bare
+    shape. The card rule runs before it, so by the time it looks at the text
+    the PAN is already truncated: the truncation is the card a CVV follows.
+    Since 0.15.6 only a CVV beside it (#160054): a word between them makes
+    the digits a reference, not a CVV.
     """
 
     def test_a_cvv_after_a_pan_in_one_string(self):
-        # A word between them on purpose: the context the CVV rule finds is
-        # the truncation, not a digit run beside the CVV.
-        out = mask_by_all_patterns(f"{PAN} ref 123")
-        assert TRUNCATED in out
-        assert "[CVV-MASKED]" in out
+        # `|`, which never joins card digits: a space would make this PAN,
+        # which fails Luhn, and the 123 one 19-digit number.
+        out = mask_by_all_patterns(f"{PAN}|123")
+        assert out == f"{TRUNCATED}|[CVV-MASKED]"
 
     def test_a_cvv_after_an_already_truncated_pan(self):
         """The second pass over a document the first pass already masked."""
-        out = mask_by_all_patterns(f"{TRUNCATED} ref 123")
-        assert "[CVV-MASKED]" in out
+        assert mask_by_all_patterns(f"{TRUNCATED} 123") == f"{TRUNCATED} [CVV-MASKED]"
+
+    def test_a_reference_after_the_pan_is_not_a_cvv(self):
+        assert mask_by_all_patterns(f"{PAN}| ref 123") == f"{TRUNCATED}| ref 123"
 
     def test_a_status_code_with_no_card_anywhere_still_survives(self):
         """The other half of the same precondition, which must not regress."""

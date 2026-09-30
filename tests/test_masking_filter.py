@@ -839,8 +839,8 @@ CARD_NUMBER_CASES = [
     ("card-20d-other-space-luhn-reading", "112345 678912 34567891", "112345 **********7891"),
     ("card-20d-other-dash-luhn-reading", "1123-4567-8912-34567891", "1123-4567-********7891"),
     ("card-20d-9-space-4x4-luhn-reading", "9123 4567 8912 34567891", "912345**********7891"),
-    # The CVV rule still claims the two groups the card reading leaves.
-    ("card-20d-other-space-4x4-luhn-reading", "1123 4567 8912 34567891", "[CVV-MASKED] [CVV-MASKED] ********7891"),
+    # The two groups the card reading leaves are no CVV: none follows a card.
+    ("card-20d-other-space-4x4-luhn-reading", "1123 4567 8912 34567891", "1123 4567 ********7891"),
 ]
 
 
@@ -944,11 +944,14 @@ def test_dict_key_value_masking(label, sample, expected):
 # guard leaves prose like "Basic authentication" untouched.
 # ---------------------------------------------------------------------------
 NOT_MASKED = [
-    # Promoted out of OVER_MASKED_BECAUSE_OF_CVV: an 11-digit run is too short
-    # for the card rules AND carries no card context, so the standalone-CVV
-    # rule no longer claims its 4-digit groups.
+    # Promoted out of OVER_MASKED_BECAUSE_OF_CVV: the bare CVV rule reads a
+    # 3-4 digit group only beside a card number or a CVV word, and none of
+    # these groups follows one -- an 11-digit run is too short for the card
+    # rules, and a 20-digit one with no Luhn-valid reading is left whole.
     ("card-11d-9-space", "9123 4567 891"),
     ("card-11d-other-space", "1123 4567 891"),
+    ("card-20d-space-no-luhn-reading-in-groups", "1123 4567 8912 34567890"),
+    ("card-20d-other-space-no-luhn-reading-in-groups", "0109 2815 9013 96245957"),
     ("cache-key", "cache_key=user_profile_v2"),
     ("sort-key", "sort_key=created_at_desc"),
     ("primary-key", "primary_key=customer_00042"),
@@ -995,41 +998,6 @@ NOT_MASKED = [
 
 @pytest.mark.parametrize("label,sample", NOT_MASKED, ids=[g[0] for g in NOT_MASKED])
 def test_does_not_over_mask(label, sample):
-    assert _mask(sample) == sample
-
-
-# ---------------------------------------------------------------------------
-# Space-cascade bug (narrowed, not closed): the standalone-CVV rule — the
-# loosest rule in the file, any bare 3-4 digit group — claims the 4-digit
-# groups of a space-separated digit run that the card rules correctly ignored
-# for being outside the 12-19 range. `expected` is the intended output
-# (untouched), not what ships today. Strict xfail, so fixing it turns these
-# into XPASS failures and forces promotion into NOT_MASKED.
-#
-# The 11-digit rows have been promoted: the rule now needs card context in the
-# text, and 11 digits are too few for _CARD_SHAPE to supply it. The 20-digit
-# rows stay — their first 12 digits ARE card-shaped, so the text does carry
-# card context and the rule is entitled to look at the groups. Closing those
-# needs the card rules to claim the whole run first, which is a change to
-# the card rule, not to the CVV rule. The rows here have no Luhn-valid reading of
-# 12-19 digits; the earlier ones had one, and are truncated as cards now
-# (CARD_NUMBER_CASES).
-#
-# The in-range 4-4-4-4 rows this list carried in the ported source are no
-# longer affected — truncated-PAN masking claims the whole run before the
-# CVV rule can see the groups — and now live in CARD_NUMBER_CASES.
-# ---------------------------------------------------------------------------
-OVER_MASKED_BECAUSE_OF_CVV = [
-    ("card-20d-space-no-luhn-reading", "1123 4567 8912 34567890"),
-    ("card-20d-other-space-no-luhn-reading", "0109 2815 9013 96245957"),
-]
-
-
-@pytest.mark.xfail(strict=True, reason="space-cascade: card-shaped text lets the CVV rule see its groups")
-@pytest.mark.parametrize(
-    "label,sample", OVER_MASKED_BECAUSE_OF_CVV, ids=[g[0] for g in OVER_MASKED_BECAUSE_OF_CVV]
-)
-def test_over_masked_because_of_cvv(label, sample):
     assert _mask(sample) == sample
 
 
