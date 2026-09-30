@@ -1,13 +1,18 @@
 """Credential redaction for the network boundary (shared by all services).
 
-The net boundary logs ``url.full`` and (when textual) the response body for
-every outbound call. Legacy providers send ``username``/``password``/``apikey``
-in the GET query string and OAuth-style secrets as body values, so both must
-be masked before logging. ``mask_sensitive_data`` does not cover these shapes:
-it masks PII (email/phone) and ``Authorization`` *headers*, but not a secret
-carried as a query param or a body value — an OAuth token response would reach
-the index intact. Each value found is masked as ``mask_secret`` masks a
-credential, so it carries the token the same value gets under a key.
+The net boundary logs ``url.full`` and (when textual) the request and response
+bodies of every outbound call. Legacy providers send
+``username``/``password``/``apikey`` in the GET query string, a DSN or proxy URL
+carries a password in its userinfo, and OAuth-style secrets come back as body
+values, so all of them are masked before logging. ``mask_sensitive_data``
+masks what its credential rules name wherever it appears -- ``password=`` in a
+query, ``"access_token": …`` in body text, a URL's userinfo, ``cvv=123`` --
+but these helpers know their input: a param whose name only hints at a
+credential (``user``, ``P``, ``sign``), a card number under its key in a query
+or form body, a literal secret in a URL's path, a body masked by its keys
+before it is serialised and capped. Each value found is masked as
+``mask_secret`` masks a credential, so it carries the token the same value gets
+under a key.
 
 Ported from ottu_backend's ``contrib/net/redact.py`` so every service imports
 one copy. Best-effort by design: matches common credential key names
@@ -27,8 +32,15 @@ from typing import Any
 from urllib.parse import unquote_plus, urlparse, urlsplit, urlunsplit
 
 from ecsctx.masking.filters import MaskPIIFilter
-from ecsctx.masking.patterns import holds_pan_run, mask_secret
-from ecsctx.masking.tokens import _MASKED_VALUE, _PLACEHOLDER, make_label
+from ecsctx.masking.patterns import (
+    ALL_PACKS,
+    _mask_userinfo,
+    classify_key,
+    holds_pan_run,
+    mask_card_value,
+    mask_secret,
+)
+from ecsctx.masking.tokens import _MASKED_VALUE, _PLACEHOLDER, make_label, mask_by_field_type
 
 _SECRET_LABEL = f"[{make_label('secret')}]"
 
@@ -76,9 +88,11 @@ UNREADABLE_CONTENT_TYPES = (
 _DEFAULT_BODY_LOG_CAP = 4096
 
 # Credential keys whose VALUE must never reach the log, whatever the body shape.
-# Deliberately excludes a bare "token": gateways use it for non-secret payment
-# and session identifiers that log readers rely on.
+# A bare "token" among them, as the key walk classifies it: left alone, a saved
+# card's sixteen-digit gateway token went out whole. With a keyset its value is
+# still its token, so a gateway's payment or session id correlates.
 _DEFAULT_SECRET_BODY_KEYS = (
+    "token",
     "access_token",
     "refresh_token",
     "id_token",
@@ -254,17 +268,44 @@ def _is_credential_key(key: str) -> bool:
     return k in _CREDENTIAL_EXACT or any(hint in k for hint in _CREDENTIAL_HINTS)
 
 
-def redact_url(url: str, *, secrets: Collection[str] | None = None) -> str:
-    """Return ``url`` with credential-looking query-param values masked, each
-    as ``mask_secret`` masks a credential: its token, or ``[SECRET-MASKED]``.
+# What a query or form key names that is masked by its type, whatever the
+# value looks like: a CVV and the rest of Sensitive Authentication Data as
+# their labels, never a token, and a card number truncated. Classified as the
+# key walk classifies a key, every pack on: MIGS's `vpc_CardSecurityCode`, a
+# form's `card_number`, `pin`.
+_CARD_TYPES = frozenset({"cvv", "sad", "card"})
 
+
+def _card_field_type(key: str) -> str | None:
+    field_type = classify_key(key, ALL_PACKS)
+    return field_type if field_type in _CARD_TYPES else None
+
+
+def _mask_card_field(value: str, field_type: str) -> str:
+    return mask_card_value(value) if field_type == "card" else mask_by_field_type(value, field_type)
+
+
+def redact_url(url: str, *, secrets: Collection[str] | None = None) -> str:
+    """Return ``url`` with its userinfo and credential-looking query and
+    fragment params masked, each as ``mask_secret`` masks a credential: its
+    token, or ``[SECRET-MASKED]``. A param whose key the key rules call a
+    card, CVV or other SAD is masked by that type instead: a card number
+    truncated, a CVV ``[CVV-MASKED]``, never a token.
+
+    The userinfo's user and password are masked each as it decodes
+    (``https://<user>:<password>@host``), the host and port kept; an empty
+    part stays empty, and a label's brackets there are percent-encoded
+    (``%5BSECRET-MASKED%5D``), as a netloc must be to parse. The fragment's
+    ``key=value`` params are read as the query's are (an OAuth implicit grant
+    returns ``#access_token=…``).
     ``secrets`` holds literal values (e.g. a saved-card token carried in the
     URL path) to mask wherever they occur in the URL, longest first, so one
     that contains another is masked whole. The path is otherwise left alone,
     so deliberately logged identifiers such as ``session_id`` stay visible.
     Empty secrets are ignored. A credential param's value is replaced in place
-    and every other param is left as written; an empty value stays empty. A
-    URL that cannot be parsed is masked whole.
+    and every other param is left as written; an empty value stays empty. The
+    URL is rebuilt only when something in it was masked, and a URL that cannot
+    be parsed is masked whole. Masking a URL twice masks it once.
     """
     if not isinstance(url, str) or not url:
         return url  # None/empty/non-str: nothing to redact, never raise on a log path
@@ -282,20 +323,42 @@ def redact_url(url: str, *, secrets: Collection[str] | None = None) -> str:
         parts = urlsplit(url)
     except ValueError:
         return mask_secret(url)  # unparseable -> don't risk logging it raw
-    if parts.query:
-        query = "&".join(_mask_query_field(field) for field in parts.query.split("&"))
-        if query != parts.query:
-            url = urlunsplit(parts._replace(query=query))
+    userinfo, at, host = parts.netloc.rpartition("@")
+    # A label's brackets percent-encoded: urlsplit refuses brackets in a
+    # netloc whose host is no IPv6 address, so the masked URL would not parse
+    # again -- not in redact_url, nor in ecs_url's urlparse. The userinfo is
+    # read as it decodes, so a second pass leaves it as it is.
+    masked = _mask_userinfo(userinfo).replace("[", "%5B").replace("]", "%5D")
+    netloc = f"{masked}@{host}" if at else parts.netloc
+    query, fragment = _mask_params(parts.query), _mask_params(parts.fragment)
+    if (netloc, query, fragment) != (parts.netloc, parts.query, parts.fragment):
+        url = urlunsplit(parts._replace(netloc=netloc, query=query, fragment=fragment))
     return url
 
 
+def _mask_params(params: str) -> str:
+    """A query or fragment, ``&``-separated ``key=value`` params, each masked
+    by its key."""
+    if not params:
+        return params
+    return "&".join(_mask_query_field(field) for field in params.split("&"))
+
+
 def _mask_query_field(field: str) -> str:
-    """One ``key=value`` of a query: a credential's value masked, written
-    unencoded so it reads as the token or label it is; anything else byte for
-    byte, since re-encoding it changed what a reader searches for."""
+    """One ``key=value`` of a query or fragment: a card, CVV or SAD key's value
+    masked as its type is, a credential's as ``mask_secret`` masks one, each
+    written unencoded so it reads as the truncation, label or token it is;
+    anything else byte for byte, since re-encoding it changed what a reader
+    searches for."""
     key, equals, value = field.partition("=")
-    if equals and _is_credential_key(unquote_plus(key)):
-        return f"{key}={mask_secret(unquote_plus(value))}"
+    if not equals:
+        return field
+    name, decoded = unquote_plus(key), unquote_plus(value)
+    if field_type := _card_field_type(name):
+        masked = _mask_card_field(decoded, field_type)
+        return field if masked == decoded else f"{key}={masked}"
+    if _is_credential_key(name):
+        return f"{key}={mask_secret(decoded)}"
     return field
 
 
@@ -316,25 +379,55 @@ def redact_body(text: str) -> str:
     """Mask credential values inside a response body before it is logged, each
     as ``mask_secret`` masks a credential: its token, or ``[SECRET-MASKED]``.
 
-    Only unambiguous credential keys are masked. A bare ``token`` is
-    deliberately left alone: gateways use it for non-secret payment/session
-    identifiers that are the main thing a log reader needs. A value is masked
-    as what it decodes to -- a JSON string unescaped, a form value unquoted --
-    so it carries the token the same value gets under a key; one already
-    masked passes through.
+    Only unambiguous credential keys are masked, a bare ``token`` among them
+    as the key walk classifies it: a card-shaped one (a saved card's gateway
+    token) is ``[SECRET-MASKED]``, any other its token or label. A value is
+    masked as what it decodes to -- a JSON string unescaped, a form value
+    unquoted -- so it carries the token the same value gets under a key; one
+    already masked passes through.
 
     A form value runs to the next ``&`` or whitespace. Only the structure at
     its two ends -- a quote or an escaped one, and ``}``, ``]``, ``,``, a
     JSON key's ``":``, ``>`` or ``/>`` -- stays as written; the rest is the
     value, unescaped first only when it sits between escaped quotes in a
     JSON string. A value, JSON or form, that holds a card-number run is the
-    label.
+    label. A form field whose key the key rules call a card, CVV or other
+    SAD is masked by that type, whatever the credential keys: a card number
+    truncated, a CVV ``[CVV-MASKED]``.
     """
+    if "=" in text:
+        text = _FORM_FIELD.sub(_mask_card_form_field, text)
     hint_re, json_re, form_re = _get_compiled()
     if not hint_re.search(text):
         return text
-    text = json_re.sub(_mask_json_value, text)
-    return form_re.sub(_mask_form_value, text)
+    masked = form_re.sub(_mask_form_value, json_re.sub(_mask_json_value, text))
+    if masked != text and "=" in masked:
+        # A credential masked there can uncover a card, CVV or SAD field the
+        # form field pass read as part of the field holding it
+        # (`"password": "password="paymentCvv=…`): one more pass masks it,
+        # so one call leaves nothing a second would mask.
+        masked = _FORM_FIELD.sub(_mask_card_form_field, masked)
+    return masked
+
+
+# Any form field: its key as a form writes one (`card[number]` too), not
+# glued to more of one, and its value up to the next `&` or whitespace.
+_FORM_FIELD = re.compile(r"(?<![\w.\-\[\]%])([\w.\-\[\]%]+)=([^&\s]*)")
+
+
+def _mask_card_form_field(match: re.Match) -> str:
+    """A form field whose key names a card, a CVV or other SAD, masked by that
+    type (a JSON string's structure at its ends kept, as ``_mask_form_value``
+    keeps it); any other field as it is."""
+    field_type = _card_field_type(unquote_plus(match.group(1)))
+    if field_type is None:
+        return match.group(0)
+    head, inner, tail = _split_form_value(match.group(2))
+    value = unquote_plus(inner)
+    masked = _mask_card_field(value, field_type)
+    if masked == value:
+        return match.group(0)
+    return f"{match.group(1)}={head}{masked}{tail}"
 
 
 def _mask_json_value(match: re.Match) -> str:
@@ -370,6 +463,13 @@ def _tail(text: str) -> str:
     return text[len(text) - _TAIL_REVERSED.match(text[::-1]).end() :]
 
 
+# The structure a form value may open with: a quote or an escaped one, or a
+# run of them -- quotes doubled as CSV and SQL escape one (`password=""x`,
+# `password=''x`), as the credential text rule reads them. A lone `'` is the
+# value's own: closed by another, it is a quoted value, normalized as one.
+_HEAD = re.compile(r'(?:\\?["\'])(?:\\?["\'])+|(?:\\?")*')
+
+
 def _split_form_value(value: str) -> tuple[str, str, str]:
     """``value`` as the structure it opens with, the value itself, and the
     structure it ends in.
@@ -378,7 +478,7 @@ def _split_form_value(value: str) -> tuple[str, str, str]:
     is taken whole: `[SECRET-MASKED],` is the label and a comma, where the
     longest structural end alone would read `[SECRET-MASKED` and `],`.
     """
-    head = '\\"' if value.startswith('\\"') else '"' if value.startswith('"') else ""
+    head = _HEAD.match(value).group()
     body = value[len(head) :]
     for shape in (_MASKED_VALUE, _PLACEHOLDER):
         whole = shape.match(body)
@@ -506,11 +606,13 @@ def parse_json_or_raw(raw: bytes | str | None) -> Any:
 def ecs_url(url: str, *, redact: bool = True) -> dict:
     """Build an ECS-compliant ``url`` object from a raw URL string.
 
-    Credential query params are redacted by default (``redact=True``), so
-    ``url.full`` — the field every dashboard shows — can never carry a
-    password or API key. Pass ``redact=False`` only when the URL is already
-    redacted. ``urlparse`` never raises on malformed input: hostname is
-    simply None if the URL can't be parsed.
+    Redacted by default (``redact=True``, ``redact_url``): ``url.full`` — the
+    field every dashboard shows — carries no userinfo password and no value of
+    a credential-named query or fragment param, only their tokens or labels.
+    A credential in the path is masked only when it is named: pass the URL
+    through ``redact_url(url, secrets=[...])`` first. Pass ``redact=False``
+    only when the URL is already redacted. ``urlparse`` never raises on
+    malformed input: hostname is simply None if the URL can't be parsed.
     """
     if redact:
         url = redact_url(url)

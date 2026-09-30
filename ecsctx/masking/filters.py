@@ -26,7 +26,7 @@ from functools import lru_cache
 from numbers import Number
 from typing import Any, NamedTuple
 
-from ecsctx.masking.config import _normalise, get_masking_packs, get_masking_safe_keys
+from ecsctx.masking.config import _normalise, call_packs, get_masking_packs, get_masking_safe_keys
 from ecsctx.masking.exemptions import (
     _get_exempt_patterns,
     _path_is_exempt,
@@ -265,6 +265,71 @@ _MAX_DEPTH = 64
 # What a record becomes when masking itself fails: never the unmasked text.
 MASKING_FAILED = "[MASKING-FAILED: {}]"
 
+# A printf-style conversion, as the % operator reads one.
+_CONVERSION = re.compile(
+    r"%(?:\((?P<key>[^)]*)\))?(?P<flags>[#0\- +]*)(?P<width>\*|\d+)?(?:\.(?P<precision>\*|\d+))?[hlL]?"
+    r"(?P<type>[diouxXeEfFgGcrsa%])"
+)
+
+
+def _template_of(msg: Any) -> str | None:
+    """The text getMessage() formats: ``str(msg)`` -- a lazy translation or an
+    exception as much as a str -- but None for a mapping or list, which is a
+    structured record. Bytes are read as masking decodes them, so a template
+    that renders keeps its arguments."""
+    if isinstance(msg, str):
+        return msg
+    if isinstance(msg, (dict, list)):
+        return None
+    if isinstance(msg, (bytes, bytearray)):
+        return bytes(msg).decode("utf-8", errors="replace")
+    return str(msg)
+
+
+def _renders(template: str, args: Any) -> bool:
+    try:
+        template % args
+    except (TypeError, ValueError, KeyError):
+        return False
+    return True
+
+
+def _became_text(original: Any, masked: Any) -> bool:
+    return isinstance(original, Number) and not isinstance(original, bool) and not isinstance(masked, Number)
+
+
+def _as_text(found: re.Match) -> str:
+    """A conversion read as ``%s``, keeping what still takes an argument or
+    lays text out: its key, a `-`, its width, a `*` precision."""
+    key = "" if found["key"] is None else f"({found['key']})"
+    return f"%{key}{'-' if '-' in found['flags'] else ''}{found['width'] or ''}{'.*' if found['precision'] == '*' else ''}s"
+
+
+def _as_masked_text(template: str, originals: Any, masked: Any) -> str:
+    """``template`` with each conversion whose number masking turned into text
+    read as ``%s``, so the masked text renders where the number stood --
+    rendered as written, a card number glued to a word stays whole."""
+    if isinstance(originals, dict):
+        return _CONVERSION.sub(
+            lambda found: _as_text(found)
+            if found["key"] is not None and _became_text(originals.get(found["key"]), masked.get(found["key"]))
+            else found.group(),
+            template,
+        )
+    if not isinstance(originals, tuple):
+        return template
+    parts, copied, index = [], 0, 0
+    for found in _CONVERSION.finditer(template):
+        if found["type"] == "%":
+            continue
+        # A `*` width or precision takes an argument of its own first.
+        index += (found["width"] == "*") + (found["precision"] == "*")
+        if index < len(originals) and _became_text(originals[index], masked[index]):
+            parts += [template[copied : found.start()], _as_text(found)]
+            copied = found.end()
+        index += 1
+    return "".join([*parts, template[copied:]])
+
 
 # A reference number a service may keep readable under a key it lists: digits
 # only, and short enough that it cannot be a full-length PAN (15-19 digits are
@@ -320,6 +385,13 @@ def _listed(key: str, safe: frozenset[str]) -> bool:
     return lowered in safe or _joined_key(lowered) in _joined_names(safe)
 
 
+def _pci_in_force(ctx: _Pass) -> bool:
+    """Whether `pci` is among this call's packs or the process's, as
+    config.packs_in_force reads it for mask_by_field_type: in a pci process a
+    default filter hashed a card number typed into the name box."""
+    return "pci" in ctx.packs or "pci" in get_masking_packs()
+
+
 def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     """One PII leaf, except that cardholder data outranks the key it arrived
     under.
@@ -341,9 +413,12 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     A PAN inside a longer value -- a card summary's number, a card number typed
     beside a name -- would be hashed with the rest of it, so that value gets
     the label instead. A value shaped like a token gets no pass: `ptok:` typed
-    before a PAN would carry it out whole. The cost is a real token that
-    happens to hold such a run, about one in 10^8, which a second pass turns
-    into the label.
+    before a PAN would carry it out whole. The check fails closed, and not
+    only on card numbers: a real token's body holds such a run about once in
+    10^8 (a second pass turns it into the label), but a random hex id far more
+    often -- about 2% of 24-digit ones, 3% at 32, 4% at 40 and 7% at 64 --
+    and each of those is its label, not its token. A canonical UUID is exempt
+    (`holds_pan_run`).
 
     A credential is the exception: shaped like a PAN it is masked whole, in
     every pack. Truncation shows ten digits of it -- the saved card's
@@ -354,7 +429,7 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     """
     if field_type == "secret" and pan_shaped(text):
         return mask_secret(text)
-    if "pci" in ctx.packs and get_field_rule(field_type).tokenizable:
+    if _pci_in_force(ctx) and get_field_rule(field_type).tokenizable:
         if pan_shaped(text):
             return mask_card_value(text)
         if holds_pan_run(text, phone=field_type == "phone"):
@@ -414,6 +489,10 @@ class MaskPIIFilter(logging.Filter):
         return self._packs if self._packs is not None else get_masking_packs()
 
     def _context(self) -> _Pass:
+        """What one masking call needs. Every call that builds it -- filter(),
+        and a method called with no context -- then masks with this filter's
+        packs in force (config.call_packs), so the card check
+        mask_by_field_type makes follows them as well as the process's."""
         packs = self._packs_in_force()
         return _Pass(packs, rules_for(packs), _get_exempt_patterns(), get_masking_safe_keys())
 
@@ -424,7 +503,10 @@ class MaskPIIFilter(logging.Filter):
         # for real PII elsewhere in the same string. A second regex pass
         # over already-masked markers is a noop (pinned by test), and
         # leaf-level idempotency still lives in mask_by_field_type.
-        ctx = ctx or self._context()
+        if ctx is None:
+            ctx = self._context()
+            with call_packs(ctx.packs):
+                return self._mask_string(text, ctx, scalar=scalar)
         if not ctx.rules:
             return text  # a key-only walk: see _mask_json_text
         # A whole field value is judged by its key, not by its shape: the
@@ -440,7 +522,10 @@ class MaskPIIFilter(logging.Filter):
         dict sits in (a ``customer``, a ``billing`` address): a key of its own
         type wins, a safe key keeps its value, and any other key is masked as
         the container's type."""
-        ctx = ctx or self._context()
+        if ctx is None:
+            ctx = self._context()
+            with call_packs(ctx.packs):
+                return self._mask_dict(data, path, ctx, inherited)
         if inherited == "secret" and _is_card_object(data):
             inherited = "card"
         # A pair is judged by its identifiers -- never under a CVV or SAD
@@ -569,7 +654,10 @@ class MaskPIIFilter(logging.Filter):
         ctx: _Pass | None = None,
         inherited: str | None = None,
     ) -> list | tuple | set:
-        ctx = ctx or self._context()
+        if ctx is None:
+            ctx = self._context()
+            with call_packs(ctx.packs):
+                return self._mask_iterable(data, path, ctx, inherited)
         arr_path = path + ("[*]",)
         items = [self._mask_value(v, arr_path, ctx, inherited=inherited) for v in data]
         try:
@@ -599,6 +687,10 @@ class MaskPIIFilter(logging.Filter):
         _mask_dict. Inside a PII container (``inherited``) a bare value in a
         list is masked as the container's type.
         """
+        if ctx is None:
+            ctx = self._context()
+            with call_packs(ctx.packs):
+                return self._mask_value(value, path, ctx, inherited, verbatim_digits=verbatim_digits)
         if value is None:
             return value
         if len(path) > _MAX_DEPTH:
@@ -611,7 +703,6 @@ class MaskPIIFilter(logging.Filter):
             value = bytes(value).decode("utf-8", errors="replace")
         if verbatim_digits and _is_reference_number(value):
             return value
-        ctx = ctx or self._context()
         # The two exact types nearly every value is, first: this runs for
         # every value of every record.
         kind = type(value)
@@ -647,7 +738,7 @@ class MaskPIIFilter(logging.Filter):
             # See scalar= below: the same reasoning, for strings -- except an
             # int that is a card number, which the card rule would have
             # truncated had it arrived as text.
-            if isinstance(value, int) and not isinstance(value, bool) and "pci" in ctx.packs and int_is_pan(value):
+            if isinstance(value, int) and not isinstance(value, bool) and _pci_in_force(ctx) and int_is_pan(value):
                 return mask_card_value(value)
             return value
         if isinstance(value, str):
@@ -732,18 +823,53 @@ class MaskPIIFilter(logging.Filter):
             return value if masked == text else masked
         return self._mask_value(value, (), ctx)
 
+    def _mask_rendered(self, template: str, originals: Any, args: Any, ctx: _Pass) -> str:
+        """``template`` rendered as getMessage() would render it, from the
+        masked arguments, and masked whole; the marker when the arguments do
+        not fit it -- never an exception, which would lose the line and print
+        the arguments."""
+        try:
+            rendered = _as_masked_text(template, originals, args) % args
+        except (TypeError, ValueError, KeyError) as error:
+            return MASKING_FAILED.format(type(error).__name__)
+        return self._mask_value(rendered, (), ctx)
+
     def filter(self, record: logging.LogRecord) -> bool:
         ctx = self._context()
         if not is_masked_object(record, ctx.packs):
-            try:
-                record.msg = self._mask_value(record.msg, (), ctx)
-                record.args = self._mask_args(record.args, ctx)
-            except Exception as error:  # noqa: BLE001 -- nothing here may reach the caller
-                # This runs outside emit()'s handleError, so an exception here
-                # became the caller's: a failed log line failed the payment.
-                # The message is replaced whole -- the one outcome that cannot
-                # leak what masking failed to mask.
-                record.msg = MASKING_FAILED.format(type(error).__name__)
-                record.args = ()
+            with call_packs(ctx.packs):
+                try:
+                    msg = self._mask_value(record.msg, (), ctx)
+                    args = self._mask_args(record.args, ctx)
+                    template = _template_of(record.msg)
+                    if record.args and template is not None and (msg != template or not _renders(msg, args)):
+                        # getMessage() would raise on what masking left, so the
+                        # handler dropped the line and printed the arguments to
+                        # stderr: the template held something to mask (in
+                        # `password=%s` the rule reads the placeholder as the
+                        # credential), a number masking turned into text meets
+                        # a `%d`, or the arguments never fit. So the record is
+                        # rendered from the masked arguments (a dict's keys
+                        # still mask it) and masked whole, or is the marker. A
+                        # template masking leaves as it is, and that renders,
+                        # keeps its arguments, and Sentry's grouping by it.
+                        # Rendered, the record keeps no arguments for a later
+                        # handler to mask with more packs, so they are masked
+                        # with every pack: a default handler ahead of a pci one
+                        # rendered `ref4111…` whole, glued to a word, for the
+                        # pci handler to log. Only a record that takes this path.
+                        if ctx.packs != ALL_PACKS:
+                            every = ctx._replace(packs=ALL_PACKS, rules=rules_for(ALL_PACKS))
+                            with call_packs(ALL_PACKS):
+                                args = self._mask_args(record.args, every)
+                        msg, args = self._mask_rendered(template, record.args, args, ctx), ()
+                    record.msg, record.args = msg, args
+                except Exception as error:  # noqa: BLE001 -- nothing here may reach the caller
+                    # This runs outside emit()'s handleError, so an exception
+                    # here became the caller's: a failed log line failed the
+                    # payment. The message is replaced whole -- the one outcome
+                    # that cannot leak what masking failed to mask.
+                    record.msg = MASKING_FAILED.format(type(error).__name__)
+                    record.args = ()
             mark_object_as_masked(record, ctx.packs)
         return True

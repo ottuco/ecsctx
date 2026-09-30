@@ -823,12 +823,21 @@ with content rules. `get_logging_config()` puts it on every handler, where it
 masks the record in place — so Sentry's logging integration, `handleError` and
 handlers that never call `format()` see masked data too — and the formatter's
 `mask_sensitive_data` masks the shaped event again. The second pass is cheap:
-strings already known clean are not scanned twice.
+strings already known clean are not scanned twice. A record that would not
+format once masked — a %-style template masking itself changes (in
+`password=%s` the credential rule reads the placeholder as the credential), a
+lazy translation or an exception as the message, a number masking turned into
+text under `%d`, arguments that never fit — is rendered from the masked
+arguments and masked whole, or is `[MASKING-FAILED: …]`: no line is dropped,
+and no argument reaches stderr. The one exception is a dict or list message
+with arguments, which logging cannot format at all: as in stdlib, the line is
+dropped and `handleError` prints the arguments, masked. A template masking
+leaves as it is, and that formats, keeps its arguments.
 
 **Log processor path** (automatic via `mask_sensitive_data`):
 - When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`), for fraud correlation. Same input always produces the same token. Where no token can be made (PII not configured, or tokenization failing) the value becomes its type's label, `[EMAIL-MASKED]`; CVV is never tokenized and carries nothing, so it keeps a bracketed label (`[CVV-MASKED]`); a card number is never tokenized either, but its truncation IS carried, so it is bare (`411111******1111`) — under a card key, and with the `pci` pack under any key, including a name or email field. Expiry is not masked at all. A null stays null, and an empty value stays empty.
 - When PII is not configured: detected values become the bare label (`[EMAIL-MASKED]`) — raw PII never appears in logs.
-- Cardholder data is never tokenized: PANs are truncated to `411111******1111` whatever key they sit under — including, with the `pci` pack, a name or email field, because a keyed hash beside a truncation of the same PAN is the correlation PCI DSS FAQ 1117 warns about. With `pci`, a value that a PII, secret or id key would tokenize becomes its label instead when it holds a run of 12 or more digits among other text: a PAN typed beside a name, and also a long reference number, since the check fails closed. In a phone field, a number written after `+` with at most 15 digits (E.164) is the phone number and keeps its token. CVV is always `[CVV-MASKED]`. **Expiry is not masked**: it is Cardholder Data rather than Sensitive Authentication Data, so PCI permits storing it, and masking it only cost the ability to read an expired-card decline. The rule to remember: **brackets mean nothing survived**.
+- Cardholder data is never tokenized: PANs are truncated to `411111******1111` whatever key they sit under — including, with the `pci` pack (the filter's own or the process's), a name or email field, because a keyed hash beside a truncation of the same PAN is the correlation PCI DSS FAQ 1117 warns about. With `pci`, a value that a PII, secret or id key would tokenize becomes its label instead when it holds a run of 12 or more digits among other text: a PAN typed beside a name, and also a long reference number or hex id, since the check fails closed. A value that is a canonical UUID (8-4-4-4-12 hex digits with a hex letter) holds none and keeps its token. In a phone field, a number written after `+` with at most 15 digits (E.164) is the phone number and keeps its token. CVV is always `[CVV-MASKED]`. **Expiry is not masked**: it is Cardholder Data rather than Sensitive Authentication Data, so PCI permits storing it, and masking it only cost the ability to read an expired-card decline. The rule to remember: **brackets mean nothing survived**.
 
 **Explicit encryption API** (standalone, NOT part of the log processor pipeline):
 - `protect()` / `reveal()` use **AES-256-GCM** for randomized ciphertext (`penc:v1:<kid>:...`) when reversible encryption is needed. Requires `PII_ACCESS=full`.
@@ -838,14 +847,17 @@ Keys are delivered via mounted keyset files or fetched from Vault.
 ### Masking packs — PCI services must opt in
 
 Content rules come in packs. Only a service that handles card data needs the
-card and CVV rules, and running them on every string of every line costs CPU
-and mangles numeric ids (a hex `session_id` starting with ten digits reads
-as a phone number to a careless rule).
+card rules, and running them on every string of every line costs CPU and
+mangles numeric ids (a hex `session_id` starting with ten digits reads as a
+phone number to a careless rule). A CVV named by its key in text is another
+matter: it must not ship from any service, and a default-pack one (Connect)
+receives the CVV a saved-card payment sends, so the keyed CVV rules are
+`default`.
 
 | Pack | Content rules | On by default |
 |------|---------------|---------------|
-| `default` | PEM keys, credentials (`token=…`, `"secret": …`, `Bearer …`), phone numbers, emails, JWTs | always |
-| `pci` | PANs (truncated), CVV — keyed (`cvv=123`, `"securityCode": "123"`, `CVV 123`) and bare 3–4 digit groups | no |
+| `default` | PEM keys, credentials (`token=…`, `"secret": …`, `Bearer …`), keyed CVV (`cvv=123`, `"securityCode": "123"`, `CVV 123`, `vpc_CardSecurityCode=123`, `paymentCvv=123`), a URL's userinfo, phone numbers, emails, JWTs | always |
+| `pci` | PANs (truncated), bare 3–4 digit CVV groups beside card context | no |
 | `financial_ids` | IBANs, SSNs, payment/transaction/auth ids (content and key names) | no |
 
 A PCI-scoped service enables them in its logging config:
@@ -859,8 +871,8 @@ or `ECSCTX_MASKING_PACKS=pci,financial_ids` in the environment (precedence:
 the argument, then the setting, then the env var). `default` is always on. An
 unknown pack name in the setting or env var fails closed — every pack is on,
 with a warning, and the boot check reports it.
-Upgrading from 0.7.x without opting in turns PAN and CVV content scanning
-**off**.
+Upgrading from 0.7.x without opting in turns PAN content scanning (and the
+bare-digit CVV rule) **off**.
 
 Key names are checked in every service regardless of packs: a key named
 `card`, `pan`, `card_number`, `cvv`, `securityCode`, `expiry`, `exp_month`, …
@@ -883,23 +895,48 @@ builds itself — is masked as the key it would sit under masks it:
 
 - `mask_card_value(value)` — a card key's value: a PAN truncated
   (`411111******1111`), anything that is not one left readable, and a value
-  that could still hide one refused as `[CARD-MASKED]`.
+  that could still hide one refused as `[CARD-MASKED]`. Masking its output
+  again changes nothing. A group of digits and stars long enough to be a
+  card number is shown only in a truncation's shape — the first six digits at
+  most, four stars or more, the last four at most — and a card number's
+  groups (4-4-4-4, Amex 4-6-5, Diners 4-6-4; a space, dash or invisible
+  separator apart) are read as one, so another masker's `45087****001019`
+  (the last six of fifteen), `4508-750*-****-1019` (the first seven of
+  sixteen) and `3782 822*** *0005` are refused, while `4111********1111`,
+  `3782 82**** *0005` and `**** **** **** 1111` are shown. In a value with
+  twelve digits or more, every group of digits and stars must be one the card
+  rule writes (`4508750****001019` is refused).
 - `mask_secret(value)` — a credential key's value: the bare token
   (`ptok:v1:…`) where PII tokenization is configured, `[SECRET-MASKED]` where
   it is not. It is `[SECRET-MASKED]` either way for a value shaped like a card
-  number (a saved card's sixteen-digit gateway token: FAQ 1117 again) and for
+  number (a saved card's sixteen-digit gateway token: FAQ 1117 again), for
   a placeholder another masker left (`[REDACTED]`, `[PII_REDACTED]`, `***`,
   `Bearer ****`), which would otherwise hash to one token shared by every
-  record that carries it. An empty value stays empty; `None` and booleans come
-  back as they are.
+  record that carries it, for a value in a token's exact shape with a card
+  number in it (`ptok:v1:` typed before one), and for a card number's
+  truncation (`411111******1111`: ten digits of a saved card's gateway
+  token) — each judged as written and as a
+  URL or form encoding decodes it (`%224111…%22`, `4111+1111+…`). With
+  `pci` among the call's packs, and the process's — a `MaskPIIFilter`'s own
+  `packs=` while it masks, with the process's — it is `[SECRET-MASKED]` too
+  for any value that holds a card-number run (`abc4111111111111111xyz`), as
+  under a credential key: in a pci-configured process every filter labels
+  it, and a filter built with pci labels it in any process. Without `pci`
+  in either such a value is hashed, since a default-pack service receives
+  no card numbers. An empty value stays empty;
+  `None` and booleans come back as they are.
 
 Both are `from ecsctx import mask_card_value, mask_secret`.
 
 ### Network-boundary redaction (`ecsctx.contrib.net`)
 
-`mask_sensitive_data` covers PII in `payload`/`args`/`kwargs`/http bodies, but
-two boundary shapes need dedicated helpers — import them instead of copying
-them per service:
+`mask_sensitive_data` masks a credential its rules name wherever it appears in a
+record — `password=…` in a URL's query, `"access_token": "…"` in body text, a
+URL's userinfo, `cvv=123` — but these helpers know their input: a query param
+whose name only hints at a credential (`username`, `P`, `sign`), a card number
+under its key in a query or form body, a literal secret in a URL's path, a
+body masked by its keys before it is serialised and capped.
+Import them instead of copying them per service:
 
 ```python
 from ecsctx.contrib.net import (
@@ -907,22 +944,31 @@ from ecsctx.contrib.net import (
 )
 ```
 
-- `redact_url(url)` — masks credential-looking query params (`password`,
-  `api_key`, `access_code`, … incl. single-letter legacy keys) before logging.
-  A credential param's value is replaced in place, unencoded; every other
-  param is left exactly as written, an empty value stays empty, and a URL
-  that cannot be parsed is masked whole.
-  Call it **before** shaping the URL for ECS: `ecs_url(redact_url(full_url))`,
-  otherwise the raw query survives in `url.full`.
+- `redact_url(url)` — masks a URL's userinfo (`https://<user>:<password>@host`,
+  each part as it decodes, the host and port kept) and credential-looking
+  query and fragment params (`password`, `api_key`, `access_code`,
+  `#access_token=…`, … incl. single-letter legacy keys) before logging, and a
+  param whose key the key rules call a card, CVV or other SAD
+  (`card_number=411111******1111`, `vpc_CardSecurityCode=[CVV-MASKED]`,
+  `pin=[SAD-MASKED]`). A masked param's value is replaced in place, unencoded;
+  every other param is left exactly as written, an empty value stays empty, a label in the
+  userinfo is percent-encoded (`%5BSECRET-MASKED%5D`) so the URL still parses,
+  and a URL that cannot be parsed is masked whole. `ecs_url(full_url)` calls
+  it for you; call it yourself for a URL logged anywhere else, or to name a
+  literal secret (`ecs_url(redact_url(full_url, secrets=[token]))` — masking
+  twice masks once).
 - `redact_body(text)` — masks credential values (`access_token`,
   `client_secret`, …) in JSON and form-encoded bodies. A value is masked as
   what it decodes to (a JSON escape, a form encoding), and one already masked
   passes through. A form value runs to the next `&` or whitespace; the
   quotes and closing brackets at its ends stay as written (`<Auth
   password="[SECRET-MASKED]"/>`). A value, JSON or form, holding a card-number
-  run is `[SECRET-MASKED]` either way. A bare `token` key is deliberately left alone:
-  gateways reuse it for non-secret payment/session identifiers that log
-  readers rely on.
+  run is `[SECRET-MASKED]` either way. A form field whose key the key rules
+  call a card, CVV or other SAD is masked by that type, as in a URL
+  (`cvv=[CVV-MASKED]&card_number=411111******1111`). A bare `token` key is
+  masked as the key walk masks it: a saved card's sixteen-digit gateway token
+  is `[SECRET-MASKED]`, and any other value its token (with a keyset, so a
+  gateway's payment or session id still correlates) or label.
 - `redact_url(url, secrets=[token])` also masks literal values anywhere in
   the URL, longest first — a saved-card token in a path such as
   `/card/<token>/`.
@@ -942,8 +988,20 @@ from ecsctx.contrib.net import (
 Every credential these helpers mask is masked as `mask_secret` masks one: its
 token where PII tokenization is configured, `[SECRET-MASKED]` where it is not
 (and for a card-shaped value or a placeholder), so it carries the token the
-same value gets under a key. Before 0.15.4 they wrote a fixed `[REDACTED]`,
-whatever the keyset.
+same value gets under a key. `redact_body` gives `[SECRET-MASKED]` to a body
+value that holds a card-number run in every pack; `mask_secret` does with `pci`
+among the call's packs, and the process's, so there the two agree, and without
+it `mask_secret`
+(and so `redact_url`) hashes such a value. Before 0.15.4 they wrote a fixed
+`[REDACTED]`, whatever the keyset.
+
+Accepted residual: with a keyset, the credential text rules followed by
+`redact_body` are not a fixed point where `redact_body` hashes a form value
+the text rules left, right after a scheme word (`Bearer password=[SECRET-MASKED]"x`,
+`Bearer password='`). The scheme word's rule then reads `password=<token>`
+as its own credential and hashes it again: a token of a token, which affects
+correlation only. Skipping `key=<token>` there would let a credential glued
+to a key name through (`Token abc123abc123api_key=…`).
 
 Configure per deploy without code changes. Precedence: explicit call >
 Django settings > env vars > defaults (same lazy pattern as the masking
@@ -1009,11 +1067,11 @@ Card and expiry keys are matched precisely.
 
 | Type | Key names | Content rule (pack) | Output |
 |------|-----------|---------------------|--------|
-| **Secrets** | ending in `token`, `secret`, `password`, `passwd`, `passphrase`, `passcode`, `pwd`; `authorization` (also `HTTP_AUTHORIZATION`, `Proxy-Authorization`), `cookie`, `bearer`, `basic`, `digest`, `credential(s)`, an `api`/`access`/`secret`/`private`/`hmac`/`merchant`/… `_key(s)`, `access_code` | credential forms (`default`) | `[SECRET-MASKED…]`; always the label for a PAN-shaped credential (never truncated, never hashed) and for a placeholder another masker left (`[REDACTED]`, `***`) |
+| **Secrets** | ending in `token`, `secret`, `password`, `passwd`, `passphrase`, `passcode`, `pwd`; `authorization` (also `HTTP_AUTHORIZATION`, `Proxy-Authorization`), `cookie`, `bearer`, `basic`, `digest`, `credential(s)`, an `api`/`access`/`secret`/`private`/`hmac`/`merchant`/… `_key(s)`, `access_code` | credential forms (`default`) | `[SECRET-MASKED…]`; always the label for a PAN-shaped credential (never truncated, never hashed), for a placeholder another masker left (`[REDACTED]`, `***`) and for a token-shaped value with a card number in it; with `pci`, also for a credential or payment id that holds a card-number run anywhere |
 | **Emails / phones** | containing `email`; `phone`, `mobile`, `tel` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]` |
 | **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `card_details` (the whole key); `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
-| **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no` | 12–19 digit runs (`pci`) | `411111******1111` |
-| **CVV** | containing `cvv`, `cvc`, `security code`, `verification value`, or the words `csc`, `cvd`, `cvn`, `card code` — unless what follows names something *about* one (`cvv_required`, `cvvResult`, `cardSecurityCodeError`) | keyed and bare CVV (`pci`) | `[CVV-MASKED]` |
+| **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no`, `card_num` (MIGS's `vpc_CardNum`) | 12–19 digit runs (`pci`) | `411111******1111` |
+| **CVV** | containing `cvv`, `cvc`, `security code`, `verification value`, or the words `csc`, `cvd`, `cvn`, `card code` — unless what follows names something *about* one (`cvv_required`, `cvvResult`, `cardSecurityCodeError`) | keyed CVV (`default`), a bare 3–4 digit group beside card context (`pci`) | `[CVV-MASKED]` |
 | **SAD** | track data (`track2`, `trackData`, `raw_track`; not `track_id`), `pin`/`pinBlock`, EMV/chip data, and ending in `cryptogram`, `cavv`, `tavv`, `aav`, `ucaf` | — | `[SAD-MASKED]` |
 | **National ids** | `civil_id`, `national_id`, `passport`, `iqama`, `qid`, `cpr`, `nid`, `emirates_id`, `ssn`, `tin`, `tax_id`, `aadhaar`, `id_number` | — | `[SSN-MASKED…]` |
 | **IBAN / SSN / payment ids** | `payment_id`, `transaction_id`, `auth_id` (`financial_ids`) | `financial_ids` | `[IBAN-MASKED…]`, … |
@@ -1039,6 +1097,38 @@ identifier (a field label) reads through. A bare `name` is a thing's name, not
 a person's, under a container named by a thing (`payment_method.name`,
 `merchant.name`, `items[].name`). Booleans are never masked. A dataclass or
 namedtuple is masked by its field names and rendered back to its repr text.
+
+A credential value found in text (`password=…`, `"token": "…"`, `Bearer …`)
+runs to its delimiter, as a form value in `redact_body` does: an unquoted one
+to whitespace, `&`, `;`, `,`, a closing bracket or a closing quote (a quote
+followed by a JSON key's `":` or an element's `/>` is structure too); a quoted
+one to its unescaped closing quote, spaces and all. An empty pair of quotes is
+no value: doubled as CSV and SQL escape a quote (`password=""s3cret`), they
+are structure before it. A value between escaped quotes — JSON in a JSON
+string, `{\"password\": \"correct horse\"}` — runs to its matching escaped
+quote too. A backslash, `@`, `#` or an
+apostrophe inside a value no longer ends it early, leaving the rest in clear —
+except that a `#` right after a whole token opens a URL's fragment, so
+`redact_url`'s `?password=<token>#access_token=<token>` keeps both tokens. A
+double-quoted value is masked as the JSON string it decodes to, so it carries
+the token the same value gets under a key. A value never starts with a quote
+or an opening bracket (`{`, `[`, `(`, `<`), and never runs into a label masking
+already wrote (`abc[SECRET-MASKED]`). After `Authorization:` (or
+`Proxy-Authorization:`, `authorization=`) the scheme and the credential are one
+value — `Authorization: Bearer abc…` carries the token the header gets under its
+key, not one for `Bearer` with the credential beside it. A whole token right after
+the scheme — what masking the credential alone leaves,
+`Authorization: Bearer ptok:v1:…` — is left as it is, not hashed again with its
+scheme. A credential keyword that
+names a CVV or PIN (`cvv_token=123`, `pin_password=1234`) gives that label
+(`[CVV-MASKED]`, `[SAD-MASKED]`), as the key does, never a token.
+
+A URL's userinfo in text — a DSN in an exception,
+`postgresql://user:password@db:5432/app` — is masked part by part as
+`redact_url` masks it, keeping the scheme, host and port: with a password,
+empty or not (`https://key:@host`); a user alone (`ssh://git@host`) is left to
+the other rules. The email rule never starts inside masking's own output, so a
+token or label in a URL's userinfo keeps the host after it.
 
 A digit run that touches a letter is never a phone number — it is part of an
 id. The card rule still matches a PAN followed by a letter, because Track 2
@@ -1072,11 +1162,16 @@ after a bank code with letters (`GB33 BUKB 2020 1555 5555 55`,
 `IT60 X054 2811 1010 0000 0123 456`) the digits are the IBAN's only when the
 IBAN ends where their run does. An unbroken 12–19-digit run after an IBAN's
 check digits is still a card number (`DE89 370400440532013000` →
-`DE89 370400********3000`).
+`DE89 370400********3000`). A canonical UUID — 8-4-4-4-12 hex digits with a hex
+letter among them, nothing alphanumeric touching it — is left whole
+(`request 26888535-1296-4273-8ba1-c634e90bf52f failed`), and a card number
+beside one is still truncated; an all-digit string in that shape is read as any
+other digits.
 
 Accepted residuals: a card number in groups that are not card-style, glued to a
 word or to a truncation's stars, or split by a range's dash, shows what the rule
-reads of it; the phone rule, which runs first, takes phone-shaped digits at a
+reads of it; one typed into a UUID's own groups
+(`41111111-1111-1111-abcd-ef0123456789`) stays whole; the phone rule, which runs first, takes phone-shaped digits at a
 card number's end — ten unbroken digits before a Unicode dash
 (`4731592604–8–7311` → `[PHONE-MASKED]–8–7311`), or a card's last digits with
 those after them (`2026-09-26 7112\t1817\t9153\t4791\t968 433 4111` →
@@ -1086,8 +1181,20 @@ check digits and a bank code with letters, makes exactly that country's IBAN
 length with check digits that hold (one time in 97) is read as the IBAN. Under a
 card key those values are refused (`[CARD-MASKED]`): a card key shows its scan
 only when no Luhn-valid reading in the value shows more than its first six and
-last four, and no run of card-number length is left beside the truncations, dots
-and slashes joining it too (`4111.1111.1111.1111`).
+last four, no run of card-number length is left beside the truncations, dots
+and slashes joining it too (`4111.1111.1111.1111`), and fewer than twelve
+digits show outside the truncations however they are joined — double spaces,
+commas, another masker's `X`s (`411111******1111, 4111,1111,1111,1111` is
+refused). Nor may twelve digits show in a row, however joined: bare digits, a
+truncation's last four and the next one's first six count together, as a card
+number could be read across them, while a truncation's own stars separate its
+first six from its last four, and a word (not a run of `X`s, which another
+masker writes) ends a row. So `4111111111  111111******1111`,
+`400001******5018  00  000009******0001` (the Maestro 501800000009 shows in a
+row) and `512345******0008 12 25 512345******0008` are refused. One residual
+remains: a short group beside a truncation, under twelve digits with it —
+`450875******1019 000` could, in theory, be a 19-digit number another masker
+cut oddly.
 
 ### Structural fields (never scanned)
 

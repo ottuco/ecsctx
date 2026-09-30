@@ -1,12 +1,15 @@
 """A credential masks alike on every path into a log, and a fixed marker never
 stands where a token can.
 
-| Value                               | With a keyset          | Without           |
-|-------------------------------------|------------------------|-------------------|
-| a secret                            | its token (`ptok:v1:`) | `[SECRET-MASKED]` |
-| a secret shaped like a card number  | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
-| a placeholder (`[REDACTED]`, `***`) | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
-| empty                               | empty                  | empty             |
+| Value                                        | With a keyset          | Without           |
+|----------------------------------------------|------------------------|-------------------|
+| a secret                                     | its token (`ptok:v1:`) | `[SECRET-MASKED]` |
+| a secret shaped like a card number           | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
+| a placeholder (`[REDACTED]`, `***`)          | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
+| a token's shape with a card number in it     | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
+| a secret holding a card number, `pci` pack   | `[SECRET-MASKED]`      | `[SECRET-MASKED]` |
+| a secret holding a card number, without it   | its token              | `[SECRET-MASKED]` |
+| empty                                        | empty                  | empty             |
 
 A secret shaped like a card number -- a saved card's sixteen-digit gateway
 token, Luhn-valid or not -- was the label under a credential key only: the
@@ -22,7 +25,7 @@ by ecsctx under the same keyset, never written out.
 
 import json
 import re
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 import pytest
 from django.test import RequestFactory
@@ -31,11 +34,15 @@ from django.urls import path, re_path, resolve
 import ecsctx
 import ecsctx.masking
 from ecsctx.contrib.django.routes import loggable_path
-from ecsctx.contrib.net import loggable_body, redact_body, redact_url
+from ecsctx.contrib.net import configure_redaction, ecs_url, loggable_body, redact_body, redact_url
 from ecsctx.masking import mask_by_field_type, mask_secret
 from ecsctx.masking import patterns as masking_patterns
+from ecsctx.masking.config import configure_masking_packs
+from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
+from ecsctx.masking.tokens import make_label
 from ecsctx.pii import configure_pii, is_configured, tokenize
+from ecsctx.pii.crypto import hmac_tokenize
 from ecsctx.processors import mask_sensitive_data
 
 SECRET = "s3cr3t-Hunter2"
@@ -77,8 +84,14 @@ class TestMaskByFieldType:
         assert mask_by_field_type("", "secret") == ""
 
     def test_a_value_masking_produced_passes_through(self):
-        for value in (token_or_label(SECRET), LABEL, "411111******1111"):
+        for value in (token_or_label(SECRET), LABEL):
             assert mask_by_field_type(value, "secret") == value
+
+    @pytest.mark.parametrize("value", ["411111******1111", '"411111******1111"', "411111%2A%2A%2A%2A%2A%2A1111"])
+    def test_a_truncation_is_the_label(self, value):
+        # Ten digits of a saved card's sixteen-digit gateway token: a
+        # credential the card rule truncated shows too much of itself.
+        assert mask_by_field_type(value, "secret") == LABEL
 
 
 class TestMaskSecret:
@@ -153,8 +166,8 @@ class TestTheCredentialTextRules:
 
     @pytest.mark.parametrize("value", ["[REDACTED]", "***"])
     def test_a_placeholder_under_a_quoted_key_is_the_label(self, value):
-        # Rules 3 and 8 never take one: their value starts with a credential
-        # character, which `[` and `*` are not.
+        # Rules 3 and 8 never take `[REDACTED]`: a value never starts with `[`,
+        # which opens a label. `***` after `=` is the label too (below).
         assert mask_by_patterns(CREDENTIAL_TEXTS[0] % value, _TEXT_RULES) == CREDENTIAL_TEXTS[0] % LABEL
 
     def test_an_empty_value_stays_empty(self):
@@ -270,8 +283,11 @@ class TestACredentialInABody:
         assert redact_body(body % "") == body % ""
 
     def test_a_value_masking_produced_passes_through(self, body):
-        for value in (token_or_label(SECRET), LABEL, "411111******1111"):
+        for value in (token_or_label(SECRET), LABEL):
             assert redact_body(body % value) == body % value
+
+    def test_a_truncation_is_the_label(self, body):
+        assert redact_body(body % "411111******1111") == body % LABEL
 
 
 class TestABodyValueIsMaskedAsWhatItDecodesTo:
@@ -306,6 +322,28 @@ QUOTED_CARDS = [
 QUOTED = [*QUOTED_CARDS, '"***"', "'[REDACTED]'", '"[PII_REDACTED]"', "'Bearer ****'"]
 
 
+# Encoded as a URL or a form encodes it, which redact_url and redact_body
+# decode before they mask: decoded, a card number or a placeholder.
+ENCODED = ["%224111111111111111%22", "4111+1111+1111+1111", "%5BREDACTED%5D", "Bearer+****"]
+
+
+@pytest.mark.parametrize("packs", [["default"], sorted(ALL_PACKS)], ids=["default", "every-pack"])
+class TestAnEncodedCardNumberOrPlaceholderIsTheLabel:
+    @pytest.mark.parametrize("value", ENCODED)
+    def test_mask_secret(self, packs, value):
+        configure_masking_packs(packs)
+        assert mask_secret(value) == LABEL
+
+    @pytest.mark.parametrize("value", ENCODED)
+    def test_a_credential_text_rule(self, packs, value):
+        configure_masking_packs(packs)
+        assert mask_by_patterns(f"password={value}&x=1", _TEXT_RULES) == f"password={LABEL}&x=1"
+
+    def test_a_label_encoded_in_a_url_is_left_as_written(self, packs):
+        configure_masking_packs(packs)
+        assert mask_secret("%5BSECRET-MASKED%5D") == "%5BSECRET-MASKED%5D"
+
+
 class TestAQuotedCardNumberOrPlaceholderIsTheLabel:
     @pytest.mark.parametrize("value", QUOTED)
     def test_mask_by_field_type(self, value):
@@ -321,10 +359,10 @@ class TestAQuotedCardNumberOrPlaceholderIsTheLabel:
 
     @pytest.mark.parametrize("value", QUOTED_CARDS)
     def test_a_credential_text_rule(self, value):
-        # The rule's value takes no quote -- they stay in its prefix -- so it
-        # never hashed them.
+        # A quoted value runs to its closing quote: the quotes stay, and all
+        # that is between them, spaces too, is the value.
         text = f"login with password={value} failed"
-        assert mask_by_patterns(text, _TEXT_RULES) == text.replace(value.strip("\"' "), LABEL)
+        assert mask_by_patterns(text, _TEXT_RULES) == f"login with password={value[0]}{LABEL}{value[0]} failed"
 
     @pytest.mark.parametrize("value", QUOTED)
     def test_a_route_parameter(self, value):
@@ -438,7 +476,7 @@ class TestAdjacentJsonMembers:
 # What masking itself wrote, in quotes: the credential text rule keeps a
 # value's quotes around its label (`password="[SECRET-MASKED]"`), and a JSON
 # string escapes them.
-QUOTED_MARKERS = ['"[SECRET-MASKED]"', "'[SECRET-MASKED]'", '"411111******1111"', '" [CARD-MASKED] "']
+QUOTED_MARKERS = ['"[SECRET-MASKED]"', "'[SECRET-MASKED]'", '" [CARD-MASKED] "']
 
 
 class TestAMarkerInQuotesIsMaskedAlready:
@@ -492,7 +530,11 @@ class TestAFormValueInEscapedQuotes:
         assert json.loads(masked) == {"note": f'password="{token_or_label(SECRET)}"&x=1'}
         assert redact_body(masked) == masked
 
-    @pytest.mark.parametrize("value", [LABEL, "411111******1111"])
+    def test_a_truncation_is_the_label(self):
+        masked = redact_body(_escaped_form_body("411111******1111"))
+        assert json.loads(masked) == {"note": f'password="{LABEL}"&x=1'}
+
+    @pytest.mark.parametrize("value", [LABEL])
     def test_a_masked_value_is_left_as_written(self, value):
         body = _escaped_form_body(value)
         assert redact_body(body) == body
@@ -580,6 +622,34 @@ class TestAFormValueRunsToItsEnd:
         assert masked == f'{{"url": "https://x?secret={token_or_label("abc")}"}}'
         assert json.loads(masked)
 
+    def test_quotes_doubled_before_a_form_value_are_structure(self):
+        # As the credential text rule reads them: the value after them gets
+        # the token it gets there, and what the text rule wrote stays.
+        assert redact_body('password=""abc123secret&x=1') == f'password=""{token_or_label("abc123secret")}&x=1'
+        assert redact_body('password=""[SECRET-MASKED] x') == 'password=""[SECRET-MASKED] x'
+        assert redact_body("password=''abc123&x=1") == f"password=''{token_or_label('abc123')}&x=1"
+        assert redact_body("password=\"'abc123&x=1") == f"password=\"'{token_or_label('abc123')}&x=1"
+
+    @pytest.mark.parametrize("text", ['password=""abc123&x=1', "password=''abc123&x=1", "password=\"'abc123&x=1"])
+    def test_what_the_text_rule_wrote_after_doubled_quotes_stays(self, text):
+        # Read as a value with its quotes, the token was hashed again.
+        masked = mask_by_patterns(text, _TEXT_RULES)
+        assert redact_body(masked) == masked
+
+    def test_a_field_inside_another_fields_value_is_masked_in_one_pass(self):
+        # The JSON rule rewrote the field holding it, uncovering it after the
+        # form field pass had gone by: a second call labelled the CVV.
+        text = '"password": "password="paymentCvv=cvv=123https://u:p@h/'
+        masked = f'"password": "{token_or_label("password=")}"paymentCvv=[CVV-MASKED]'
+        assert redact_body(text) == masked
+        assert redact_body(masked) == masked
+
+    def test_a_single_quote_before_a_form_value_is_its_own(self):
+        # Closed by another, it is a quoted value: normalized, it carries the
+        # token the key walk gives the value inside.
+        quoted = "'abc123'"
+        assert redact_body(f"password={quoted}&x=1") == f"password={mask_secret(quoted)}&x=1"
+
     def test_a_raw_form_value_is_never_unescaped(self):
         secret = "C:\\new\\tab"
         assert redact_body(f"password={secret}&x=1") == f"password={mask_secret(secret)}&x=1"
@@ -633,8 +703,9 @@ PAN_SHAPES = [
     json.dumps({"password": f'"{PAN}"'}),
     json.dumps({"url": f"https://x?secret={PAN}"}),
     # Not `{"password": "<card number>*"}`: redact_body gives it the label
-    # (test above), but the key walk under default packs and credential text
-    # rule 2 hash it first -- a follow-up, outside redact_body.
+    # (test above), but without `pci` the key walk and the credential text
+    # rules hash it first -- the accepted residual for a default-pack service,
+    # which receives no card numbers (TestACredentialThatHoldsACardNumber).
     json.dumps({"password": f"ptok:v1:{PAN}{'A' * 27}"}),
 ]
 
@@ -669,8 +740,10 @@ def _outputs(text: str) -> list[str]:
     ]
 
 
+@pytest.mark.parametrize("packs", [["default"], sorted(ALL_PACKS)], ids=["default", "every-pack"])
 @pytest.mark.parametrize("shape", PAN_SHAPES)
-def test_no_output_holds_the_card_number_or_a_hash_of_anything_holding_it(mode, shape):
+def test_no_output_holds_the_card_number_or_a_hash_of_anything_holding_it(mode, packs, shape):
+    configure_masking_packs(packs)
     # Tokens exist only with a keyset; without one, the label stands in.
     candidates = _pan_candidates(shape) if mode == "keyset" else set()
     for output in _outputs(shape):
@@ -680,7 +753,20 @@ def test_no_output_holds_the_card_number_or_a_hash_of_anything_holding_it(mode, 
 
 @pytest.mark.parametrize(
     "shape",
-    [*PAN_SHAPES, 'password="s3cr3tVALUE" rejected', 'password=ab",cd-TAIL&x=1', "<Auth password=s3cr3t/>", "password=:/>"],
+    [
+        *PAN_SHAPES,
+        'password="s3cr3tVALUE" rejected',
+        'password=ab",cd-TAIL&x=1',
+        "<Auth password=s3cr3t/>",
+        "password=:/>",
+        # A form value redact_body labels, which the next text pass must not cut.
+        "Basic CVV2=)card code<",
+        # Doubled quotes before a value, then more after it.
+        'password=""s3cr3t code""x',
+        'password=""paymentCvv%2Bu:p@card code""(payment_id',
+        "password=''abc123",
+        "password=''s3cr3t code''x",
+    ],
 )
 def test_the_text_rule_then_redact_body_twice_is_once(shape):
     def mask(text):
@@ -688,3 +774,789 @@ def test_the_text_rule_then_redact_body_twice_is_once(shape):
 
     once = mask(shape)
     assert mask(once) == once
+
+
+# An accepted residual, the same at 354f70f: after a scheme word, redact_body
+# hashes a form value the text rules left (a label with more after it, a lone
+# quote), and the scheme word's bare-space rule then reads `password=<token>`
+# as its credential and hashes it again -- a token of a token, correlation
+# only. Skipping `key=<token>` there would let through a credential glued to a
+# key name (`Token abc123abc123api_key=...`). Strict xfail: fixing it fails
+# here, to be promoted into the test above.
+@pytest.mark.parametrize(
+    "shape",
+    [
+        'Bearer password=[SECRET-MASKED]"x',
+        '123Authorization: Bearer password=[SECRET-MASKED]"note=#',
+        "x Bearer note=password=[CVV-MASKED]'",
+        "Bearer password='",
+    ],
+)
+def test_a_scheme_words_rule_reads_what_redact_body_wrote_again(shape, mode, request):
+    if mode == "keyset":
+        request.applymarker(pytest.mark.xfail(strict=True, reason="rule 8 re-reads redact_body's key=<token>"))
+
+    def mask(text):
+        return redact_body(mask_by_patterns(text, _TEXT_RULES))
+
+    once = mask(shape)
+    assert mask(once) == once
+
+
+# A value that holds a card number among other text, and `ptok:v1:` typed
+# before one in a token's exact shape.
+HOLDS_A_PAN = "abc4111111111111111xyz"
+CRAFTED_TOKEN = f"ptok:v1:{PAN}{'A' * 27}"
+A_UUID = "26888535-1296-4273-8ba1-c634e90bf52f"
+
+
+def _every_path(value: str) -> dict[str, str]:
+    """What ``value`` becomes as a credential on every path into a log, each
+    reduced to the value it was masked to."""
+    return {
+        "key walk": _walk({"password": value})["password"],
+        "mask_secret": mask_secret(value),
+        **{text: mask_by_patterns(text % value, _TEXT_RULES) for text in CREDENTIAL_TEXTS},
+        "query param": redact_url(f"https://h/pay?password={value}&order_id=42"),
+        "route param": _loggable_path(f"/v1/cards/{value}/"),
+    }
+
+
+def _as_masked(masked: str) -> dict[str, str]:
+    """What every path gives when the value is masked to ``masked``."""
+    return {
+        "key walk": masked,
+        "mask_secret": masked,
+        **{text: text % masked for text in CREDENTIAL_TEXTS},
+        "query param": f"https://h/pay?password={masked}&order_id=42",
+        "route param": f"/v1/cards/{masked}/",
+    }
+
+
+class TestACredentialThatHoldsACardNumber:
+    """With `pci` among the call's packs, a credential holding a card-number
+    run is its label on every path -- as the key walk's own `pci` branch
+    already made it under a key -- since its hash is a keyed hash of a card
+    number. Without `pci` among them it keeps its token: a default-pack
+    service receives no card numbers, and labelling such values would label
+    7% of 64-hex signatures."""
+
+    def test_with_pci_it_is_the_label_on_every_path(self):
+        configure_masking_packs(["pci"])
+        assert _every_path(HOLDS_A_PAN) == _as_masked(LABEL)
+
+    def test_without_pci_it_keeps_its_token(self):
+        assert _every_path(HOLDS_A_PAN) == _as_masked(token_or_label(HOLDS_A_PAN))
+
+    def test_with_pci_a_uuid_keeps_its_token(self):
+        configure_masking_packs(["pci"])
+        assert _every_path(A_UUID) == _as_masked(token_or_label(A_UUID))
+
+    @pytest.mark.parametrize("packs", [["default"], ["pci"]])
+    def test_a_percent_encoded_one_in_text_is_the_label_in_every_pack(self, packs):
+        # A value runs to its delimiter, `%22` and all; decoded, as a URL or
+        # form encoding reads it, it is a card number in quotes.
+        configure_masking_packs(packs)
+        text = "password=%224111111111111111%22&x=1"
+        assert mask_by_patterns(text, _TEXT_RULES) == f"password={LABEL}&x=1"
+
+    def test_masked_twice_it_is_masked_once(self):
+        configure_masking_packs(["pci"])
+        for text in CREDENTIAL_TEXTS:
+            once = mask_by_patterns(text % HOLDS_A_PAN, _TEXT_RULES)
+            assert mask_by_patterns(once, _TEXT_RULES) == once
+
+
+def _payment_id(value: str) -> str:
+    return tokenize(value, "payment_id") if is_configured() else "[PAYMENT-ID-MASKED]"
+
+
+PAYMENT_ID_TEXTS = ["payment_id=%s", "transaction_id: %s done", "'auth_id': '%s'", "auth_id %s"]
+
+
+class TestAPaymentIdThatHoldsACardNumber:
+    """A payment id was `tokenize(<card number>, "payment_id")`: a keyed hash
+    of the bare card number. With `pci` it is the label, as a credential is."""
+
+    @pytest.mark.parametrize("value", [PAN, HOLDS_A_PAN])
+    @pytest.mark.parametrize("text", PAYMENT_ID_TEXTS)
+    def test_with_pci_it_is_the_label(self, text, value):
+        configure_masking_packs(["pci", "financial_ids"])
+        masked = mask_by_patterns(text % value, rules_for(ALL_PACKS))
+        assert masked == text % "[PAYMENT-ID-MASKED]"
+        assert mask_by_patterns(masked, rules_for(ALL_PACKS)) == masked
+
+    @pytest.mark.parametrize("text", PAYMENT_ID_TEXTS)
+    def test_without_pci_it_keeps_its_token(self, text):
+        configure_masking_packs(["financial_ids"])
+        rules = rules_for(frozenset({"default", "financial_ids"}))
+        assert mask_by_patterns(text % PAN, rules) == text % _payment_id(PAN)
+
+    def test_under_its_key_with_pci_it_is_the_label_too(self):
+        configure_masking_packs(["pci", "financial_ids"])
+        assert _walk({"payment_id": HOLDS_A_PAN}) == {"payment_id": "[PAYMENT-ID-MASKED]"}
+
+    @pytest.mark.parametrize("text", PAYMENT_ID_TEXTS)
+    def test_with_pci_a_uuid_keeps_its_token(self, text):
+        configure_masking_packs(["pci", "financial_ids"])
+        assert mask_by_patterns(text % A_UUID, rules_for(ALL_PACKS)) == text % _payment_id(A_UUID)
+
+
+@pytest.mark.parametrize("packs", [["default"], sorted(ALL_PACKS)], ids=["default", "every-pack"])
+class TestATokenShapedValueThatHoldsACardNumber:
+    """`ptok:v1:` typed before a card number, in a token's exact shape, passed
+    every check for masking's own output: in clear, card number and all, in
+    every pack. It is the label, in every pack."""
+
+    def test_on_every_path_it_is_the_label(self, packs):
+        configure_masking_packs(packs)
+        assert _every_path(CRAFTED_TOKEN) == _as_masked(LABEL)
+
+    @pytest.mark.parametrize("field_type", ["secret", "payment_id", "email", "name", "generic"])
+    def test_under_any_type_it_is_the_types_label(self, packs, field_type):
+        configure_masking_packs(packs)
+        assert mask_by_field_type(CRAFTED_TOKEN, field_type) == f"[{make_label(field_type)}]"
+
+    def test_in_quotes_or_a_legacy_marker_it_is_the_label(self, packs):
+        configure_masking_packs(packs)
+        assert mask_secret(f'"{CRAFTED_TOKEN}"') == LABEL
+        assert mask_by_field_type(f"[EMAIL-MASKED:{CRAFTED_TOKEN}]", "email") == "[EMAIL-MASKED]"
+
+    def test_under_a_pii_key_it_is_the_label(self, packs):
+        configure_masking_packs(packs)
+        assert _walk({"customer_email": CRAFTED_TOKEN}) == {"customer_email": "[EMAIL-MASKED]"}
+
+    def test_a_real_token_still_passes_through(self, packs):
+        configure_masking_packs(packs)
+        real = tokenize(SECRET, "secret") if is_configured() else LABEL
+        assert _every_path(real) == _as_masked(real)
+
+
+_DEFAULT_RULES = rules_for(frozenset({"default"}))
+# Where each tail shipped: past a character the old value class did not know
+# (a backslash, `@`, an apostrophe), or a key the old rules could not read
+# (a JSON-escaped one). (text, the text around the value, the value masked.)
+TAILS = [
+    ("password=ab\\cd-TAIL1", "password=%s", "ab\\cd-TAIL1"),
+    # A JSON string: masked as what it decodes to, `ab\cd-TAIL2`.
+    ('password: "ab\\\\cd-TAIL2"', 'password: "%s"', "ab\\cd-TAIL2"),
+    ('password=abc\\"def-TAIL4', "password=%s", 'abc\\"def-TAIL4'),
+    ('{"password": "ab\\"cd-TAIL5"}', '{"password": "%s"}', 'ab"cd-TAIL5'),
+    ('{\\"password\\": \\"hunter2-TAIL3\\"}', '{\\"password\\": \\"%s\\"}', "hunter2-TAIL3"),
+    ("Bearer abc123\\def456-TAIL9", "Bearer %s", "abc123\\def456-TAIL9"),
+    ('{"password": "it\'s-a-secret-TAIL"}', '{"password": "%s"}', "it's-a-secret-TAIL"),
+    ("password=p@ss-TAIL", "password=%s", "p@ss-TAIL"),
+    # Doubled quotes, as CSV and SQL escape one: no empty quoted value.
+    ('password=""abc123secret', 'password=""%s', "abc123secret"),
+    ('7,"password=""s3cret-X9"""', '7,"password=""%s"""', "s3cret-X9"),
+]
+# Where an unquoted value ends, and what stays inside one.
+DELIMITED = [
+    ("password=abc&x=1", "password=%s&x=1", "abc"),
+    ("password=abc;x=1", "password=%s;x=1", "abc"),
+    ("password=abc, x=1", "password=%s, x=1", "abc"),
+    ("password=abc\tx=1", "password=%s\tx=1", "abc"),
+    ("(password=abc)", "(password=%s)", "abc"),
+    ("[password=abc]", "[password=%s]", "abc"),
+    ("{password=abc}", "{password=%s}", "abc"),
+    ("<password=abc>", "<password=%s>", "abc"),
+    ('{"note": "password=abc"}', '{"note": "password=%s"}', "abc"),
+    ("password=abc' x", "password=%s' x", "abc"),
+    ("password=abc#frag~!$*", "password=%s", "abc#frag~!$*"),
+    ('password=ab"cd-TAIL', "password=%s", 'ab"cd-TAIL'),
+    ("password=ab''cd-TAIL", "password=%s", "ab''cd-TAIL"),
+    ("password=ptok:v1:hunter2", "password=%s", "ptok:v1:hunter2"),
+    ('{\\"api_key\\": 12345}', '{\\"api_key\\": \\"%s\\"}', "12345"),
+]
+# A quoted value runs to its unescaped closing quote, spaces and all.
+QUOTED_VALUES = [
+    ('password="a b&c" x', 'password="%s" x', "a b&c"),
+    ("password='it\\'s' x", "password='%s' x", "it\\'s"),
+    ("{'password': 'it\\'s'}", "{'password': '%s'}", "it\\'s"),
+    ("{'password': \"it's here\"}", "{'password': \"%s\"}", "it's here"),
+    ('Authorization: "Bearer abc123"', 'Authorization: "%s"', "Bearer abc123"),
+    # JSON in a JSON string: a value between escaped quotes runs to its
+    # matching one, masked as what it decodes to, twice.
+    ('{\\"password\\": \\"correct horse battery staple\\"}', '{\\"password\\": \\"%s\\"}', "correct horse battery staple"),
+    ('{\\"password\\": \\"a\\\\\\"b c\\"}', '{\\"password\\": \\"%s\\"}', 'a"b c'),
+    ('note=password=\\"s3cr3t value\\"&x=1', 'note=password=\\"%s\\"&x=1', "s3cr3t value"),
+]
+
+
+@pytest.mark.parametrize("rules", [_DEFAULT_RULES, _TEXT_RULES], ids=["default", "every-pack"])
+class TestACredentialValueRunsToItsDelimiter:
+    """A credential value in text is everything up to its delimiter, as a
+    form value in `redact_body` is: an unquoted one ends at whitespace, `&`,
+    `;`, `,`, a closing quote or bracket; a quoted one at its unescaped
+    closing quote. A fixed class of value characters left the rest of a
+    value in clear after a character outside it."""
+
+    @pytest.mark.parametrize(("text", "around", "value"), TAILS + DELIMITED + QUOTED_VALUES)
+    def test_the_value_is_masked_whole_and_once(self, rules, text, around, value):
+        masked = mask_by_patterns(text, rules)
+        assert masked == around % token_or_label(value)
+        assert mask_by_patterns(masked, rules) == masked
+
+    @pytest.mark.parametrize(
+        ("text", "around", "value"),
+        [
+            ("Basic CVV2=[CVV-MASKED] code", "Basic CVV2=[CVV-MASKED] code", None),
+            ("password=abc[SECRET-MASKED] x", "password=%s[SECRET-MASKED] x", "abc"),
+            ('password=abc"[SECRET-MASKED]', 'password=%s"[SECRET-MASKED]', "abc"),
+        ],
+    )
+    def test_a_value_never_runs_into_a_label(self, rules, text, around, value):
+        # A `]` ends a value: run into a label another path wrote, it cut the
+        # label (`Basic [SECRET-MASKED]] code`).
+        masked = mask_by_patterns(text, rules)
+        assert masked == (around if value is None else around % token_or_label(value))
+        assert mask_by_patterns(masked, rules) == masked
+
+    def test_a_placeholder_after_a_separator_is_the_label(self, rules):
+        # A star is a value character now; a placeholder is still the label.
+        assert mask_by_patterns("password=*** x", rules) == f"password={LABEL} x"
+
+    def test_a_json_escaped_value_gets_the_token_it_gets_under_its_key(self, rules):
+        masked = mask_by_patterns('{"password": "ab\\"cd-TAIL5"}', rules)
+        assert json.loads(masked) == _walk({"password": 'ab"cd-TAIL5'})
+
+    @pytest.mark.parametrize(
+        "text", ['password=""', "password=''", 'password=\\"\\"', "password=", 'password: "" x', '{"password": ""}']
+    )
+    def test_an_empty_value_stays_empty(self, rules, text):
+        assert mask_by_patterns(text, rules) == text
+
+    def test_a_token_in_doubled_quotes_is_left_as_it_is(self, rules):
+        text = f'password=""{token_or_label(SECRET)}""'
+        assert mask_by_patterns(text, rules) == text
+
+    @pytest.mark.parametrize("text", ['password="abc', 'password: "abc def', "password='abc x"])
+    def test_a_quote_nothing_closes_is_read_as_an_unquoted_value(self, rules, text):
+        masked = mask_by_patterns(text, rules)
+        assert "abc" not in masked
+        assert mask_by_patterns(masked, rules) == masked
+
+
+AUTHORIZATIONS = [
+    "Bearer abc123def456ghi789",
+    "Basic dXNlcjpwYXNzd29yZA==",
+    "Digest dXNlcjpwYXNz",
+    "Token abc123def456",
+    "Negotiate YIIBhwYGKwYBBQUC",
+    "Api-Key 1a2b3c4d5e6f",
+]
+
+
+class TestAnAuthorizationHeaderInText:
+    """`Authorization: <scheme> <credential>` is one value, as the header is
+    under its key: the text rule took the scheme for the value, so without a
+    keyset the credential after it shipped in clear unless another rule
+    caught it (`Basic dXNlcjpwYXNz` has no digit for the bare-space rule), and
+    with one every record shared the scheme's token."""
+
+    @pytest.mark.parametrize("header", AUTHORIZATIONS)
+    @pytest.mark.parametrize(
+        "text", ["Authorization: %s", "Proxy-Authorization: %s", "authorization=%s", "Authorization= %s", "authorisation_header: %s"]
+    )
+    def test_scheme_and_credential_are_one_token(self, text, header):
+        masked = mask_by_patterns(text % header, _TEXT_RULES)
+        assert masked == text % mask_secret(header)
+        assert mask_by_patterns(masked, _TEXT_RULES) == masked
+
+    def test_every_path_gives_the_header_the_same_token(self):
+        header = "Bearer abc123def456ghi789"
+        expected = mask_secret(header)
+        configure_redaction(extra_secret_keys=["authorization"])
+        assert _walk({"Authorization": header})["Authorization"] == expected
+        assert mask_by_patterns(f"Authorization: {header}", _TEXT_RULES) == f"Authorization: {expected}"
+        assert redact_url(f"https://h/pay?authorization={quote(header)}") == f"https://h/pay?authorization={expected}"
+        assert redact_body(f'{{"Authorization": "{header}"}}') == f'{{"Authorization": "{expected}"}}'
+
+    @pytest.mark.parametrize("text", ["Authorization: Bearer [REDACTED]", "Authorization: Bearer"])
+    def test_a_scheme_alone_is_never_the_value_beside_a_placeholder(self, text):
+        # `Bearer [REDACTED]` holds nothing to mask; the scheme alone, when
+        # nothing follows it, is the header's whole value, as under its key.
+        expected = text if text.endswith("]") else f"Authorization: {mask_secret('Bearer')}"
+        assert mask_by_patterns(text, _TEXT_RULES) == expected
+
+    @pytest.mark.parametrize(
+        "text", ["Authorization: Bearer %s", "Authorization=Basic %s", "Proxy-Authorization: Token %s"]
+    )
+    def test_a_token_after_the_scheme_is_left_as_it_is(self, text):
+        # What masked the credential alone left: hashed with its scheme, it
+        # was a second token for the same credential.
+        text = text % token_or_label(SECRET)
+        assert mask_by_patterns(text, _TEXT_RULES) == text
+
+    def test_a_starred_credential_is_the_label(self):
+        assert mask_by_patterns("Authorization: Bearer ****", _TEXT_RULES) == f"Authorization: {LABEL}"
+
+    def test_only_an_authorization_key_takes_a_scheme(self):
+        # `password=basic more words` is a password, `basic`, and prose.
+        masked = mask_by_patterns("password=basic more words", _TEXT_RULES)
+        assert masked == f"password={token_or_label('basic')} more words"
+
+
+def _part(value: str) -> str:
+    """A userinfo part as it must read in text: empty stays empty."""
+    return token_or_label(value) if value else value
+
+
+def _url_part(value: str) -> str:
+    """...and in a URL redact_url rebuilt, where a label's brackets are
+    percent-encoded: a netloc holding them does not parse."""
+    return _part(value).replace("[", "%5B").replace("]", "%5D")
+
+
+class TestAUrlsUserinfoAndFragmentInRedactUrl:
+    """`redact_url` masked credential query params only: a password in the
+    userinfo (`https://user:pass@host`) or an OAuth implicit-grant token in
+    the fragment (`#access_token=…`) reached `url.full` in clear."""
+
+    def test_the_user_and_password_are_masked_and_the_host_kept(self):
+        url = redact_url("https://user:pa55word@api.host.example:8443/v1/pay?order_id=42")
+        assert url == f"https://{_url_part('user')}:{_url_part('pa55word')}@api.host.example:8443/v1/pay?order_id=42"
+        assert urlsplit(url).hostname == "api.host.example"
+
+    @pytest.mark.parametrize(
+        ("url", "user", "password", "rest"),
+        [
+            ("https://key:@api.host/", "key", "", "api.host/"),
+            ("redis://:s3cret@cache:6379/0", "", "s3cret", "cache:6379/0"),
+            ("https://u%40corp:p%3Ass@host/", "u@corp", "p:ss", "host/"),
+            ("https://u:p@ss@host/", "u", "p@ss", "host/"),
+        ],
+    )
+    def test_each_part_is_masked_as_it_decodes_and_an_empty_one_stays_empty(self, url, user, password, rest):
+        scheme = url.split("://")[0]
+        assert redact_url(url) == f"{scheme}://{_url_part(user)}:{_url_part(password)}@{rest}"
+
+    def test_a_user_alone_is_masked(self):
+        assert redact_url("https://ghp_abc123@github.example/o/r") == f"https://{_url_part('ghp_abc123')}@github.example/o/r"
+
+    def test_the_fragment_params_are_masked_as_the_query_params_are(self):
+        url = redact_url("https://h/cb#access_token=abc123&state=xyz&scope=read")
+        assert url == f"https://h/cb#access_token={_part('abc123')}&state=xyz&scope=read"
+
+    def test_a_url_with_neither_is_left_as_written(self):
+        for url in ("https://h/a?x=1#section-2", "https://h/a#", "https://h/a?"):
+            assert redact_url(url) == url
+
+    def test_a_token_shaped_user_that_holds_a_card_number_is_the_label(self):
+        assert redact_url(f"https://{CRAFTED_TOKEN}@host.example/") == "https://%5BSECRET-MASKED%5D@host.example/"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://user:pa55word@api.host.example/v1/pay",
+            "https://user@api.host.example/v1/pay",
+            "https://key:@api.host/",
+            "https://h/cb#access_token=abc123&state=xyz",
+            # A token before a fragment: a whole token, not one run on into it.
+            "https://h/cb?password=x1#access_token=abc123",
+            "https://h/cb?password=x1#section",
+        ],
+    )
+    def test_masked_twice_or_by_the_text_rules_it_is_masked_once(self, url):
+        once = redact_url(url)
+        assert redact_url(once) == once
+        assert mask_by_patterns(once, _TEXT_RULES) == once
+        assert "ptok:v1:ptok:v1:" not in once
+
+    def test_ecs_url_masks_them_and_keeps_the_domain(self):
+        shaped = ecs_url("https://user:pa55word@api.host.example/v1/pay#access_token=abc123")
+        assert shaped == {
+            "full": f"https://{_url_part('user')}:{_url_part('pa55word')}@api.host.example/v1/pay"
+            f"#access_token={_part('abc123')}",
+            "domain": "api.host.example",
+            "path": "/v1/pay",
+        }
+
+
+# A URL's userinfo in free text -- a DSN in an exception message. (text, the
+# text around the masked user and password, user, password.)
+USERINFO_TEXTS = [
+    ("could not connect postgresql://u:p@localhost:5432/db", "could not connect postgresql://%s:%s@localhost:5432/db", "u", "p"),
+    ("amqp://u:p@10.0.0.5//", "amqp://%s:%s@10.0.0.5//", "u", "p"),
+    ("GET https://key:@api.host/ failed", "GET https://%s:%s@api.host/ failed", "key", ""),
+    ("redis://:s3cret@cache:6379/0 refused", "redis://%s:%s@cache:6379/0 refused", "", "s3cret"),
+    ('{"dsn": "mongodb+srv://admin:s3cr3t@cluster0.example.net/app"}', '{"dsn": "mongodb+srv://%s:%s@cluster0.example.net/app"}', "admin", "s3cr3t"),
+    ("fetch https://user:pa55word@api.host.example/v1/pay", "fetch https://%s:%s@api.host.example/v1/pay", "user", "pa55word"),
+    ("amqp://u%40corp:p%3Ass@mq:5672/", "amqp://%s:%s@mq:5672/", "u@corp", "p:ss"),
+    ("amqp://guest:5551234567@mq:5672/", "amqp://%s:%s@mq:5672/", "guest", "5551234567"),
+]
+
+
+class TestAUrlsUserinfoInText:
+    """A URL's userinfo in free text is masked part by part, as redact_url
+    masks it, keeping the scheme, host and port. Before, a DSN in exception
+    text shipped whole, and `user:pw@host.tld` was masked, if at all, as an
+    email -- the host with it."""
+
+    @pytest.mark.parametrize(("text", "around", "user", "password"), USERINFO_TEXTS)
+    def test_the_parts_are_masked_and_the_host_kept(self, text, around, user, password):
+        masked = mask_by_patterns(text, _TEXT_RULES)
+        assert masked == around % (_part(user), _part(password))
+        assert mask_by_patterns(masked, _TEXT_RULES) == masked
+        assert "ptok:v1:ptok:v1:" not in masked
+
+    def test_it_gives_the_parts_the_tokens_redact_url_does(self):
+        url = "https://user:pa55word@api.host.example/v1/pay"
+        assert mask_by_patterns(url, _TEXT_RULES) == unquote(redact_url(url))
+
+    def test_a_user_alone_is_left_to_the_other_rules(self):
+        # No password, no credential: `ssh://git@host` names an account.
+        text = "clone ssh://git@10.0.0.5/repo.git"
+        assert mask_by_patterns(text, _TEXT_RULES) == text
+
+    def test_without_a_scheme_the_email_rule_still_masks_what_it_did(self):
+        text = "login user:pw@host.tld failed"
+        email = tokenize("pw@host.tld", "email") if is_configured() else "[EMAIL-MASKED]"
+        assert mask_by_patterns(text, _TEXT_RULES) == f"login user:{email} failed"
+
+    def test_the_email_rule_never_starts_inside_a_token(self):
+        # What redact_url leaves for a user alone: the host after it is no
+        # email, and the token is kept whole.
+        token = token_or_label("user")
+        text = f"GET https://{token}@api.host.example/v1/pay"
+        assert mask_by_patterns(text, _TEXT_RULES) == text
+
+    def test_an_email_glued_after_a_token_is_still_masked(self):
+        token = hmac_tokenize("user", bytes(32), "secret", "test")
+        email = tokenize("jane@example.com", "email") if is_configured() else "[EMAIL-MASKED]"
+        assert mask_by_patterns(f"x {token}jane@example.com y", _TEXT_RULES) == f"x {token}{email} y"
+
+    def test_a_user_alone_before_a_host_is_still_masked_as_an_email(self):
+        # No password: the userinfo rule leaves it, and the email rule masks
+        # `john@example.com` as it did -- the host with it.
+        email = tokenize("john@example.com", "email") if is_configured() else "[EMAIL-MASKED]"
+        assert mask_by_patterns("GET https://john@example.com/v1", _TEXT_RULES) == f"GET https://{email}/v1"
+
+
+# Values whose card number R4 now reads as part of the credential: 0.15.4's
+# value class stopped at `@`, `\` or `%`, and the card rule truncated it.
+CARD_IN_A_CREDENTIAL = [
+    ("password=p@ss4111111111111111", "password=[SECRET-MASKED]"),
+    ("password=ab\\cd4111111111111111", "password=[SECRET-MASKED]"),
+    ("password=%224111111111111111%22&x=1", "password=[SECRET-MASKED]&x=1"),
+    ("payment_id=4111111111111111", "payment_id=[PAYMENT-ID-MASKED]"),
+]
+
+
+class TestTheCallsPacksDecide:
+    """"`pci` in force" is the masking call's packs -- a filter built with its
+    own `packs=`, as a PCI handler beside a default one is -- and the
+    process's, together. Read from the process alone, a pci filter in a
+    default-configured process hashed a credential holding a card number;
+    read from the call alone, a default handler ahead of a pci one masked the
+    record in place with a hash, and the pci handler logged it."""
+
+    @pytest.mark.parametrize(("text", "masked"), CARD_IN_A_CREDENTIAL)
+    def test_a_pci_filter_labels_it_in_a_default_process(self, text, masked):
+        assert MaskPIIFilter(packs=ALL_PACKS)._mask_string(text) == masked
+
+    def test_a_pci_filters_key_walk_labels_it_too(self):
+        text = "password=p@ss4111111111111111"
+        out = MaskPIIFilter(packs=ALL_PACKS)._mask_dict({"password": HOLDS_A_PAN, "note": text})
+        assert out == {"password": LABEL, "note": "password=[SECRET-MASKED]"}
+
+    def test_outside_the_call_the_process_packs_decide_again(self):
+        MaskPIIFilter(packs=ALL_PACKS)._mask_string("password=p@ss4111111111111111")
+        assert mask_secret(HOLDS_A_PAN) == token_or_label(HOLDS_A_PAN)
+
+    def test_a_default_filter_in_a_pci_process_masks_a_card_number_in_any_field(self):
+        # The key walk's pci branch and a bare int read the filter's packs
+        # alone: a card number typed into the name box was hashed.
+        configure_masking_packs(["pci"])
+        masked = MaskPIIFilter(packs=("default",))._mask_dict(
+            {"customer_name": PAN, "customer_email": HOLDS_A_PAN, "ref": int(PAN)}
+        )
+        assert masked == {"customer_name": "411111******1111", "customer_email": "[EMAIL-MASKED]", "ref": "411111******1111"}
+
+    def test_a_default_filter_in_a_pci_process_labels_it_too(self):
+        configure_masking_packs(["pci"])
+        text = f"password={HOLDS_A_PAN}"
+        assert MaskPIIFilter(packs=("default",))._mask_string(text) == f"password={LABEL}"
+
+    @pytest.mark.parametrize("template", ["password=%s ref%s", "password=%s card %s"])
+    def test_a_default_handler_ahead_of_a_pci_one_renders_no_card_number(self, template, logging_state):
+        # The default handler renders `password=%s`, and the record keeps
+        # what it rendered: its arguments masked with its own packs only, the
+        # pci handler got `ref4111111111111111` whole, glued to a word.
+        import io
+        import logging
+
+        configure_masking_packs(["pci", "financial_ids"])
+        logger = logging.getLogger("handlers.render." + template.split()[1][:3])
+        logger.propagate = False
+        streams = []
+        for packs in (("default",), ALL_PACKS):
+            stream = io.StringIO()
+            handler = logging.StreamHandler(stream)
+            handler.addFilter(MaskPIIFilter(packs=packs))
+            logger.addHandler(handler)
+            streams.append(stream)
+        logger.warning(template, "pw-1", PAN)
+        assert [PAN in stream.getvalue() for stream in streams] == [False, False]
+
+    @pytest.mark.parametrize("template", ["password=%s ref%s", "password=%s card %s"])
+    def test_in_a_default_process_too(self, template, logging_state):
+        # A pci filter built explicitly behind a default handler: the process
+        # has no pci for the union to add.
+        import io
+        import logging
+
+        logger = logging.getLogger("handlers.default.process." + template.split()[1][:3])
+        logger.propagate = False
+        streams = []
+        for packs in (("default",), ALL_PACKS):
+            stream = io.StringIO()
+            handler = logging.StreamHandler(stream)
+            handler.addFilter(MaskPIIFilter(packs=packs))
+            logger.addHandler(handler)
+            streams.append(stream)
+        logger.warning(template, "pw-1", PAN)
+        assert [PAN in stream.getvalue() for stream in streams] == [False, False]
+
+    def test_a_default_handler_ahead_of_a_pci_one_leaves_it_the_label(self, logging_state):
+        import io
+        import logging
+
+        configure_masking_packs(["pci", "financial_ids"])
+        logger = logging.getLogger("handlers.in.order")
+        logger.propagate = False
+        streams = []
+        for packs in (("default",), ALL_PACKS):
+            stream = io.StringIO()
+            handler = logging.StreamHandler(stream)
+            handler.addFilter(MaskPIIFilter(packs=packs))
+            logger.addHandler(handler)
+            streams.append(stream)
+        logger.warning("login password=%s", HOLDS_A_PAN)
+        assert [stream.getvalue() for stream in streams] == [f"login password={LABEL}\n"] * 2
+
+
+JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnop"
+# %-style templates a service logs, the credential after its word passed as an
+# argument (the second is pg.cs.flow's own). Masking read the placeholder as
+# the credential and rewrote the template, so getMessage() raised: the handler
+# dropped the line and printed the arguments to stderr, in clear.
+TEMPLATES = [
+    ("login password=%s", ("hunter2-s3cret",), "hunter2-s3cret"),
+    ("on_challenge_start: step_up_url=%s, has_token=%s", (f"https://centinel.example/stepup?JWT={JWT}", True), JWT),
+    ("Authorization: %s", ("Basic dXNlcjpwYXNz",), "dXNlcjpwYXNz"),
+    ("api_key=%r", ("k-123abc",), "k-123abc"),
+    ("secret: %s", ("s3cr3t-9",), "s3cr3t-9"),
+    ("gateway replied token=%s for %s", ("tok_live_abc123", "order-42"), "tok_live_abc123"),
+    ("client_secret=%-10s|", ("abc123",), "abc123"),
+    ("db postgresql://%s:%s@%s/app", ("u", "pw-9", "db"), "pw-9"),
+    ("cvv=%s", ("123",), "123"),
+    ("payment_id=%s", ("4111111111111111",), "4111111111111111"),
+    # Its value in quotes, a mapping's, a number's.
+    ('payload {"password": "%s"}', ("hunter2",), "hunter2"),
+    ("password=%(pw)s", ({"pw": "hunter2"},), "hunter2"),
+    ("api_key=%d", (12345,), "12345"),
+]
+
+
+class TestATemplateHoldingACredentialWord:
+    """Through get_logging_config(), as a service runs it, with every pack."""
+
+    @pytest.mark.parametrize(("template", "args", "secret"), TEMPLATES)
+    def test_it_is_one_masked_line_and_nothing_reaches_stderr(self, template, args, secret, capsys, logging_state):
+        import io
+        import logging
+        import logging.config
+
+        from ecsctx.contrib.django import get_logging_config
+
+        out = io.StringIO()
+        cfg = get_logging_config(use_cid_filter=False, masking_packs=("pci", "financial_ids"))
+        cfg["handlers"]["console"]["stream"] = out
+        logging.config.dictConfig(cfg)
+        logging.getLogger("app.pay").info(template, *args)
+        lines = [json.loads(line) for line in out.getvalue().splitlines()]
+        assert len(lines) == 1
+        message = lines[0]["message"]
+        assert secret not in message
+        assert "MASKING-FAILED" not in message
+        assert message.split("=")[0].split(":")[0] == template.split("=")[0].split(":")[0]
+        assert capsys.readouterr().err == ""
+
+    def test_a_template_masking_leaves_as_it_is_keeps_its_args(self):
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "user %s logged in", ("bob",), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == ("user %s logged in", ("bob",))
+
+    def test_a_rendered_template_is_masked_whole(self):
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "login password=%s", ("hunter2-s3cret",), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == (f"login password={token_or_label('hunter2-s3cret')}", ())
+        assert record.getMessage() == record.msg
+
+    def test_arguments_that_do_not_fit_the_template_are_the_marker(self):
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "password=%s %s", ("only-one",), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == ("[MASKING-FAILED: TypeError]", ())
+
+    def test_a_mapping_template_is_rendered_whole(self):
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "password=%(pw)s", ({"pw": "hunter2"},), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == (f"password={token_or_label('hunter2')}", ())
+
+    def test_a_dicts_keys_still_mask_it_when_rendered(self):
+        # Rendered from the masked arguments: from the raw ones, a card number
+        # under a card key reached the text rules alone, and the default pack
+        # has no card rule.
+        import logging
+
+        body = {"card_number": "4111111111111111"}
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "password=%s body=%s", ("hunter2", body), None)
+        MaskPIIFilter().filter(record)
+        masked = f"password={token_or_label('hunter2')} body={{'card_number': '411111******1111'}}"
+        assert (record.msg, record.args) == (masked, ())
+
+
+class _Lazy:
+    """Stands in for Django's gettext_lazy proxy: formats as text, is not a str."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def __str__(self):
+        return self.text
+
+
+# Records getMessage() could not render once masked: a template that is not a
+# str, a number masking turned into text under a numeric conversion, arguments
+# that do not fit. Each was dropped, its arguments printed to stderr.
+UNRENDERED = [
+    ("lazy", _Lazy("login password=%s"), ("hunter2-s3cret",), "hunter2-s3cret", ("default", "pci")),
+    ("exception", ValueError("bad password=%s"), ("hunter2-exc",), "hunter2-exc", ("default", "pci")),
+    ("epoch-second", "expires_at %d", (1727712345,), "1727712345", ("default", "pci")),
+    ("13-digit-number", "order %d", (1727712345678,), "1727712345678", ("pci",)),
+    ("str-format", "password={}", ("fmt-secret-1",), "fmt-secret-1", ("default", "pci")),
+    ("count-mismatch", "password=%s %s", ("only-one",), "only-one", ("default", "pci")),
+    # Rendered from the masked arguments: from the raw ones, a card number
+    # glued to a word in the template is left whole by the card rule.
+    ("glued-number", "password=%s ref%d", ("pw-1", 4111111111111111), "4111111111111111", ("pci",)),
+]
+
+
+class TestARecordThatWouldNotRender:
+    """Through get_logging_config(), as a service runs it: one line, nothing on stderr."""
+
+    @pytest.mark.parametrize(
+        ("msg", "args", "secret", "packs"),
+        [(*case[1:4], packs) for case in UNRENDERED for packs in case[4]],
+        ids=[f"{case[0]}-{packs}" for case in UNRENDERED for packs in case[4]],
+    )
+    def test_it_is_one_line_without_the_secret(self, msg, args, secret, packs, capsys, logging_state):
+        import io
+        import logging
+        import logging.config
+
+        from ecsctx.contrib.django import get_logging_config
+
+        out = io.StringIO()
+        cfg = get_logging_config(use_cid_filter=False, masking_packs=() if packs == "default" else ("pci", "financial_ids"))
+        cfg["handlers"]["console"]["stream"] = out
+        logging.config.dictConfig(cfg)
+        logging.getLogger("app.render").info(msg, *args)
+        lines = [json.loads(line) for line in out.getvalue().splitlines()]
+        assert len(lines) == 1
+        assert secret not in lines[0]["message"]
+        assert capsys.readouterr().err == ""
+
+    def test_a_number_masking_turned_into_text_is_rendered_as_it(self):
+        import logging
+
+        masked = MaskPIIFilter()._mask_string("1727712345")
+        assert "1727712345" not in masked
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, "expires_at %d ok", (1727712345,), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == (f"expires_at {masked} ok", ())
+
+    def test_a_bytes_template_that_renders_keeps_its_args(self):
+        # Read as the text masking decodes it: as str(bytes) it never matched
+        # the decoded template, so every bytes record lost its arguments.
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, b"user %s ok", ("bob",), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args, record.getMessage()) == ("user %s ok", ("bob",), "user bob ok")
+
+    def test_a_bytes_template_holding_a_credential_word_is_rendered_whole(self):
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, b"password=%s", ("hunter2-b",), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == (f"password={token_or_label('hunter2-b')}", ())
+
+    def test_a_lazy_template_is_rendered_whole(self):
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, _Lazy("login password=%s"), ("hunter2",), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == (f"login password={token_or_label('hunter2')}", ())
+
+
+class TestACredentialThatIsATruncation:
+    """A saved card's gateway token passed as an argument: the pci card rule
+    truncated it before the credential rule read it, and ten of its digits
+    showed where the key walk and the same text written out give the label."""
+
+    @pytest.mark.parametrize("packs", ["default", "pci"])
+    def test_rendered_from_its_argument_it_is_the_label(self, packs, capsys, logging_state):
+        import io
+        import logging
+        import logging.config
+
+        from ecsctx.contrib.django import get_logging_config
+
+        out = io.StringIO()
+        cfg = get_logging_config(use_cid_filter=False, masking_packs=() if packs == "default" else ("pci", "financial_ids"))
+        cfg["handlers"]["console"]["stream"] = out
+        logging.config.dictConfig(cfg)
+        logging.getLogger("app.token").info("token=%s", "9923960000004314")
+        assert [json.loads(line)["message"] for line in out.getvalue().splitlines()] == [f"token={LABEL}"]
+        assert capsys.readouterr().err == ""
+
+    @pytest.mark.parametrize("text", ["password=411111******1111", 'token: "411111******1111"'])
+    def test_in_text_it_is_the_label(self, text):
+        assert "******" not in mask_by_patterns(text, _TEXT_RULES)
+
+
+class TestABareTokenKeyInABody:
+    """redact_body masks a bare `token` key as the key walk does."""
+
+    @pytest.mark.parametrize(
+        ("body", "masked"),
+        [
+            ('{"token": "pay_abc123"}', '{"token": "%s"}'),
+            ("token=pay_abc123&x=1", "token=%s&x=1"),
+        ],
+    )
+    def test_its_value_is_its_token_or_the_label(self, body, masked):
+        assert redact_body(body) == masked % token_or_label("pay_abc123")
+
+    @pytest.mark.parametrize(
+        ("body", "masked"),
+        [
+            ('{"token": "9923960000004314"}', '{"token": "[SECRET-MASKED]"}'),
+            ("token=9923960000004314&x=1", "token=[SECRET-MASKED]&x=1"),
+        ],
+    )
+    def test_a_card_shaped_one_is_the_label(self, body, masked):
+        assert redact_body(body) == masked
+
+    def test_as_the_key_walk_masks_it(self):
+        assert _walk({"token": "pay_abc123"})["token"] == token_or_label("pay_abc123")

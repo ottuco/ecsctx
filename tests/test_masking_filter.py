@@ -49,7 +49,7 @@ from ecsctx.pii.crypto import hmac_tokenize
 
 def _mask(msg):
     """Run a message through MaskPIIFilter with every pack on, and return the
-    (mutated) record.msg — the case tables below cover all 17 rules."""
+    (mutated) record.msg — the case tables below cover all 18 rules."""
     record = logging.LogRecord("test", logging.INFO, __file__, 0, msg, None, None)
     MaskPIIFilter(packs=ALL_PACKS).filter(record)
     return record.msg
@@ -405,8 +405,9 @@ CREDENTIAL_MASKED_CASES = [
     # Authorization header, every realistic shape
     ("auth-header-line-single-quotes", f"'Authorization': 'Bearer {_JWT}'", "'Authorization': '[SECRET-MASKED]'"),
     ("auth-header-line-double-quotes", f'"Authorization": "Bearer {_JWT}"', '"Authorization": "[SECRET-MASKED]"'),
-    ("auth-header-line-colon", f"Authorization: Bearer {_JWT}", "Authorization: [SECRET-MASKED] [JWT-MASKED]"),
-    ("auth-header-line-equal", f"Authorization= Bearer {_JWT}", "Authorization= [SECRET-MASKED] [JWT-MASKED]"),
+    # The scheme and the credential are one value, as under the header's key.
+    ("auth-header-line-colon", f"Authorization: Bearer {_JWT}", "Authorization: [SECRET-MASKED]"),
+    ("auth-header-line-equal", f"Authorization= Bearer {_JWT}", "Authorization= [SECRET-MASKED]"),
     ("auth-header-line-space", f"Authorization Bearer {_JWT}", "Authorization Bearer [SECRET-MASKED]"),
     ("auth-header-quoted-kv", f'{{"Authorization": "{_HEX}"}}', '{"Authorization": "[SECRET-MASKED]"}'),
     ("auth-header-quoted-kv-in-sentence", f'Here is {{"Authorization": "{_HEX}"}}', 'Here is {"Authorization": "[SECRET-MASKED]"}'),
@@ -1010,7 +1011,7 @@ def test_does_not_over_mask(label, sample):
 # rows stay — their first 12 digits ARE card-shaped, so the text does carry
 # card context and the rule is entitled to look at the groups. Closing those
 # needs the card rules to claim the whole run first, which is a change to
-# rule 15, not to the CVV rule. The rows here have no Luhn-valid reading of
+# the card rule, not to the CVV rule. The rows here have no Luhn-valid reading of
 # 12-19 digits; the earlier ones had one, and are truncated as cards now
 # (CARD_NUMBER_CASES).
 #

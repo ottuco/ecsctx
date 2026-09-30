@@ -1,9 +1,10 @@
 """Masking packs: which content rules run, and where the choice comes from.
 
-Card and CVV content scanning (and the financial-id rules) cost every service
-CPU and correlation fields, but only PCI services ever see such data, so they
-are opt-in packs a PCI service enables in its logging config. The default pack
-(credentials, PEM, JWT, email, phone) is always on.
+Card content scanning (and the financial-id rules) cost every service CPU and
+correlation fields, but only PCI services ever see such data, so they are
+opt-in packs a PCI service enables in its logging config. The default pack
+(credentials, keyed CVV, PEM, JWT, email, phone, a URL's userinfo) is always
+on: a CVV must not ship from any service.
 """
 
 import logging
@@ -41,9 +42,12 @@ def _mask(msg, packs=None):
 
 
 class TestPacks:
-    def test_default_pack_leaves_card_shaped_text_alone(self):
+    def test_default_pack_leaves_a_card_number_alone_but_masks_a_keyed_cvv(self):
+        # The keyed CVV rules are `default`: a default-pack service (Connect)
+        # receives the CVV a saved-card payment sends. The card rule and the
+        # bare 3-4 digit CVV rule stay `pci`.
         text = "card 4111111111111111 cvv 123 HTTP 200 OK took 1500 ms"
-        assert _mask(text) == text
+        assert _mask(text) == "card 4111111111111111 cvv [CVV-MASKED] HTTP 200 OK took 1500 ms"
 
     def test_pci_pack_truncates_the_pan_and_masks_the_cvv(self):
         assert _mask("card 4111111111111111 cvv 123", packs=("pci",)) == (
@@ -96,8 +100,10 @@ class TestPackSelection:
             configure_masking_packs(["pcii"])
 
     def test_filter_without_packs_follows_the_configuration(self):
+        # A card number: `cvv 123` is masked in every pack now.
+        assert _mask("card 4111111111111111") == "card 4111111111111111"
         configure_masking_packs(["pci"])
-        assert _mask("cvv 123") == "cvv [CVV-MASKED]"
+        assert _mask("card 4111111111111111") == "card 411111******1111"
 
 
 class TestKeyNames:
@@ -183,6 +189,10 @@ class TestKeyNames:
             ("pan", "card"),
             ("card_number", "card"),
             ("cardNumber", "card"),
+            # MIGS's `vpc_CardNum`, and the short spellings of a card number.
+            ("vpc_CardNum", "card"),
+            ("card_num", "card"),
+            ("cardNum", "card"),
                             ("telephone", "phone"),
             ("mobile", "phone"),
             ("tel", "phone"),
@@ -463,7 +473,7 @@ class TestCredentialScanMatchesFullScan:
         "basic", "Digest", "credentials", "Authorization", "authorisation_header",
         "secret", "client_secret", "password", "PASSWD", "key", "monkey", "keyboard",
         "tokenization", "abc123", "abcdefghij", "a1b2c3d4e5f6", "eyJhbGciOi.x.y",
-        "12345678", "value", "İ", "straße", "==", "/+~.",
+        "12345678", "value", "İ", "straße", "==", "/+~.", "\\", '\\"', "@", "#",
     )
 
     def _credential_rules(self):
@@ -490,6 +500,34 @@ class TestCredentialScanMatchesFullScan:
                 assert rule.scan(rule.pattern, rule.repl, sample) == rule.pattern.sub(rule.repl, sample)
 
 
+class TestCvvScanMatchesFullScan:
+    """The keyed CVV rules, `default` since 0.15.5, try only positions near a
+    CVV word, as the credential rules do: re.sub tried every word boundary,
+    and a long `a-a-a-…` cost 0.7 s per rule. That must never change their
+    output."""
+
+    FRAGMENTS = (
+        '"', "'", ":", "=", " ", "-", "_", ",", "{", "}", "\n", "\\", "a-", "x",
+        "cvv", "CVV2", "cvc", "Cvv", "csc", "cav2", "cvn", "cv", "number", "security", "Security", "code", "Code",
+        "card", "Card", "verification", "value", "vpc_", "payment", "saved", "recv", "123", "4829", "482912",
+    )
+
+    def _cvv_rules(self):
+        return [rule for rule in RULES if rule.name.split(":")[1] in ("_cvv_quoted", "_cvv_kv", "_cvv_space")]
+
+    def test_each_keyed_cvv_rule_scans_near_its_words(self):
+        rules = self._cvv_rules()
+        assert len(rules) == 3
+        assert all(rule.scan is not None for rule in rules)
+
+    def test_matches_on_generated_text(self):
+        rng = random.Random(159942)
+        for _ in range(3000):
+            text = "".join(rng.choice(self.FRAGMENTS) for _ in range(rng.randint(1, 14)))
+            for rule in self._cvv_rules():
+                assert rule.scan(rule.pattern, rule.repl, text) == rule.pattern.sub(rule.repl, text), (rule.name, text)
+
+
 class TestGatesNeverChangeAResult:
     """A gate may only skip a rule that could not have matched."""
 
@@ -501,6 +539,8 @@ class TestGatesNeverChangeAResult:
             "gb33BUKB20201555555555", "(555) 123-4567", "+965 5555 1234",
             "A@B.CO", "4111-1111-1111-1111", "123-45-6789", "call 123 now",
             "AUTHORIZATION: Bearer abc12345def", "Api-Key=abc123",
+            "vpc_CardSecurityCode=123", "Card Code: 1234", "CSC 123", "x_CVV2=123", "verification-value=123",
+            "postgresql://u:p@db:5432/app",
         ]
         for rule in RULES:
             for text in samples:

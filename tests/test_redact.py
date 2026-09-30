@@ -74,10 +74,11 @@ class TestRedactBody:
         assert "s3cret" not in redacted
         assert "grant_type=client_credentials" in redacted
 
-    def test_bare_token_key_is_left_alone(self):
-        # Gateways reuse `token` for non-secret payment/session identifiers.
-        body = '{"token": "pay_abc123"}'
-        assert redact_body(body) == body
+    def test_a_bare_token_key_is_masked_as_the_key_walk_masks_it(self):
+        # The key walk calls `token` a credential: left alone here, a saved
+        # card's sixteen-digit gateway token went out whole.
+        assert redact_body('{"token": "pay_abc123"}') == '{"token": "[SECRET-MASKED]"}'
+        assert redact_body('{"token_type": "bearer"}') == '{"token_type": "bearer"}'
 
     def test_clean_body_returns_unchanged(self):
         body = '{"status": "ok", "id": 42}'

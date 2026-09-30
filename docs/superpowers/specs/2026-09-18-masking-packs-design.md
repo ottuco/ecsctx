@@ -52,9 +52,15 @@ The 17 regexes keep their text and their relative order; `REGEX_MASKER` is split
 
 | Pack | Rules (current numbering) | Default |
 |---|---|---|
-| `default` | 1 PEM, 2/3/8 credential, 12 phone, 13 email, 14 JWT | on |
-| `pci` | 4/5/9 keyed CVV, 15 card, 17 bare CVV | off |
+| `default` | 1 PEM, 2/3/8 credential, 4/5/9 keyed CVV (since 0.15.5), 12 phone, 13 email, 14 JWT | on |
+| `pci` | 15 card, 17 bare CVV (4/5/9 keyed CVV until 0.15.5) | off |
 | `financial_ids` | 6/7/10 payment-id, 11 IBAN, 16 SSN | off |
+
+Since 0.15.5 the keyed CVV rules are `default`: a CVV must not ship from any
+service, and Connect, which runs the default pack, receives the CVV a
+saved-card payment sends. The bare-CVV rule stays `pci`: it fires on any 3-4
+digit group beside card context. 0.15.5 also inserts a URL-userinfo rule
+(`default`) before phone, so rules 12-17 above are 13-18 in the code.
 
 Within an enabled set, rules run in the documented global order, so the ordering
 invariants (credential/CVV/payment-id before shape rules; IBAN and phone before card;
