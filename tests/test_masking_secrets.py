@@ -779,6 +779,14 @@ def test_no_output_holds_the_card_number_or_a_hash_of_anything_holding_it(mode, 
         'password=""paymentCvv%2Bu:p@card code""(payment_id',
         "password=''abc123",
         "password=''s3cr3t code''x",
+        # After a scheme word redact_body masks a form value the text rules
+        # left (a label with more after it, a lone quote), and the scheme
+        # word's bare-space rule read `password=<token>` as its credential and
+        # hashed it again: a token of a token, a strict xfail until 0.15.6.
+        'Bearer password=[SECRET-MASKED]"x',
+        '123Authorization: Bearer password=[SECRET-MASKED]"note=#',
+        "x Bearer note=password=[CVV-MASKED]'",
+        "Bearer password='",
     ],
 )
 def test_the_text_rule_then_redact_body_twice_is_once(shape):
@@ -789,31 +797,14 @@ def test_the_text_rule_then_redact_body_twice_is_once(shape):
     assert mask(once) == once
 
 
-# An accepted residual, the same at 354f70f: after a scheme word, redact_body
-# hashes a form value the text rules left (a label with more after it, a lone
-# quote), and the scheme word's bare-space rule then reads `password=<token>`
-# as its credential and hashes it again -- a token of a token, correlation
-# only. Skipping `key=<token>` there would let through a credential glued to a
-# key name (`Token abc123abc123api_key=...`). Strict xfail: fixing it fails
-# here, to be promoted into the test above.
-@pytest.mark.parametrize(
-    "shape",
-    [
-        'Bearer password=[SECRET-MASKED]"x',
-        '123Authorization: Bearer password=[SECRET-MASKED]"note=#',
-        "x Bearer note=password=[CVV-MASKED]'",
-        "Bearer password='",
-    ],
-)
-def test_a_scheme_words_rule_reads_what_redact_body_wrote_again(shape, mode, request):
-    if mode == "keyset":
-        request.applymarker(pytest.mark.xfail(strict=True, reason="rule 8 re-reads redact_body's key=<token>"))
-
-    def mask(text):
-        return redact_body(mask_by_patterns(text, _TEXT_RULES))
-
-    once = mask(shape)
-    assert mask(once) == once
+def test_a_credential_glued_to_a_key_name_after_a_scheme_is_still_hashed():
+    # Why the scheme word's rule still reads `key=<token>`: here the digits
+    # before the key name are a credential of their own.
+    token = hmac_tokenize("x", bytes(32), "secret", "test")
+    text = f"Token abc123abc123api_key={token}"
+    masked = mask_by_patterns(text, _TEXT_RULES)
+    assert "abc123abc123" not in masked
+    assert masked == f"Token {token_or_label(f'abc123abc123api_key={token}')}"
 
 
 # A value that holds a card number among other text, and `ptok:v1:` typed

@@ -243,6 +243,14 @@ def _quoted_body(quote: str) -> str:
     return rf"(?:(?!(?P={quote}))[^\\]|\\[\s\S])"
 
 
+def _quoted_value_body(quote: str) -> str:
+    """...for a value after `key=`: never into an end tag, as an unquoted one
+    and redact_body's form value are not. Read across one, the value that
+    redact_body left before a tag (`token="<token>></token>"`) was hashed
+    again."""
+    return rf"(?:(?!(?P={quote})|</)[^\\]|\\[\s\S])"
+
+
 # A value that is already a PII token (ptok:v1:…), which a key rule or an
 # earlier pass put there: masking it again would tokenize "ptok" and break it.
 # Only the exact shape, all of it (case-sensitive, as ecsctx emits it), though
@@ -1334,8 +1342,20 @@ def _cred_container(m: re.Match) -> str:
     return f"{m.group('prefix')}{quote}{_mask_credential(value, m.group('key'))}{quote}"
 
 
+# Masking's own output in a value: a whole token, a label, a truncation.
+_MASKS_IN_A_VALUE = re.compile(rf"(?-i:{_CARDLESS_TOKEN}|\[[A-Z0-9-]+-MASKED\]|{_TRUNCATED_PAN})")
+_DIGIT = re.compile(r"\d")
+
+
 def _cred_space(m: re.Match) -> str:
     kw, val = m.group(1), m.group(2)
+    if _DIGIT.search(_MASKS_IN_A_VALUE.sub("", val)) is None:
+        # Its only digits are masking's own: `password=<token>`, which
+        # redact_body wrote after the scheme word. The digit is what makes
+        # this rule read a credential, and hashing it again was a token of a
+        # token. A credential glued to a key name keeps its own digits
+        # (`Token abc123abc123api_key=<token>`), and is hashed as before.
+        return m.group(0)
     return f"{kw} {_mask_credential(val, kw)}"
 
 
@@ -1808,9 +1828,9 @@ _RULE_TABLE = (
     _rule(
         "default",
         rf"\b(?P<prefix>(?P<key>(?P<auth>{_AUTH_KEYWORD})|{_OTHER_CRED_KEYWORD})(?:\\?[\"']|\s)*[:=]\s*"
-        rf"(?:(?P<quote>(?<!\\)[\"'])(?={_quoted_body('quote')}+(?P=quote))"
+        rf"(?:(?P<quote>(?<!\\)[\"'])(?={_quoted_value_body('quote')}+(?P=quote))"
         rf"|(?P<escaped>\\\")(?={_ESCAPED_QUOTED_UNIT}+\\\")|(?:\\?[\"'])+)?)"
-        rf"(?P<value>(?(quote){_quoted_body('quote')}+|(?(escaped){_ESCAPED_QUOTED_UNIT}+|(?!{_WHOLE_TOKEN})"
+        rf"(?P<value>(?(quote){_quoted_value_body('quote')}+|(?(escaped){_ESCAPED_QUOTED_UNIT}+|(?!{_WHOLE_TOKEN})"
         rf"(?(auth)(?:{_AUTH_SCHEME}[ \t]+(?={_VALUE_START})(?!{_WHOLE_TOKEN}))?(?!{_AUTH_SCHEME}[ \t]+\S))"
         rf"{_UNQUOTED_VALUE})))",
         _cred_kv,

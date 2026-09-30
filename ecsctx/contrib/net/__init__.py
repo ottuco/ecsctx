@@ -415,9 +415,9 @@ def redact_body(text: str) -> str:
     ``redact_url`` reads a param's, or one of the secret keys) as a
     credential, the label when it holds a card-number run. The text runs to
     the end tag, children and all, and is masked as it decodes (a CDATA
-    section's content, entities resolved). Any other element's text that
-    holds entities goes through these rules as it decodes, and is written
-    back escaped.
+    section's content, entities resolved). Any other element's text that is
+    JSON or XML written with entities goes through these rules as it
+    decodes, and is written back escaped.
 
     A wallet token -- an Apple Pay or Google Pay token's payment data, as
     JSON anywhere in the body or as JSON in a JSON string -- is
@@ -502,9 +502,12 @@ def _mask_xml_elements(text: str) -> str:
 
 def _encoded_leaf(text: str, start: re.Match) -> tuple[int, str] | None:
     """Where the text of the leaf ``start`` opens ends, and that text masked
-    by the body rules as it decodes, escaped again -- when it holds entities
-    and masking changed it. A leaf's raw text needs nothing here: the body
-    rules read it where it stands."""
+    by the body rules as it decodes, escaped again -- when it is JSON or XML
+    written with entities, and masking changed it. A leaf's raw text needs
+    nothing here, nor a form body's: the body rules read them where they
+    stand, `&amp;` a form's separator either way. Decoded, a form value ran
+    on past `&quot;`, and a leaf the first pass left as a form body read
+    differently on the next."""
     end = text.find("<", start.end())
     if end == -1 or "&" not in text[start.end() : end]:
         return None
@@ -512,6 +515,8 @@ def _encoded_leaf(text: str, start: re.Match) -> tuple[int, str] | None:
         return None
     raw = text[start.end() : end]
     decoded = html.unescape(raw)
+    if decoded.lstrip()[:1] not in ("{", "[", "<"):
+        return None
     masked = redact_body(decoded)
     if masked == decoded:
         return None
