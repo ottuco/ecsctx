@@ -23,17 +23,21 @@ keys may slip — those providers should move credentials out of the query.
 from __future__ import annotations
 
 import contextlib
+import html
 import json
 import os
 import re
 from collections.abc import Collection
+from functools import lru_cache
 from http import HTTPStatus
 from typing import Any
 from urllib.parse import unquote_plus, urlparse, urlsplit, urlunsplit
+from xml.sax.saxutils import escape as xml_escape
 
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import (
     ALL_PACKS,
+    _element_text,
     _mask_userinfo,
     classify_key,
     holds_pan_run,
@@ -229,7 +233,7 @@ def _get_body_log_cap() -> int:
 
 
 def _get_compiled() -> tuple:
-    """Cached (hint_re, json_re, form_re) for the current key set."""
+    """Cached (hint_re, json_re, form_re, element names) for the current key set."""
     global _compiled_cache
     keys = _get_secret_keys()
     cache_key = keys
@@ -256,16 +260,25 @@ def _get_compiled() -> tuple:
     # Only the structure at its two ends stays outside the mask
     # (_split_form_value).
     form_re = re.compile(
-        r"\b(" + "|".join(keys) + r")=([^&\s]*)",
+        r"\b(" + "|".join(keys) + r")=(" + _FORM_VALUE + ")",
         re.IGNORECASE,
     )
-    _compiled_cache = (cache_key, (hint_re, json_re, form_re))
+    # An XML element named by one of them, lowercased: element names are
+    # matched case-insensitively, as the keys are.
+    names = frozenset(key.lower() for key in keys)
+    _compiled_cache = (cache_key, (hint_re, json_re, form_re, names))
     return _compiled_cache[1]
 
 
 def _is_credential_key(key: str) -> bool:
     k = key.lower()
     return k in _CREDENTIAL_EXACT or any(hint in k for hint in _CREDENTIAL_HINTS)
+
+
+# A form value: to the next `&` or whitespace, and never into an end tag. In
+# `<note>password=abc</note>` the element's text ends there, as the
+# credential text rules read it: read on, the value took the tag with it.
+_FORM_VALUE = r"(?:(?!</)[^&\s])*"
 
 
 # What a query or form key names that is masked by its type, whatever the
@@ -386,18 +399,30 @@ def redact_body(text: str) -> str:
     unquoted -- so it carries the token the same value gets under a key; one
     already masked passes through.
 
-    A form value runs to the next ``&`` or whitespace. Only the structure at
-    its two ends -- a quote or an escaped one, and ``}``, ``]``, ``,``, a
-    JSON key's ``":``, ``>`` or ``/>`` -- stays as written; the rest is the
-    value, unescaped first only when it sits between escaped quotes in a
-    JSON string. A value, JSON or form, that holds a card-number run is the
-    label. A form field whose key the key rules call a card, CVV or other
-    SAD is masked by that type, whatever the credential keys: a card number
-    truncated, a CVV ``[CVV-MASKED]``.
+    A form value runs to the next ``&``, whitespace or end tag. Only the
+    structure at its two ends -- a quote or an escaped one, and ``}``,
+    ``]``, ``,``, a JSON key's ``":``, ``>`` or ``/>`` -- stays as written;
+    the rest is the value, unescaped first only when it sits between escaped
+    quotes in a JSON string. A value, JSON or form, that holds a card-number
+    run is the label. A form field whose key the key rules call a card, CVV
+    or other SAD is masked by that type, whatever the credential keys: a
+    card number truncated, a CVV ``[CVV-MASKED]``.
+
+    An XML element is read as a key: its local name, whatever its namespace
+    prefix and attributes, classified as a query or form key is -- a card,
+    CVV or SAD name masks its text by that type, and a credential name (as
+    ``redact_url`` reads a param's, or one of the secret keys) as a
+    credential, the label when it holds a card-number run. The text runs to
+    the end tag, children and all, and is masked as it decodes (a CDATA
+    section's content, entities resolved). Any other element's text that
+    holds entities goes through these rules as it decodes, and is written
+    back escaped.
     """
+    if "<" in text:
+        text = _mask_xml_elements(text)
     if "=" in text:
         text = _FORM_FIELD.sub(_mask_card_form_field, text)
-    hint_re, json_re, form_re = _get_compiled()
+    hint_re, json_re, form_re, _names = _get_compiled()
     if not hint_re.search(text):
         return text
     masked = form_re.sub(_mask_form_value, json_re.sub(_mask_json_value, text))
@@ -411,8 +436,80 @@ def redact_body(text: str) -> str:
 
 
 # Any form field: its key as a form writes one (`card[number]` too), not
-# glued to more of one, and its value up to the next `&` or whitespace.
-_FORM_FIELD = re.compile(r"(?<![\w.\-\[\]%])([\w.\-\[\]%]+)=([^&\s]*)")
+# glued to more of one, and its value up to the next `&`, whitespace or end
+# tag.
+_FORM_FIELD = re.compile(r"(?<![\w.\-\[\]%])([\w.\-\[\]%]+)=(" + _FORM_VALUE + ")")
+
+# An XML element's start tag: its qualified name, the local name after any
+# namespace prefix, and its attributes. Not an empty-element tag
+# (`<password/>`), which holds no text.
+_XML_START = re.compile(r"<(?P<tag>(?:[A-Za-z_][\w.-]*:)?(?P<local>[A-Za-z_][\w.-]*))(?:\s[^<>]*)?(?<!/)>")
+
+
+@lru_cache(maxsize=256)
+def _xml_end_tag(tag: str) -> re.Pattern:
+    return re.compile(rf"</{re.escape(tag)}\s*>", re.IGNORECASE)
+
+
+def _is_credential_element(name: str, names: frozenset[str]) -> bool:
+    """A credential's element name: one a query param's name would be read
+    as (`_is_credential_key`), or one of the secret body keys."""
+    return _is_credential_key(name) or name.lower() in names
+
+
+def _mask_xml_elements(text: str) -> str:
+    """Each element named as a card, CVV, SAD or credential key is, its text
+    masked by that type; entity-encoded text in any other leaf, through the
+    body rules as it decodes."""
+    names = _get_compiled()[3]
+    parts, copied = [], 0
+    for start in _XML_START.finditer(text):
+        if start.start() < copied:
+            continue  # inside an element already masked whole
+        local = start.group("local")
+        field_type = _card_field_type(local)
+        if field_type is None and not _is_credential_element(local, names):
+            leaf = _encoded_leaf(text, start)
+            if leaf is not None:
+                end, masked = leaf
+                parts += [text[copied : start.end()], masked]
+                copied = end
+            continue
+        # No end tag, no element: a route (`/v1/cards/<str:token>/`) is a
+        # start tag's shape.
+        if (closing := _xml_end_tag(start.group("tag")).search(text, start.end())) is None:
+            continue
+        end = closing.start()
+        value = _element_text(text[start.end() : end])
+        if field_type is not None:
+            masked = _mask_card_field(value, field_type)
+        else:
+            masked = _SECRET_LABEL if holds_pan_run(value) else mask_secret(value)
+        if masked != value:
+            parts += [text[copied : start.end()], masked]
+            copied = end
+    if not parts:
+        return text
+    parts.append(text[copied:])
+    return "".join(parts)
+
+
+def _encoded_leaf(text: str, start: re.Match) -> tuple[int, str] | None:
+    """Where the text of the leaf ``start`` opens ends, and that text masked
+    by the body rules as it decodes, escaped again -- when it holds entities
+    and masking changed it. A leaf's raw text needs nothing here: the body
+    rules read it where it stands."""
+    end = text.find("<", start.end())
+    if end == -1 or "&" not in text[start.end() : end]:
+        return None
+    if _xml_end_tag(start.group("tag")).match(text, end) is None:
+        return None
+    raw = text[start.end() : end]
+    decoded = html.unescape(raw)
+    masked = redact_body(decoded)
+    if masked == decoded:
+        return None
+    return end, xml_escape(masked)
 
 
 def _mask_card_form_field(match: re.Match) -> str:

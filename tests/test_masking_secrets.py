@@ -571,9 +571,9 @@ PAN = "4111111111111111"
 
 class TestAFormValueRunsToItsEnd:
     """A form value is everything up to the next `&` or whitespace, as in
-    0.15.3. Only the structure at its two ends -- a quote or an escaped one,
-    and `}`, `]`, `,`, `>` or `/>` at the end -- stays outside the mask; the
-    rest is the value, however a quote inside it reads."""
+    0.15.3, or an end tag. Only the structure at its two ends -- a quote or
+    an escaped one, and `}`, `]`, `,`, `>` or `/>` at the end -- stays outside
+    the mask; the rest is the value, however a quote inside it reads."""
 
     @pytest.mark.parametrize(
         ("body", "masked"),
@@ -581,7 +581,8 @@ class TestAFormValueRunsToItsEnd:
             ('<Auth password="4111111111111111" x="1"/>', f'<Auth password="{LABEL}" x="1"/>'),
             ('error: client_secret="4111111111111111" rejected', f'error: client_secret="{LABEL}" rejected'),
             ('<Auth apikey="4111111111111111"/>', f'<Auth apikey="{LABEL}"/>'),
-            ('<a href="/cb?password=4111111111111111">x</a>', f'<a href="/cb?password={LABEL}>'),
+            # An end tag ends it: before 0.15.6 the value took `</a` with it.
+            ('<a href="/cb?password=4111111111111111">x</a>', f'<a href="/cb?password={LABEL}</a>'),
             ("password=4111111111111111, status=ok", f"password={LABEL}, status=ok"),
             ("password=4111111111111111;", f"password={LABEL}"),
             ("password=4111111111111111'", f"password={LABEL}"),
