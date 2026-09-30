@@ -38,10 +38,14 @@ from ecsctx.masking.patterns import (
     _SAFE_KEYS_JOINED,
     ALL_PACKS,
     SAFE_KEYS,
+    WALLET_LABEL,
     _joined_names,
     classify_key,
     holds_pan_run,
+    holds_wallet,
     int_is_pan,
+    is_wallet_text,
+    is_wallet_token,
     known_clean,
     mask_by_patterns,
     mask_card_value,
@@ -437,6 +441,20 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     return mask_by_field_type(text, field_type)
 
 
+# What JSON text can start with: nearly every string starts with something
+# else, and is no wallet token.
+_JSON_STARTS = frozenset("{[ \t\r\n")
+
+
+def _is_wallet(value: Any) -> bool:
+    """A wallet token's payment data, as a mapping or as JSON text: the SAD
+    label under any key (patterns.is_wallet_token)."""
+    kind = type(value)
+    if kind is dict:
+        return is_wallet_token(value)
+    return kind is str and value[:1] in _JSON_STARTS and is_wallet_text(value)
+
+
 def _mask_card_list_element(value: Any) -> Any:
     """A bare value in a list under a card key -- `card=(pan, month, cvv)`.
 
@@ -541,6 +559,11 @@ class MaskPIIFilter(logging.Filter):
             if path == () and key in self._skip_keys:
                 result[key] = self._mask_skipped(key, value, ctx)
                 continue
+            if _is_wallet(value):
+                # Under any key, a credential's or a card's included: never
+                # hashed, never shown.
+                result[key] = WALLET_LABEL
+                continue
             if isinstance(value, bool):
                 # One bit: never PII, SAD or a credential, whatever its key or
                 # container. Masking it only destroyed the flag.
@@ -623,6 +646,10 @@ class MaskPIIFilter(logging.Filter):
                 # Never below a card, credential, CVV or SAD container: a broad
                 # exempt prefix must not expose `…token.name_on_card`.
                 result[key] = self._mask_value(value, child_path, ctx)
+            elif isinstance(value, str) and value[:1] in _JSON_STARTS and holds_wallet(value):
+                # JSON text holding a wallet token deeper, under a key that
+                # would hash it whole or show it: the label.
+                result[key] = WALLET_LABEL
             elif field_type == "card" and not isinstance(value, _CONTAINERS):
                 result[key] = mask_card_value(value)
             elif (field_rule.exemptable or field_type in _WALKED_TYPES) and isinstance(
@@ -703,6 +730,8 @@ class MaskPIIFilter(logging.Filter):
             value = bytes(value).decode("utf-8", errors="replace")
         if verbatim_digits and _is_reference_number(value):
             return value
+        if _is_wallet(value):
+            return WALLET_LABEL
         # The two exact types nearly every value is, first: this runs for
         # every value of every record.
         kind = type(value)

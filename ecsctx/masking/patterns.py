@@ -3,7 +3,7 @@
 Ported from ottu_pg's MaskPIIFilter (utils/log/filters.py), merged with
 ecsctx's own PII key-name list. Two independent detection strategies:
 
-1. Content-based (RULES): 19 ordered regexes in three packs — `default`
+1. Content-based (RULES): 20 ordered regexes in three packs — `default`
    always on, `pci` and `financial_ids` opt-in (ecsctx.masking.config) — each
    behind a literal pre-check, applied to every string the filter reaches.
    Rule order is load-bearing — see the comments on each rule and the
@@ -131,7 +131,7 @@ SAFE_KEYS = frozenset({
 })
 
 # Authorization / Authorisation (+ _header). Apart from the other keywords:
-# its value is a scheme and a credential, one value (rule 4).
+# its value is a scheme and a credential, one value (rule 5).
 _AUTH_KEYWORD = r"authori[sz]ation(?:[_-]?header)?"
 # The HTTP authentication schemes an Authorization header's credential
 # follows (RFC 9110 11.4), and the one Ottu's API names `Api-Key`.
@@ -348,7 +348,7 @@ _DASH_CHARS = "-" + _UNICODE_DASHES
 _DIGIT_VALUE = bytes.maketrans(b"0123456789", bytes(range(10)))
 _DOUBLED_VALUE = bytes.maketrans(b"0123456789", bytes((0, 2, 4, 6, 8, 1, 3, 5, 7, 9)))
 # An IBAN's country code and two check digits, at the start of a word, as the
-# first two digits of a run. Case-sensitive, as rule 12 is.
+# first two digits of a run. Case-sensitive, as rule 13 is.
 _IBAN_HEAD = re.compile(rf"(?<![^\W_])(?:{_IBAN_PREFIX})\d\d(?!\d)")
 # ...or with groups of four after them, and part of one, ending right before a
 # run: the bank code has letters in it ("GB33 BUKB 2020 ...", "IT60 X054 ...").
@@ -1050,6 +1050,143 @@ def _mask_userinfo(userinfo: str) -> str:
     return f"{_mask_url_part(user)}{separator}{_mask_url_part(password)}"
 
 
+# ---------------------------------------------------------------------------
+# Wallet tokens
+# ---------------------------------------------------------------------------
+# An Apple Pay or Google Pay token carries the device card number and the
+# payment cryptogram, encrypted: Sensitive Authentication Data, never hashed,
+# the same label in every pack. Found by shape, never by a key name, so an
+# unrelated `paymentData` reads through and a token under any key is caught.
+WALLET_LABEL = f"[{make_label('sad')}]"
+# Apple Pay's PKPaymentToken `paymentData`: its `version`, and the encrypted
+# `data`. Its `signature` and `header` are useless without `data`, so the
+# whole object is the label.
+_APPLE_PAY_VERSIONS = frozenset({"EC_v1", "RSA_v1"})
+# Google Pay's payment method token: its `protocolVersion` and the
+# `signedMessage` holding the encrypted payload.
+_GOOGLE_PAY_VERSIONS = frozenset({"ECv1", "ECv2", "ECv2SigningOnly"})
+# Every token names one of those versions: text without one holds none.
+_WALLET_VERSION = re.compile(r"EC_v1|RSA_v1|ECv[12]")
+
+
+def is_wallet_token(value: Any) -> bool:
+    """Whether ``value`` is a wallet token's payment data, as a mapping."""
+    if not isinstance(value, dict):
+        return False
+    version = value.get("version")
+    if isinstance(version, str) and version in _APPLE_PAY_VERSIONS and "data" in value:
+        return True
+    protocol = value.get("protocolVersion")
+    return isinstance(protocol, str) and protocol in _GOOGLE_PAY_VERSIONS and "signedMessage" in value
+
+
+def _wallet_json(text: str) -> Any:
+    """``text`` parsed, when it is a JSON object or list naming a wallet
+    version -- None otherwise. Cheap for every other string: most do not
+    start with a bracket."""
+    first = text[:1]
+    if first.isspace():
+        first = text.lstrip()[:1]
+    if first not in ("{", "[") or _WALLET_VERSION.search(text) is None:
+        return None
+    try:
+        return json.loads(text)
+    except (ValueError, RecursionError):
+        return None
+
+
+def is_wallet_text(text: str) -> bool:
+    """Whether ``text`` is a wallet token as JSON: MPGS's `paymentToken`,
+    Google Pay's `tokenizationData.token`."""
+    return is_wallet_token(_wallet_json(text))
+
+
+def holds_wallet(value: Any, depth: int = 0) -> bool:
+    """Whether a wallet token is anywhere in ``value``: a mapping, a list, or
+    JSON text, however deep."""
+    if depth > 64:
+        return False
+    if isinstance(value, dict):
+        return is_wallet_token(value) or any(holds_wallet(item, depth + 1) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(holds_wallet(item, depth + 1) for item in value)
+    if isinstance(value, str):
+        parsed = _wallet_json(value)
+        return parsed is not None and holds_wallet(parsed, depth + 1)
+    return False
+
+
+def _wallet_object(quote: str, string: str, space: str, character: str) -> str:
+    """A wallet token as an object in text, its version and payload among its
+    own members. A member's value is a string, a scalar, or an object or list
+    holding strings, anything but a bracket, and one more level of either:
+    Google Pay's signing key holds a list, and that is as deep as either
+    token goes. Every alternative starts on a character of its own and no
+    loop takes a closing bracket, so a failed match never backtracks into
+    another reading."""
+    flat = rf"(?:{string}|{character})*"
+    nested = rf"(?:{string}|{character}|\{{{flat}\}}|\[{flat}\])*"
+    value = rf"(?:{string}|[-+.\w]+|\{{{nested}\}}|\[{nested}\])"
+    member = rf"{string}{space}:{space}{value}"
+
+    def among_members(key: str) -> str:
+        return rf"(?={space}(?:{member}{space},{space})*{quote}{key}{quote}{space}:)"
+
+    def version(key: str, versions: str) -> str:
+        return (
+            rf"(?={space}(?:{member}{space},{space})*{quote}{key}{quote}{space}:{space}"
+            rf"{quote}(?:{versions}){quote}{space}[,}}])"
+        )
+
+    apple = version("version", "EC_v1|RSA_v1") + among_members("data")
+    google = version("protocolVersion", "ECv1|ECv2|ECv2SigningOnly") + among_members("signedMessage")
+    return rf"\{{(?:{apple}|{google}){space}{member}(?:{space},{space}{member})*{space}\}}"
+
+
+# As written: JSON, or a Python repr's quotes. Escaped: JSON in a JSON string
+# (MPGS's `paymentToken`), its quotes `\"`, a pretty-printed one's line breaks
+# `\n`. Compiled once, as rule 2.
+_WALLET_TEXT = (
+    # Case-sensitive, as the versions and keys are: the rules compile with
+    # IGNORECASE, and the key walk reads them exactly.
+    "(?-i:(?P<plain>"
+    + _wallet_object(
+        "[\"']",
+        r"(?:\"(?:[^\"\\]|\\[\s\S])*\"|'(?:[^'\\]|\\[\s\S])*')",
+        r"\s*",
+        r"[^{}\[\]\"']",
+    )
+    + ")|(?P<escaped>"
+    + _wallet_object(
+        r'\\"',
+        rf'\\"{_ESCAPED_QUOTED_UNIT}*\\"',
+        r"(?:\s|\\[nrt])*",
+        r'(?!\\")[^{}\[\]"]',
+    )
+    + "))"
+)
+
+
+def _wallet(m: re.Match) -> str:
+    """The label where the token stood: a JSON string where it was a JSON
+    value (after `:`, `,` or `[`), escaped where that JSON is itself in a
+    string; bare anywhere else -- in prose, an element's text, a string of its
+    own."""
+    text, position = m.string, m.start() - 1
+    while position >= 0 and text[position].isspace():
+        position -= 1
+    if position < 0 or text[position] not in ":,[":
+        return WALLET_LABEL
+    quote = '"' if m.group("plain") is not None else '\\"'
+    return f"{quote}{WALLET_LABEL}{quote}"
+
+
+def mask_wallets(text: str) -> str:
+    """Each wallet token in ``text`` as the label: the wallet rule alone, for
+    ``contrib.net.redact_body``."""
+    return _WALLET_RULE.pattern.sub(_wallet, text) if _WALLET_VERSION.search(text) else text
+
+
 def _mask_pem(match: re.Match) -> str:
     """Token computed over the base64 body only — strip the BEGIN/END lines
     and all whitespace first, so the same key re-wrapped at a different line
@@ -1154,7 +1291,7 @@ def _cred_space(m: re.Match) -> str:
 _CDATA = re.compile(r"\s*<!\[CDATA\[(?P<content>[\s\S]*?)\]\]>\s*")
 # An Authorization element's text that masking already wrote, or another
 # masker did: a scheme before a whole token, a label or a placeholder. As in
-# rule 4, the scheme is not hashed again with it.
+# rule 5, the scheme is not hashed again with it.
 _SCHEME_BEFORE_A_MASK = re.compile(
     rf"\s*{_AUTH_SCHEME}[ \t]+(?:(?-i:{_CARDLESS_TOKEN})|\[[^\[\]]*\]|\*+)\s*", re.IGNORECASE
 )
@@ -1329,6 +1466,10 @@ def _has_credential(_text: str, lowered: str) -> bool:
     return any(word in lowered for word in _CRED_LITERALS)
 
 
+def _has_wallet_version(text: str, _lowered: str) -> bool:
+    return _WALLET_VERSION.search(text) is not None
+
+
 def _has_credential_element(text: str, lowered: str) -> bool:
     return "<" in text and _has_credential(text, lowered)
 
@@ -1374,13 +1515,13 @@ def _has_three_digits(text: str, _lowered: str) -> bool:
     return _THREE_DIGITS.search(text) is not None
 
 
-# Rules 17 and 18 have already run by the time rule 19 does, so a PAN in the
+# Rules 18 and 19 have already run by the time rule 20 does, so a PAN in the
 # text is now a bare truncation rather than a digit run. _TRUNCATED_PAN_RE
 # below is what recognises it; these words cover a "card"/"pan" key name
 # serialised into the text, and the prose cases.
 # "cvv", "cvc" and "security" too: text that says "cvv" anywhere is card
 # context even when the keyword rules cannot reach the digits ("the cvv is
-# 123" -- rule 10 needs them adjacent).
+# 123" -- rule 11 needs them adjacent).
 _CARD_CONTEXT = ("card", "pan", "cardholder", "credit", "cvv", "cvc", "security")
 _TRUNCATED_PAN_RE = re.compile(_TRUNCATED_PAN)
 
@@ -1389,13 +1530,13 @@ def _text_has_card_context(text: str, lowered: str) -> bool:
     """Whether this text holds anything a CVV could belong to.
 
     A 3-4 digit group with no card anywhere near it is a status code, a count
-    or an amount, and a CVV is worth nothing without its PAN. Rules 17 and 18
+    or an amount, and a CVV is worth nothing without its PAN. Rules 18 and 19
     have already run, so a PAN is a bare truncation by now -- the star run is
     what recognises it, as the words cover a card-named key in the text.
     """
     if any(word in lowered for word in _CARD_CONTEXT):
         return True
-    # A PAN the card rule has already truncated: rule 17 runs first, so by now
+    # A PAN the card rule has already truncated: rule 18 runs first, so by now
     # the digit run _CARD_SHAPE looks for is gone and the truncation is the
     # only card context left in the text. Without this, a CVV sitting beside a
     # masked PAN stops being masked -- which is a leak, not a formatting bug.
@@ -1404,7 +1545,7 @@ def _text_has_card_context(text: str, lowered: str) -> bool:
 
 # Every credential match contains one of these words, and starts inside the
 # run of [\w-] characters holding it, or on the quote right before that run
-# (rule 3's quoted key). So the credential rules only need trying at those
+# (rule 4's quoted key). So the credential rules only need trying at those
 # positions, not at every position of a long body — re.sub tries every one,
 # and at ~16 µs per rule per gateway body that was most of the masking cost.
 # The words are found with str.find on the lowercased text: a case-insensitive
@@ -1442,10 +1583,10 @@ def _cvv_word_starts(lowered: str) -> list[int]:
 
 
 # A credential match starts at most this far before its credential word: the
-# bounded key prefix (128), its separator, and rule 3's opening quote.
+# bounded key prefix (128), its separator, and rule 4's opening quote.
 _CRED_REACH = 130
 # ...and a CVV match before its CVV word: the bounded key prefix (64) and its
-# separator, or a camelCase word (64), `card_`, and rule 5's opening quote.
+# separator, or a camelCase word (64), `card_`, and rule 6's opening quote.
 _CVV_REACH = 72
 
 
@@ -1507,7 +1648,7 @@ def _rule(pack, regex, repl, gate, scan=None, prose_only=False, precondition=Non
 
 
 # ---------------------------------------------------------------------------
-# The 19 content rules, in execution order. DO NOT REORDER — several rules
+# The 20 content rules, in execution order. DO NOT REORDER — several rules
 # only behave correctly because a more specific rule ran first:
 #   1. Credential/CVV/payment-id keyword rules before all shape rules —
 #      otherwise a numeric secret in the card-digit range gets masked as a
@@ -1530,6 +1671,8 @@ def _rule(pack, regex, repl, gate, scan=None, prose_only=False, precondition=Non
 #   9. The XML credential element before the other credential rules — they
 #      would mask a `password=`, `"token": …` or `Bearer x` inside its text
 #      first, and the element's value, holding their token, was hashed again.
+#  10. The wallet rule before every credential rule, the XML one included —
+#      a token under `"token": …` or in `<password>` was hashed whole.
 # ---------------------------------------------------------------------------
 
 _RULE_TABLE = (
@@ -1540,10 +1683,21 @@ _RULE_TABLE = (
         _mask_pem,
         _has_pem,
     ),
-    # 2. Credential — an XML element (<password>s3cret</password>,
+    # 2. Wallet token — an Apple Pay or Google Pay token's payment data as
+    # JSON in text (`_WALLET_TEXT`: an object whose own members name the
+    # version and carry the payload), or JSON in a JSON string: the SAD label,
+    # never a token, in every pack. Before the credential rules, which would
+    # hash one under `"token": …` first.
+    _rule(
+        "default",
+        _WALLET_TEXT,
+        _wallet,
+        _has_wallet_version,
+    ),
+    # 3. Credential — an XML element (<password>s3cret</password>,
     # <wsse:Password Type="PasswordText">…</wsse:Password>), for a body that
     # never went through redact_body: its local name a credential keyword, as
-    # rules 3 and 4 read a key, whatever namespace prefix and attributes it
+    # rules 4 and 5 read a key, whatever namespace prefix and attributes it
     # has. The value runs to the end tag, children and all, and is masked as
     # it decodes (`_element_text`). No end tag, no element: a route in a
     # message (`DELETE /v1/cards/<str:token>/`) is a start tag's shape.
@@ -1554,7 +1708,7 @@ _RULE_TABLE = (
         _cred_element,
         _has_credential_element,
     ),
-    # 3. Credential — quoted key ("token": "abc123"), the value to its
+    # 4. Credential — quoted key ("token": "abc123"), the value to its
     # unescaped closing quote.
     _rule(
         "default",
@@ -1564,7 +1718,7 @@ _RULE_TABLE = (
         _has_credential,
         _sub_near_credential_words,
     ),
-    # 4. Credential — ":" / "=" (secret_key=abc123). A value that opens with a
+    # 5. Credential — ":" / "=" (secret_key=abc123). A value that opens with a
     # quote a closing one matches runs to it (`quote`); any other, to its
     # delimiter. An empty quoted value is none: quotes doubled as CSV and SQL
     # escape one (`password=""s3cret`) are structure before the value. The
@@ -1588,7 +1742,7 @@ _RULE_TABLE = (
         _has_credential,
         _sub_near_credential_words,
     ),
-    # 5. CVV — quoted key ("cvv": "123"). The keyed CVV rules (5, 6, 10) are
+    # 6. CVV — quoted key ("cvv": "123"). The keyed CVV rules (6, 7, 11) are
     # `default`: a CVV must not ship from any service, and a default-pack one
     # (Connect) receives the CVV a saved-card payment sends. A value that
     # starts as a CVV runs to its end, as a credential's does: none of it is
@@ -1600,7 +1754,7 @@ _RULE_TABLE = (
         _has_cvv_keyword,
         _sub_near_cvv_words,
     ),
-    # 6. CVV — ":" / "=" (cvv=123).
+    # 7. CVV — ":" / "=" (cvv=123).
     _rule(
         "default",
         rf"\b({_CVV_KEYWORD}(?:\\?[\"']|\s)*[:=](?:\\?[\"']|\s)*)\d{{3}}{_VALUE_UNIT}*",
@@ -1608,21 +1762,21 @@ _RULE_TABLE = (
         _has_cvv_keyword,
         _sub_near_cvv_words,
     ),
-    # 7. Payment/transaction/auth id — quoted key ("payment_id": "abc12345").
+    # 8. Payment/transaction/auth id — quoted key ("payment_id": "abc12345").
     _rule(
         "financial_ids",
         rf"([\"'])({_PAYMENT_ID_KEYWORD})\1(\s*:\s*)\1([A-Za-z0-9_\-]+)\1",
         _payid_quoted,
         _has_id,
     ),
-    # 8. Payment/transaction/auth id (payment_id: abc12345).
+    # 9. Payment/transaction/auth id (payment_id: abc12345).
     _rule(
         "financial_ids",
         rf"\b({_PAYMENT_ID_KEYWORD}\s*[:=]\s*)([A-Za-z0-9_\-]{{8,}})\b",
         _payid_kv,
         _has_id,
     ),
-    # 9. Credential — bare space (Bearer abc12345). A value of eight or more
+    # 10. Credential — bare space (Bearer abc12345). A value of eight or more
     # characters with a digit among them, "ptok:" counted too (Bearer
     # ptok:hunter2), to its delimiter.
     _rule(
@@ -1633,7 +1787,7 @@ _RULE_TABLE = (
         _has_credential,
         _sub_near_credential_words,
     ),
-    # 10. CVV — bare space (CVV 123).
+    # 11. CVV — bare space (CVV 123).
     _rule(
         "default",
         rf"\b({_CVV_KEYWORD})\s+\d{{3}}{_VALUE_UNIT}*",
@@ -1641,7 +1795,7 @@ _RULE_TABLE = (
         _has_cvv_keyword,
         _sub_near_cvv_words,
     ),
-    # 11. Payment/transaction/auth id — bare space (payment_id abc12345).
+    # 12. Payment/transaction/auth id — bare space (payment_id abc12345).
     _rule(
         "financial_ids",
         
@@ -1649,14 +1803,14 @@ _RULE_TABLE = (
         _payid_space,
         _has_id,
     ),
-    # 12. IBAN (GB33BUKB20201555555555).
+    # 13. IBAN (GB33BUKB20201555555555).
     _rule(
         "financial_ids",
         rf"(?-i:\b(?:{_IBAN_PREFIX})\d{{2}}[A-Z0-9]{{11,30}}\b)",
         _iban,
         _has_iban_shape,
     ),
-    # 13. URL userinfo (postgresql://user:password@host), each part masked as
+    # 14. URL userinfo (postgresql://user:password@host), each part masked as
     # redact_url masks it, the scheme, host and port kept: a DSN in exception
     # text. Only with a password, empty or not (`https://key:@host`), or a
     # token alone, as masking left a user: `ssh://git@host` names an account.
@@ -1669,7 +1823,7 @@ _RULE_TABLE = (
         _userinfo,
         _has_userinfo,
     ),
-    # 14. Phone — international E.164-style or a bare local number. Union of
+    # 15. Phone — international E.164-style or a bare local number. Union of
     # ecsctx's and the ported filter's patterns: dash/space/dot all count as
     # separators, since real phone numbers appear with all three and neither
     # source pattern alone caught every real case.
@@ -1683,7 +1837,7 @@ _RULE_TABLE = (
         _phone,
         _has_phone_shape,
     ),
-    # 15. Email (user@example.com).
+    # 16. Email (user@example.com).
     _rule(
         "default",
         # Bounded by RFC 5321's limits (64-char local part, 255-char domain):
@@ -1693,14 +1847,14 @@ _RULE_TABLE = (
         _email,
         _has_at,
     ),
-    # 16. JWT (eyJhbGciOi....).
+    # 17. JWT (eyJhbGciOi....).
     _rule(
         "default",
         r"\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{3,}\.[A-Za-z0-9_\-]{3,}",
         _jwt,
         _has_jwt_prefix,
     ),
-    # 17. Card number — truncated, bare (411111******1111; last 4
+    # 18. Card number — truncated, bare (411111******1111; last 4
     # only below 15 digits, see _truncate_pan); the middle never survives,
     # starred or not. A whole run of digit groups is read at once, and Luhn
     # decides between its readings: _CardRun.
@@ -1713,21 +1867,21 @@ _RULE_TABLE = (
         _mask_card_run,
         _has_card_shape,
     ),
-    # 18. SSN (123-45-6789).
+    # 19. SSN (123-45-6789).
     _rule(
         "financial_ids",
         r"(?=\d)" + _CARD_LEAD_GUARD + r"\d{3}[-\s]?\d{2}[-\s]?\d{4}\b",
         _ssn,
         _has_ssn_shape,
     ),
-    # 19. CVV standalone — bare 3-4 digit group, no keyword (call 123 now).
+    # 20. CVV standalone — bare 3-4 digit group, no keyword (call 123 now).
     # The loosest rule in the file, and now doubly fenced. It never sees a
     # whole scalar field value (prose_only): there, "000" is a PSP response
     # code, not a CVV, and the key says which. In prose it fires only when the
     # same text carries card context, because a 3-4 digit group with no card
     # anywhere near it is a status, a count or an amount -- and a CVV is worth
     # nothing without the PAN it belongs to. A keyword-anchored CVV is already
-    # rules 5, 6 and 10's job, whatever else the text holds.
+    # rules 6, 7 and 11's job, whatever else the text holds.
     _rule(
         "pci",
         r"(?:^|(?<=\s))\d{3,4}(?=\s|$)",
@@ -1743,6 +1897,10 @@ RULES: tuple[Rule, ...] = tuple(
     Rule(f"{index}:{repl.__name__}", pack, re.compile(regex, re.IGNORECASE), repl, gate, scan, pre, prose)
     for index, (pack, regex, repl, gate, scan, prose, pre) in enumerate(_RULE_TABLE, start=1)
 )
+
+
+# The wallet rule, for mask_wallets.
+_WALLET_RULE = next(rule for rule in RULES if rule.repl is _wallet)
 
 
 # Just the card rule, for mask_card_value: the value already has a card key
