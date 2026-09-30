@@ -18,7 +18,7 @@ import time
 
 import pytest
 
-from ecsctx.contrib.net import configure_redaction, redact_body
+from ecsctx.contrib.net import configure_redaction, redact_body, redact_url
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, mask_secret, rules_for
 from ecsctx.pii import configure_pii, is_configured, tokenize
@@ -156,6 +156,14 @@ class TestRedactBodyReadsAnElementsName:
     )
     def test_a_credential_names_text_is_masked_as_a_credential(self, element):
         assert redact_body(element.format(PASSWORD)) == element.format(secret(PASSWORD))
+
+    @pytest.mark.parametrize("name", ["author", "design", "monkey", "userType", "keyword"])
+    def test_a_name_holding_a_credential_hint_is_a_credential_as_a_query_param_is(self, name):
+        # Matched by substring, as redact_url matches a param's name (`auth`,
+        # `sign`, `key`, `user`): one reading across a URL and a body, and a
+        # cost of failing closed that is accepted.
+        assert redact_body(f"<{name}>Jane</{name}>") == f"<{name}>{secret('Jane')}</{name}>"
+        assert redact_url(f"https://x.example/?{name}=Jane") == f"https://x.example/?{name}={secret('Jane')}"
 
     def test_a_key_the_service_listed_is_a_credential_too(self):
         configure_redaction(extra_secret_keys=["merchant_code"])

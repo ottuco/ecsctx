@@ -1004,7 +1004,9 @@ from ecsctx.contrib.net import (
   CVV inside it already its label. So `<auth>`, `<user>`, `<signature>` and
   `<key>` are credentials, as the same names are in a URL's query: one
   reading of a name across a URL and a body, rather than an exception for
-  one gateway's elements. A start tag with no end tag is no element: a
+  one gateway's elements. A name is matched by substring, as a param's is,
+  so `<author>`, `<design>`, `<monkey>`, `<userType>` and `<keyword>` are
+  masked as credentials too: the accepted cost of failing closed. A start tag with no end tag is no element: a
   route (`/v1/cards/<str:token>/`) has that shape. JSON or XML in an
   element's text, written with entities, goes through these rules as it
   decodes and is written back escaped.
