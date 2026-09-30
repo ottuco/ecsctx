@@ -1533,3 +1533,30 @@ class TestACredentialThatIsATruncation:
     @pytest.mark.parametrize("text", ["password=411111******1111", 'token: "411111******1111"'])
     def test_in_text_it_is_the_label(self, text):
         assert "******" not in mask_by_patterns(text, _TEXT_RULES)
+
+
+class TestABareTokenKeyInABody:
+    """redact_body masks a bare `token` key as the key walk does."""
+
+    @pytest.mark.parametrize(
+        ("body", "masked"),
+        [
+            ('{"token": "pay_abc123"}', '{"token": "%s"}'),
+            ("token=pay_abc123&x=1", "token=%s&x=1"),
+        ],
+    )
+    def test_its_value_is_its_token_or_the_label(self, body, masked):
+        assert redact_body(body) == masked % token_or_label("pay_abc123")
+
+    @pytest.mark.parametrize(
+        ("body", "masked"),
+        [
+            ('{"token": "9923960000004314"}', '{"token": "[SECRET-MASKED]"}'),
+            ("token=9923960000004314&x=1", "token=[SECRET-MASKED]&x=1"),
+        ],
+    )
+    def test_a_card_shaped_one_is_the_label(self, body, masked):
+        assert redact_body(body) == masked
+
+    def test_as_the_key_walk_masks_it(self):
+        assert _walk({"token": "pay_abc123"})["token"] == token_or_label("pay_abc123")

@@ -88,9 +88,11 @@ UNREADABLE_CONTENT_TYPES = (
 _DEFAULT_BODY_LOG_CAP = 4096
 
 # Credential keys whose VALUE must never reach the log, whatever the body shape.
-# Deliberately excludes a bare "token": gateways use it for non-secret payment
-# and session identifiers that log readers rely on.
+# A bare "token" among them, as the key walk classifies it: left alone, a saved
+# card's sixteen-digit gateway token went out whole. With a keyset its value is
+# still its token, so a gateway's payment or session id correlates.
 _DEFAULT_SECRET_BODY_KEYS = (
+    "token",
     "access_token",
     "refresh_token",
     "id_token",
@@ -377,12 +379,12 @@ def redact_body(text: str) -> str:
     """Mask credential values inside a response body before it is logged, each
     as ``mask_secret`` masks a credential: its token, or ``[SECRET-MASKED]``.
 
-    Only unambiguous credential keys are masked. A bare ``token`` is
-    deliberately left alone: gateways use it for non-secret payment/session
-    identifiers that are the main thing a log reader needs. A value is masked
-    as what it decodes to -- a JSON string unescaped, a form value unquoted --
-    so it carries the token the same value gets under a key; one already
-    masked passes through.
+    Only unambiguous credential keys are masked, a bare ``token`` among them
+    as the key walk classifies it: a card-shaped one (a saved card's gateway
+    token) is ``[SECRET-MASKED]``, any other its token or label. A value is
+    masked as what it decodes to -- a JSON string unescaped, a form value
+    unquoted -- so it carries the token the same value gets under a key; one
+    already masked passes through.
 
     A form value runs to the next ``&`` or whitespace. Only the structure at
     its two ends -- a quote or an escaped one, and ``}``, ``]``, ``,``, a

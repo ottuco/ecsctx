@@ -964,8 +964,9 @@ from ecsctx.contrib.net import (
   run is `[SECRET-MASKED]` either way. A form field whose key the key rules
   call a card, CVV or other SAD is masked by that type, as in a URL
   (`cvv=[CVV-MASKED]&card_number=411111******1111`). A bare `token` key is
-  deliberately left alone: gateways reuse it for non-secret payment/session
-  identifiers that log readers rely on.
+  masked as the key walk masks it: a saved card's sixteen-digit gateway token
+  is `[SECRET-MASKED]`, and any other value its token (with a keyset, so a
+  gateway's payment or session id still correlates) or label.
 - `redact_url(url, secrets=[token])` also masks literal values anywhere in
   the URL, longest first — a saved-card token in a path such as
   `/card/<token>/`.
