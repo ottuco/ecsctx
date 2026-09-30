@@ -281,7 +281,9 @@ def _is_credential_key(key: str) -> bool:
 # A form value: to the next `&` or whitespace, and never into an end tag. In
 # `<note>password=abc</note>` the element's text ends there, as the
 # credential text rules read it: read on, the value took the tag with it.
-_FORM_VALUE = r"(?:(?!</)[^&\s])*"
+# Unrolled: a lookahead at every character of every value made a 64 KB form
+# body's field pass twice as slow as 0.15.5's.
+_FORM_VALUE = r"[^&\s<]*(?:<(?!/)[^&\s<]*)*"
 
 
 def redact_url(url: str, *, secrets: Collection[str] | None = None) -> str:
