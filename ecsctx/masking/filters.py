@@ -269,10 +269,16 @@ _MAX_DEPTH = 64
 # What a record becomes when masking itself fails: never the unmasked text.
 MASKING_FAILED = "[MASKING-FAILED: {}]"
 
-# A printf-style conversion, as the % operator reads one.
+# A printf-style conversion, as CPython's % operator reads one: `%%`, a
+# literal percent that takes no argument, or a mapping key -- to the
+# parenthesis that balances its first, as CPython counts them -- then any
+# flags, a width (`*` or digits), a precision (`.` then `*` or digits, none
+# at all included: `%.f` is `%.0f`), one length modifier, which is ignored,
+# and the conversion. A `%` after anything but the first `%` is no
+# conversion: CPython refuses it.
 _CONVERSION = re.compile(
-    r"%(?:\((?P<key>[^)]*)\))?(?P<flags>[#0\- +]*)(?P<width>\*|\d+)?(?:\.(?P<precision>\*|\d+))?[hlL]?"
-    r"(?P<type>[diouxXeEfFgGcrsa%])"
+    r"%(?:%|(?:\((?P<key>(?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\))?(?P<flags>[#0\- +]*)(?P<width>\*|\d+)?"
+    r"(?:\.(?P<precision>\*|\d*))?[hlL]?(?P<type>[diouxXeEfFgGcrsa]))"
 )
 
 
@@ -324,7 +330,7 @@ def _as_masked_text(template: str, originals: Any, masked: Any) -> str:
         return template
     parts, copied, index = [], 0, 0
     for found in _CONVERSION.finditer(template):
-        if found["type"] == "%":
+        if found["type"] is None:  # `%%` takes no argument
             continue
         # A `*` width or precision takes an argument of its own first.
         index += (found["width"] == "*") + (found["precision"] == "*")
