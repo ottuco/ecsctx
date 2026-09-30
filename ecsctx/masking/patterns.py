@@ -1395,10 +1395,21 @@ def _element_text(raw: str) -> str:
     return html.unescape(raw) if "&" in raw else raw
 
 
+# A start tag's attributes: a `>` inside a quoted value is the value's, as
+# XML allows it there (`<password hint="a>b">`); read to the first `>`, the
+# rest of the value went into the element's text, and its token. Each piece
+# starts with a character no other can (no backtracking to speak of), and a
+# quoted value never crosses a `<`.
+_ATTRIBUTES = r"(?:[^<>\"']|\"[^\"<]*\"|'[^'<]*')*"
 # An XML element's start tag: its qualified name, the local name after any
 # namespace prefix, and its attributes. Not an empty-element tag
-# (`<password/>`), which holds no text.
-_XML_START = re.compile(r"<(?P<tag>(?:[A-Za-z_][\w.-]*:)?(?P<local>[A-Za-z_][\w.-]*))(?:\s[^<>]*)?(?<!/)>")
+# (`<password/>`), which holds no text. A quote nothing closes before the
+# next tag leaves the first `>` to end it, as before: never no start tag,
+# which would leave the element's text in clear.
+_XML_START = re.compile(
+    rf"<(?P<tag>(?:[A-Za-z_][\w.-]*:)?(?P<local>[A-Za-z_][\w.-]*))"
+    rf"(?:(?:\s{_ATTRIBUTES})?(?<!/)>|(?:\s[^<>]*)?(?<!/)>)"
+)
 # ...and an end tag, with its qualified name.
 _XML_END = re.compile(r"</(?P<tag>(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*)\s*>")
 _match_start = methodcaller("start")
@@ -1551,8 +1562,8 @@ def _mask_card_element(raw: str, field_type: str) -> str:
     return "".join(parts)
 
 
-# Markup, or a run of text between it.
-_TEXT_RUN = re.compile(r"<[^<>]*>|(?P<text>[^<]+)")
+# Markup -- a quoted attribute's `>` its own -- or a run of text between it.
+_TEXT_RUN = re.compile(rf"<{_ATTRIBUTES}>|<[^<>]*>|(?P<text>[^<]+)")
 
 
 def _card_text(m: re.Match) -> str:

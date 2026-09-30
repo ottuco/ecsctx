@@ -201,6 +201,36 @@ class TestRedactBodyReadsAnElementsName:
     def test_an_element_no_key_rule_names_is_left_as_it_is(self, element):
         assert redact_body(element) == element
 
+    @pytest.mark.parametrize(
+        ("element", "masked"),
+        [
+            ('<password hint="a>b">{}</password>', '<password hint="a>b">{}</password>'),
+            ("<password hint='a>b' lang=\"en\">{}</password>", "<password hint='a>b' lang=\"en\">{}</password>"),
+            # A quote nothing closes before the next tag: the first `>` ends
+            # the start tag, as before, and the rest is the credential's.
+            ('<password hint="a>{}</password>', '<password hint="a>{}</password>'),
+        ],
+    )
+    def test_a_close_angle_in_a_quoted_attribute_is_the_attributes(self, element, masked):
+        body = element.format(PASSWORD)
+        assert redact_body(body) == masked.format(secret(PASSWORD))
+        assert _default_text(body) == masked.format(secret(PASSWORD))
+
+    @pytest.mark.parametrize(
+        ("element", "masked"),
+        [
+            ('<cvv note="a>b">123</cvv>', '<cvv note="a>b">[CVV-MASKED]</cvv>'),
+            ('<cardNumber type="a>b">4111111111111111</cardNumber>', '<cardNumber type="a>b">411111******1111</cardNumber>'),
+            (
+                '<card><number type="a>b">4111111111111111</number></card>',
+                '<card><number type="a>b">411111******1111</number></card>',
+            ),
+        ],
+    )
+    def test_a_card_elements_quoted_attribute_is_kept_whole_too(self, element, masked):
+        assert redact_body(element) == masked
+        assert _default_text(element) == masked
+
     def test_a_credential_holding_a_card_number_run_is_the_label(self):
         # As a JSON or form value is, in every pack.
         assert redact_body("<password>abc4111111111111111xyz</password>") == f"<password>{LABEL}</password>"
