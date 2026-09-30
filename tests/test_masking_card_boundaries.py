@@ -124,7 +124,8 @@ class TestACardKeyRefusesWhatStillHoldsACardNumber:
         [
             # Truncated by the card rule itself: nothing is left over.
             ("4111 1111 1111 1111 5123450000000008", "411111******1111 512345******0008"),
-            ("5123 4500 0000 0008 12 25 5123450000000008", "512345******0008 12 25 512345******0008"),
+            # Shown in a row, `0008 12 25 512345` is fourteen digits: refused.
+            ("5123 4500 0000 0008 12 25 5123450000000008", "[CARD-MASKED]"),
             ("5123450000000008 4111 1111 1111 1111 1234", "512345******0008 411111******1111 1234"),
             # A card number the rule leaves: glued to a word, or to more digits.
             ("REF5123450000000008 5123450000000008", "[CARD-MASKED]"),

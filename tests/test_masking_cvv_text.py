@@ -219,6 +219,16 @@ REFUSED_BESIDE_A_TRUNCATIONS_DIGITS = [
     "4111111111111111 12345678901",
     "512345000000000812-12345678901",
     "**** 4111111111111111 12345678901",
+    # Digits shown in a row across truncations, however many: a last four,
+    # a short group and the next first six (`5018 00 000009` is a Maestro);
+    # last fours with a bare group; bare digits before a last four.
+    "4000010000005018  00  0000090000000001",
+    "400001******5018  00  000009******0001",
+    "500001064111  500001021111  1111",
+    "********4111  ********1111  1111",
+    "02313379 ********1262",
+    # A run of X's joins digits as stars do: another masker writes it.
+    "411111******3782XX82246310005",
 ]
 # What stays: a short group beside a truncation, under twelve digits with it.
 KEPT_BESIDE_A_TRUNCATION = [

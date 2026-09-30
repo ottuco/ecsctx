@@ -869,38 +869,34 @@ def _digits_beside_truncations(masked: str) -> int:
     )
 
 
-# A letter: a word ends the digits a truncation's shown ones are counted with.
-_LETTER = re.compile(r"[^\W\d_]")
+# A letter of a word, which ends the digits shown in a row. Not an `X`: a run
+# of them joins digits as stars do -- another masker writes `4508750XXX001019`.
+_WORD_LETTER = re.compile(r"[^\W\d_Xx]")
 
 
 def _card_digits_showing(masked: str) -> int:
-    """The most digits of one card number ``masked`` shows around its
-    truncations, however they are joined: a truncation's first six with the
-    bare digits before it, back to the previous truncation or a word; its
-    last four with the bare digits after it, up to the next truncation or a
-    word; and the last fours of truncations with nothing but separators and
-    stars between them. `4111111111  111111******1111` shows sixteen."""
-    most = before = chain = 0
-    after = None
-    end = 0
+    """The most digits ``masked`` shows in a row, however they are joined --
+    bare digits, a truncation's last four, and the first six ending them --
+    as a card number could be read across them. A truncation's own stars
+    separate its first six from its last four; a word ends a row.
+    `4111111111  111111******1111` shows sixteen, and
+    `411111******5018  00  000009******0001` the Maestro 501800000009."""
+    most = run = end = 0
     for group in _MARK_GROUP.finditer(masked):
-        if _LETTER.search(masked, end, group.start()):
-            before, after, chain = 0, None, 0
+        if _WORD_LETTER.search(masked, end, group.start()):
+            run = 0
         end = group.end()
         marks = group.group()
         if _WRITTEN_TRUNCATION.fullmatch(marks):
             if marks[0] != "*":
-                most = max(most, before + 6)
-                chain = 0
-            chain += 4
-            before, after = 0, 4
-            most = max(most, chain)
-        elif digits := sum(character.isdigit() for character in marks):
-            before += digits
-            chain = 0
-            if after is not None:
-                after += digits
-                most = max(most, after)
+                # Its first six end what shows before them; its own stars
+                # separate them from its last four, which start what follows.
+                most = max(most, run + 6)
+                run = 0
+            run += 4
+        else:
+            run += sum(character.isdigit() for character in marks)
+        most = max(most, run)
     return most
 
 
