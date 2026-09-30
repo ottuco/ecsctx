@@ -296,12 +296,12 @@ def _template_of(msg: Any) -> str | None:
     return str(msg)
 
 
-def _renders(template: str, args: Any) -> bool:
+def _render(template: str, args: Any) -> str | None:
+    """``template % args``, as getMessage() renders it; None where it raises."""
     try:
-        template % args
+        return template % args
     except (TypeError, ValueError, KeyError):
-        return False
-    return True
+        return None
 
 
 def _became_text(original: Any, masked: Any) -> bool:
@@ -877,17 +877,30 @@ class MaskPIIFilter(logging.Filter):
                     msg = self._mask_value(record.msg, (), ctx)
                     args = self._mask_args(record.args, ctx)
                     template = _template_of(record.msg)
-                    if record.args and template is not None and (msg != template or not _renders(msg, args)):
+                    if (
+                        record.args
+                        and template is not None
+                        and (
+                            msg != template
+                            or (rendered := _render(msg, args)) is None
+                            or self._mask_value(rendered, (), ctx) != rendered
+                        )
+                    ):
                         # getMessage() would raise on what masking left, so the
                         # handler dropped the line and printed the arguments to
                         # stderr: the template held something to mask (in
                         # `password=%s` the rule reads the placeholder as the
                         # credential), a number masking turned into text meets
-                        # a `%d`, or the arguments never fit. So the record is
+                        # a `%d`, or the arguments never fit. Or it renders a
+                        # value split between the template and an argument
+                        # (`cvv=%s` with `123`), which neither holds on its own:
+                        # what a handler that never calls format() printed,
+                        # and Sentry and handleError read. So the record is
                         # rendered from the masked arguments (a dict's keys
                         # still mask it) and masked whole, or is the marker. A
-                        # template masking leaves as it is, and that renders,
-                        # keeps its arguments, and Sentry's grouping by it.
+                        # record whose masked arguments render to text masking
+                        # leaves as it is keeps its template and arguments,
+                        # and Sentry's grouping by them.
                         # Rendered, the record keeps no arguments for a later
                         # handler to mask with more packs, so they are masked
                         # with every pack: a default handler ahead of a pci one
