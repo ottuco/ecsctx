@@ -18,6 +18,8 @@ leak what it failed to mask.
 import json
 import logging
 
+import pytest
+
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS
 from ecsctx.processors import mask_sensitive_data
@@ -26,6 +28,14 @@ from ecsctx.processors import mask_sensitive_data
 class Unprintable:
     def __str__(self):
         raise ValueError("no text for you")
+
+
+class Broken:
+    """An argument whose `__str__` fails as no rendering expects: not the
+    TypeError, ValueError or KeyError that `_render` reads as "does not fit"."""
+
+    def __str__(self):
+        raise RuntimeError("no text for you")
 
 
 def _record(msg, args=()):
@@ -58,6 +68,31 @@ class TestAFailureReplacesTheMessage:
         record = _record("paid by %s", (Unprintable(),))
         assert MaskPIIFilter(packs=ALL_PACKS).filter(record) is True
         assert "MASKING-FAILED" in record.getMessage()
+
+    @pytest.mark.parametrize("packs", [("default",), ALL_PACKS], ids=["default", "pci"])
+    @pytest.mark.parametrize("template", ["paid by %s", "cvv=%s", "card %s %s"])
+    def test_an_argument_whose_str_raises_runtime_error_is_the_marker(self, template, packs):
+        args = (Broken(),) * template.count("%s")
+        record = _record(template, args)
+        assert MaskPIIFilter(packs=packs).filter(record) is True
+        assert (record.msg, record.args) == ("[MASKING-FAILED: RuntimeError]", ())
+        assert record.getMessage() == "[MASKING-FAILED: RuntimeError]"
+
+    def test_a_logger_call_with_it_logs_the_marker(self, logging_state):
+        lines = []
+
+        class Lines(logging.Handler):
+            def emit(self, record):
+                lines.append(record.getMessage())
+
+        logger = logging.getLogger("ecsctx.tests.never_raises")
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        handler = Lines()
+        handler.addFilter(MaskPIIFilter())
+        logger.addHandler(handler)
+        logger.info("paid by %s", Broken())
+        assert lines == ["[MASKING-FAILED: RuntimeError]"]
 
     def test_the_processor_does_not_raise(self):
         event = {"event": "paid", "level": "info", "payer": Unprintable(), "name": "Jane Payer"}
