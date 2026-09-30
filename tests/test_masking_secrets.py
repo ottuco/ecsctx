@@ -52,6 +52,9 @@ LABEL = "[SECRET-MASKED]"
 # A saved card's gateway token is sixteen digits: Luhn-valid, and not.
 CARD_SHAPED = ["4111111111111111", "9923960000004314"]
 PLACEHOLDERS = ["[REDACTED]", "[PII_REDACTED]", "*", "***", "****", "Bearer ****"]
+# A card truncation after an auth scheme: the card rule's output, or another
+# masker's, where a credential stood.
+SCHEMED_TRUNCATIONS = ["Bearer 411111******1111", "Basic 411111******1111", "Bearer ********1111", "token 411111******1111"]
 
 
 @pytest.fixture(autouse=True, params=["keyset", "no-keyset"])
@@ -94,6 +97,13 @@ class TestMaskByFieldType:
         # Ten digits of a saved card's sixteen-digit gateway token: a
         # credential the card rule truncated shows too much of itself.
         assert mask_by_field_type(value, "secret") == LABEL
+
+    @pytest.mark.parametrize("value", SCHEMED_TRUNCATIONS)
+    def test_a_truncation_after_a_scheme_is_the_label(self, value):
+        # #160054: with a keyset it was hashed whole, a token of the scheme
+        # and the truncation.
+        assert mask_by_field_type(value, "secret") == LABEL
+        assert mask_secret(value) == LABEL
 
 
 class TestMaskSecret:
@@ -1284,6 +1294,20 @@ def _record(msg, args) -> str:
 class _Login:
     user: str
     password: list
+
+
+class TestAnAuthorizationHoldingATruncation:
+    """`Authorization: Bearer <truncation>` is the label on every path, as a
+    bare truncation is: a token of the scheme and the truncation stood where
+    no token can."""
+
+    @pytest.mark.parametrize("value", SCHEMED_TRUNCATIONS)
+    def test_every_path(self, value):
+        assert _walk({"Authorization": value})["Authorization"] == LABEL
+        assert mask_by_patterns(f"Authorization: {value}", _TEXT_RULES) == f"Authorization: {LABEL}"
+        assert mask_by_patterns(f"<Authorization>{value}</Authorization>", _TEXT_RULES) == (
+            f"<Authorization>{LABEL}</Authorization>"
+        )
 
 
 class TestACredentialWordBeforeAContainer:

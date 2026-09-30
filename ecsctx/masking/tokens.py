@@ -101,6 +101,10 @@ _PAN_CHECKED_TYPES = frozenset({"secret", "payment_id"})
 # A truncation the card rule writes, its first six and last four showing. As a
 # credential it is ten digits of a saved card's sixteen-digit gateway token.
 _SHOWN_TRUNCATION = re.compile(r"\d{6}\*{4,}\d{4}")
+# ...and any truncation after an auth scheme (`Bearer 411111******1111`),
+# the scheme word as a placeholder takes one: hashed whole, it was a token
+# of the scheme and the truncation, where the truncation alone is the label.
+_TRUNCATION_AFTER_A_SCHEME = re.compile(rf"[A-Za-z][\w-]*\s+{_TRUNCATED_PAN}")
 
 
 def mask_by_field_type(value: str, field_type: str) -> str:
@@ -143,10 +147,14 @@ def mask_by_field_type(value: str, field_type: str) -> str:
         forms = [normalize_value(value, field_type)]
         if "%" in value or "+" in value:
             forms.append(normalize_value(unquote_plus(value), field_type))
-        if field_type == "secret" and any(_SHOWN_TRUNCATION.fullmatch(bare) for bare in forms):
+        if field_type == "secret" and any(
+            _SHOWN_TRUNCATION.fullmatch(bare) or _TRUNCATION_AFTER_A_SCHEME.fullmatch(bare) for bare in forms
+        ):
             # Never passed through as masking's own output: rendered from its
             # argument, a gateway token the card rule truncated showed ten
-            # of its digits where the key walk gives the label.
+            # of its digits where the key walk gives the label. After a
+            # scheme (`Authorization: Bearer <truncation>`) it is the label
+            # too, never a token of the two.
             return f"[{label}]"
     if already_masked(value):
         return f"[{label}]" if _holds_a_card_number(value) else value
