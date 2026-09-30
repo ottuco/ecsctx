@@ -2047,14 +2047,36 @@ _CARD_RULE_ONLY: tuple[Rule, ...] = tuple(
 )
 
 
-@lru_cache(maxsize=64)
+def _by_identity(cache: dict, rules: tuple, build: Callable[[tuple], Any]) -> Any:
+    """What ``build`` makes of ``rules``, cached on the tuple's identity.
+
+    Never on its hash: a tuple of rules hashes every rule, and a compiled
+    pattern hashes its whole program, on every call -- 30 µs a string for
+    the default pack once the wallet rule was in it, which lru_cache paid on
+    each lookup. Keeping ``rules`` in the entry keeps its id from being
+    reused; a cache past its bound is emptied, not evicted, as _clean is.
+    """
+    entry = cache.get(id(rules))
+    if entry is None or entry[0] is not rules:
+        if len(cache) >= _BY_IDENTITY_LIMIT:
+            cache.clear()
+        entry = cache[id(rules)] = (rules, build(rules))
+    return entry[1]
+
+
+# More distinct rule sets than a process makes: rules_for() holds one per
+# combination of packs, and scalar_rules() one per set.
+_BY_IDENTITY_LIMIT = 64
+_scalar: dict[int, tuple[tuple, tuple]] = {}
+
+
 def scalar_rules(rules: tuple[Rule, ...]) -> tuple[Rule, ...]:
     """``rules`` minus the ones that may only run over prose.
 
-    Cached on the rule tuple so the result is a stable object: mask_by_patterns
-    keys its known-clean set on tuple identity.
+    Cached on the rule tuple's identity so the result is a stable object:
+    mask_by_patterns keys its known-clean set on tuple identity.
     """
-    return tuple(rule for rule in rules if not rule.prose_only)
+    return _by_identity(_scalar, rules, lambda rules: tuple(rule for rule in rules if not rule.prose_only))
 
 
 @lru_cache(maxsize=16)
@@ -2145,9 +2167,11 @@ def mask_by_patterns(text: str, rules: tuple[Rule, ...]) -> str:
     return text
 
 
-@lru_cache(maxsize=16)
+_gates: dict[int, tuple[tuple, tuple]] = {}
+
+
 def _distinct_gates(rules: tuple[Rule, ...]) -> tuple:
-    return tuple(dict.fromkeys(rule.gate for rule in rules))
+    return _by_identity(_gates, rules, lambda rules: tuple(dict.fromkeys(rule.gate for rule in rules)))
 
 
 def _passing_gates(text: str, lowered: str, gates: tuple) -> set:
