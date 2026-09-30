@@ -387,7 +387,9 @@ CREDENTIAL_MASKED_CASES = [
     # key examples with api prefix
     ("cred-apikey", "apikey abcd1234", "apikey [SECRET-MASKED]"),
     ("cred-api_key", "api_key abcd1234", "api_key [SECRET-MASKED]"),
-    ("cred-api-key", "api-key abcd1234", "api-key [SECRET-MASKED]"),
+    # Ottu's `API-Key` scheme: it and the key are one value, as after
+    # Authorization (#160054).
+    ("cred-api-key", "api-key abcd1234", "[SECRET-MASKED]"),
     # sensitive *_key compounds
     ("cred-secret-key", "secret-key abcd1234", "secret-key [SECRET-MASKED]"),
     ("cred-private-key", "private-key abcd1234", "private-key [SECRET-MASKED]"),
@@ -432,7 +434,7 @@ CREDENTIAL_MASKED_CASES = [
     (
         "auth-interpolated-in-message",
         f"Authentication failed with key 'API-Key {_HEX}'",
-        "Authentication failed with key 'API-Key [SECRET-MASKED]'",
+        "Authentication failed with key '[SECRET-MASKED]'",
     ),
     # common OAuth/API field names
     ("access_token-kv", "access_token=abcd1234efgh5678", "access_token=[SECRET-MASKED]"),
@@ -441,7 +443,7 @@ CREDENTIAL_MASKED_CASES = [
     ("private_key-kv", "private_key=abcd1234efgh5678", "private_key=[SECRET-MASKED]"),
     ("secret_key-kv", "secret_key=abcd1234efgh5678", "secret_key=[SECRET-MASKED]"),
     ("auth-basic-equals", f"basic= {_HEX}", "basic= [SECRET-MASKED]"),
-    ("auth-api-key-value", f"API-Key {_HEX}", "API-Key [SECRET-MASKED]"),
+    ("auth-api-key-value", f"API-Key {_HEX}", "[SECRET-MASKED]"),
     ("auth-basic-value", "Basic dXNlcjpwYXNzd29yZA==", "Basic [SECRET-MASKED]"),
     # A quoted key whose value is a bare literal: text that is JSON (or a
     # Python repr) must stay parseable, and a null/boolean holds no secret.

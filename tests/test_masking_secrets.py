@@ -1287,6 +1287,40 @@ class _Login:
     password: list
 
 
+class TestABareApiKeyScheme:
+    """Ottu PG sends `Authorization: API-Key <merchant key>` into Connect. Its
+    own filter masked a bare `API-Key <key>` in text; ecsctx hashed the key
+    alone and left the scheme word beside it -- another token than the
+    header's. The scheme and the key are one value, as after Authorization:
+    they carry the header's token, or the label."""
+
+    @pytest.mark.parametrize(
+        ("text", "value"),
+        [
+            ("sending API-Key abc123XYZ to core", "API-Key abc123XYZ"),
+            ("headers={'X': 'API-Key abc123XYZ'}", "API-Key abc123XYZ"),
+            ("retry with Api-Key abc123XYZ", "Api-Key abc123XYZ"),
+            ("api-key abc123XYZ done", "api-key abc123XYZ"),
+        ],
+    )
+    def test_the_scheme_and_the_key_are_one_value(self, text, value):
+        masked = mask_by_patterns(text, _DEFAULT_RULES)
+        assert masked == text.replace(value, mask_secret(value))
+        assert mask_by_patterns(masked, _DEFAULT_RULES) == masked
+
+    def test_it_carries_the_token_the_authorization_header_carries(self):
+        header = mask_by_patterns("Authorization: API-Key abc123XYZ", _DEFAULT_RULES)
+        bare = mask_by_patterns("sending API-Key abc123XYZ to core", _DEFAULT_RULES)
+        assert header == f"Authorization: {mask_secret('API-Key abc123XYZ')}"
+        assert bare == f"sending {mask_secret('API-Key abc123XYZ')} to core"
+        assert _walk({"Authorization": "API-Key abc123XYZ"})["Authorization"] == mask_secret("API-Key abc123XYZ")
+
+    def test_a_header_name_ending_in_the_word_is_no_scheme(self):
+        # Only the scheme word itself: `X-API-Key <key>` names a header, and
+        # its key alone is masked, as before.
+        assert mask_by_patterns("X-API-Key abc123XYZ", _DEFAULT_RULES) == f"X-API-Key {token_or_label('abc123XYZ')}"
+
+
 class TestAnAuthorizationHoldingATruncation:
     """`Authorization: Bearer <truncation>` is the label on every path, as a
     bare truncation is: a token of the scheme and the truncation stood where

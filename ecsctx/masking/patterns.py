@@ -1345,6 +1345,10 @@ def _cred_container(m: re.Match) -> str:
 # Masking's own output in a value: a whole token, a label, a truncation.
 _MASKS_IN_A_VALUE = re.compile(rf"(?-i:{_CARDLESS_TOKEN}|\[[A-Z0-9-]+-MASKED\]|{_TRUNCATED_PAN})")
 _DIGIT = re.compile(r"\d")
+# Ottu's `API-Key` scheme, standing alone: not the end of a header name
+# (`X-API-Key`).
+_API_KEY_SCHEME = re.compile(r"api-key", re.IGNORECASE)
+_SCHEME_WORD_BEFORE = re.compile(r"[\w-]")
 
 
 def _cred_space(m: re.Match) -> str:
@@ -1356,6 +1360,13 @@ def _cred_space(m: re.Match) -> str:
         # token. A credential glued to a key name keeps its own digits
         # (`Token abc123abc123api_key=<token>`), and is hashed as before.
         return m.group(0)
+    if _API_KEY_SCHEME.fullmatch(kw) and not (
+        m.start() and _SCHEME_WORD_BEFORE.fullmatch(m.string[m.start() - 1])
+    ):
+        # `API-Key <key>` without its `Authorization:` (Ottu PG's header,
+        # written into text): the scheme and the key are one value, as after
+        # Authorization, and carry the token the header carries.
+        return mask_secret(m.group(0))
     return f"{kw} {_mask_credential(val, kw)}"
 
 
@@ -1888,7 +1899,8 @@ _RULE_TABLE = (
     ),
     # 11. Credential — bare space (Bearer abc12345). A value of eight or more
     # characters with a digit among them, "ptok:" counted too (Bearer
-    # ptok:hunter2), to its delimiter.
+    # ptok:hunter2), to its delimiter. After Ottu's `API-Key` scheme word the
+    # scheme and the value are one value, as after Authorization (rule 5).
     _rule(
         "default",
         rf"\b({_CRED_KEYWORD})\s+(?!{_WHOLE_TOKEN})(?=(?:(?!\d){_VALUE_UNIT})*\d)"
