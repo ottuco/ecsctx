@@ -275,11 +275,14 @@ _CONVERSION = re.compile(
 def _template_of(msg: Any) -> str | None:
     """The text getMessage() formats: ``str(msg)`` -- a lazy translation or an
     exception as much as a str -- but None for a mapping or list, which is a
-    structured record."""
+    structured record. Bytes are read as masking decodes them, so a template
+    that renders keeps its arguments."""
     if isinstance(msg, str):
         return msg
     if isinstance(msg, (dict, list)):
         return None
+    if isinstance(msg, (bytes, bytearray)):
+        return bytes(msg).decode("utf-8", errors="replace")
     return str(msg)
 
 

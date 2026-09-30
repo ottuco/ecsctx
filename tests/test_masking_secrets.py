@@ -1466,6 +1466,22 @@ class TestARecordThatWouldNotRender:
         MaskPIIFilter().filter(record)
         assert (record.msg, record.args) == (f"expires_at {masked} ok", ())
 
+    def test_a_bytes_template_that_renders_keeps_its_args(self):
+        # Read as the text masking decodes it: as str(bytes) it never matched
+        # the decoded template, so every bytes record lost its arguments.
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, b"user %s ok", ("bob",), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args, record.getMessage()) == ("user %s ok", ("bob",), "user bob ok")
+
+    def test_a_bytes_template_holding_a_credential_word_is_rendered_whole(self):
+        import logging
+
+        record = logging.LogRecord("t", logging.INFO, __file__, 0, b"password=%s", ("hunter2-b",), None)
+        MaskPIIFilter().filter(record)
+        assert (record.msg, record.args) == (f"password={token_or_label('hunter2-b')}", ())
+
     def test_a_lazy_template_is_rendered_whole(self):
         import logging
 
