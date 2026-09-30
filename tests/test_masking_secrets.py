@@ -23,7 +23,9 @@ Every test runs with a keyset and without one. An expected token is computed
 by ecsctx under the same keyset, never written out.
 """
 
+import dataclasses
 import json
+import logging
 import re
 from urllib.parse import quote, unquote, urlsplit
 
@@ -1270,6 +1272,79 @@ CARD_IN_A_CREDENTIAL = [
     ("password=%224111111111111111%22&x=1", "password=[SECRET-MASKED]&x=1"),
     ("payment_id=4111111111111111", "payment_id=[PAYMENT-ID-MASKED]"),
 ]
+
+
+def _record(msg, args) -> str:
+    record = logging.LogRecord("t", logging.INFO, __file__, 0, msg, args, None)
+    MaskPIIFilter().filter(record)
+    return record.getMessage()
+
+
+@dataclasses.dataclass
+class _Login:
+    user: str
+    password: list
+
+
+class TestACredentialWordBeforeAContainer:
+    """#160054: `password=%(pw)s` rendered with a list or dict printed
+    `password=['a', 'b']` -- the credential rules never start a value at an
+    opening bracket, and the key `pw` names nothing. The whole container is
+    the credential's value now: its token, or the label."""
+
+    @pytest.mark.parametrize(
+        ("msg", "args", "value"),
+        [
+            ("password=%(pw)s", ({"pw": ["a", "b"]},), "['a', 'b']"),
+            ("login password=%s rejected", (["s3cret", "x"],), "['s3cret', 'x']"),
+            ("password: %s", ({"user": "bob", "code": "x1"},), "{'user': 'bob', 'code': 'x1'}"),
+            ("api_key=%s", (("k1", "k2"),), "('k1', 'k2')"),
+        ],
+    )
+    def test_a_rendered_container_is_masked_whole(self, msg, args, value):
+        rendered = msg % (args[0] if isinstance(args[0], dict) and "%(" in msg else args)
+        assert _record(msg, args) == rendered.replace(value, token_or_label(value))
+
+    @pytest.mark.parametrize(
+        ("text", "value"),
+        [
+            ("password=['a', 'b'] rejected", "['a', 'b']"),
+            ("secret = {'k': [1, 2]} x", "{'k': [1, 2]}"),
+            ("token: (1, 'x')", "(1, 'x')"),
+            ("password=[unclosed, 'rest of the line", "[unclosed, 'rest of the line"),
+        ],
+    )
+    def test_in_text(self, text, value):
+        masked = mask_by_patterns(text, _TEXT_RULES)
+        assert masked == text.replace(value, token_or_label(value))
+        assert mask_by_patterns(masked, _TEXT_RULES) == masked
+
+    def test_a_repr_keeps_its_value_a_string(self):
+        text = "{'user': 'bob', 'password': ['s3cret']}"
+        masked = token_or_label("['s3cret']")
+        assert mask_by_patterns(text, _TEXT_RULES) == "{'user': 'bob', 'password': '" + masked + "'}"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # What masking wrote: a label, a container of tokens and labels.
+            "password=[SECRET-MASKED] rejected",
+            f"password=['{hmac_tokenize('a', bytes(32), 'secret', 'test')}', '[SECRET-MASKED]', None]",
+            # Nothing in it.
+            "password=[] and token={}",
+            # JSON: the key walk masked it by its keys before it was written,
+            # the saved card under `token` its own number, brand and expiry.
+            '{"token": {"brand": "VISA", "number": "411111******1111", "expiry_month": "01"}}',
+            '{"password": ["a"]}',
+        ],
+    )
+    def test_what_is_masked_already_or_json_is_left_as_it_is(self, text):
+        assert mask_by_patterns(text, _TEXT_RULES) == text
+
+    def test_a_record_rendering_a_credential_field_is_masked_once(self):
+        masked = MaskPIIFilter()._mask_value(_Login(user="bob", password=["s3cret"]))
+        assert masked == f"_Login(user='bob', password=['{token_or_label('s3cret')}'])"
+        assert "ptok:v1:ptok" not in masked
 
 
 class TestTheCallsPacksDecide:
