@@ -3,7 +3,7 @@
 Ported from ottu_pg's MaskPIIFilter (utils/log/filters.py), merged with
 ecsctx's own PII key-name list. Two independent detection strategies:
 
-1. Content-based (RULES): 22 ordered regexes in three packs — `default`
+1. Content-based (RULES): 23 ordered regexes in three packs — `default`
    always on, `pci` and `financial_ids` opt-in (ecsctx.masking.config) — each
    behind a literal pre-check, applied to every string the filter reaches.
    Rule order is load-bearing — see the comments on each rule and the
@@ -133,7 +133,7 @@ SAFE_KEYS = frozenset({
 })
 
 # Authorization / Authorisation (+ _header). Apart from the other keywords:
-# its value is a scheme and a credential, one value (rule 5).
+# its value is a scheme and a credential, one value (rule 6).
 _AUTH_KEYWORD = r"authori[sz]ation(?:[_-]?header)?"
 # The HTTP authentication schemes an Authorization header's credential
 # follows (RFC 9110 11.4), and the one Ottu's API names `Api-Key`.
@@ -359,7 +359,7 @@ _DASH_CHARS = "-" + _UNICODE_DASHES
 _DIGIT_VALUE = bytes.maketrans(b"0123456789", bytes(range(10)))
 _DOUBLED_VALUE = bytes.maketrans(b"0123456789", bytes((0, 2, 4, 6, 8, 1, 3, 5, 7, 9)))
 # An IBAN's country code and two check digits, at the start of a word, as the
-# first two digits of a run. Case-sensitive, as rule 14 is.
+# first two digits of a run. Case-sensitive, as rule 15 is.
 _IBAN_HEAD = re.compile(rf"(?<![^\W_])(?:{_IBAN_PREFIX})\d\d(?!\d)")
 # ...or with groups of four after them, and part of one, ending right before a
 # run: the bank code has letters in it ("GB33 BUKB 2020 ...", "IT60 X054 ...").
@@ -1345,14 +1345,24 @@ def _cred_container(m: re.Match) -> str:
 # Masking's own output in a value: a whole token, a label, a truncation.
 _MASKS_IN_A_VALUE = re.compile(rf"(?-i:{_CARDLESS_TOKEN}|\[[A-Z0-9-]+-MASKED\]|{_TRUNCATED_PAN})")
 _DIGIT = re.compile(r"\d")
-# Ottu's `API-Key` scheme, standing alone: not the end of a header name
-# (`X-API-Key`).
-_API_KEY_SCHEME = re.compile(r"api-key", re.IGNORECASE)
-_SCHEME_WORD_BEFORE = re.compile(r"[\w-]")
+# A form field whose value masking wrote, as redact_body leaves one after a
+# scheme word (`API-Key password=<token>`).
+_MASKED_FIELD = re.compile(rf"[\w.\-\[\]%]+[=:](?-i:{_CARDLESS_TOKEN}|\[[A-Z0-9-]+-MASKED\])")
+
+
+def _api_key_scheme(m: re.Match) -> str:
+    """`API-Key <key>` without its `Authorization:` -- Ottu PG's header,
+    written into text: the scheme and the key are one value, as after
+    Authorization, and carry the token the header carries. A form field
+    masking wrote there (`API-Key password=<token>`) is left, never hashed
+    again with the scheme."""
+    if _MASKED_FIELD.fullmatch(m.group("value")):
+        return m.group(0)
+    return mask_secret(m.group(0))
 
 
 def _cred_space(m: re.Match) -> str:
-    kw, val = m.group(1), m.group(2)
+    kw, val = m.group("keyword"), m.group("value")
     if _DIGIT.search(_MASKS_IN_A_VALUE.sub("", val)) is None:
         # Its only digits are masking's own: `password=<token>`, which
         # redact_body wrote after the scheme word. The digit is what makes
@@ -1360,13 +1370,6 @@ def _cred_space(m: re.Match) -> str:
         # token. A credential glued to a key name keeps its own digits
         # (`Token abc123abc123api_key=<token>`), and is hashed as before.
         return m.group(0)
-    if _API_KEY_SCHEME.fullmatch(kw) and not (
-        m.start() and _SCHEME_WORD_BEFORE.fullmatch(m.string[m.start() - 1])
-    ):
-        # `API-Key <key>` without its `Authorization:` (Ottu PG's header,
-        # written into text): the scheme and the key are one value, as after
-        # Authorization, and carry the token the header carries.
-        return mask_secret(m.group(0))
     return f"{kw} {_mask_credential(val, kw)}"
 
 
@@ -1374,7 +1377,7 @@ def _cred_space(m: re.Match) -> str:
 _CDATA = re.compile(r"\s*<!\[CDATA\[(?P<content>[\s\S]*?)\]\]>\s*")
 # An Authorization element's text that masking already wrote, or another
 # masker did: a scheme before a whole token, a label or a placeholder. As in
-# rule 5, the scheme is not hashed again with it.
+# rule 6, the scheme is not hashed again with it.
 _SCHEME_BEFORE_A_MASK = re.compile(
     rf"\s*{_AUTH_SCHEME}[ \t]+(?:(?-i:{_CARDLESS_TOKEN})|\[[^\[\]]*\]|\*+)\s*", re.IGNORECASE
 )
@@ -1693,7 +1696,7 @@ def _cvv_word_starts(lowered: str) -> list[int]:
 # bounded key prefix (128), its separator, and rule 4's opening quote.
 _CRED_REACH = 130
 # ...and a CVV match before its CVV word: the bounded key prefix (64) and its
-# separator, or a camelCase word (64), `card_`, and rule 7's opening quote.
+# separator, or a camelCase word (64), `card_`, and rule 8's opening quote.
 _CVV_REACH = 72
 
 
@@ -1755,7 +1758,7 @@ def _rule(pack, regex, repl, gate, scan=None, prose_only=False):
 
 
 # ---------------------------------------------------------------------------
-# The 22 content rules, in execution order. DO NOT REORDER — several rules
+# The 23 content rules, in execution order. DO NOT REORDER — several rules
 # only behave correctly because a more specific rule ran first:
 #   1. Credential/CVV/payment-id keyword rules before all shape rules —
 #      otherwise a numeric secret in the card-digit range gets masked as a
@@ -1779,6 +1782,9 @@ def _rule(pack, regex, repl, gate, scan=None, prose_only=False):
 #      first, and the element's value, holding their token, was hashed again.
 #  10. The wallet rule before every credential rule, the XML one included —
 #      a token under `"token": …` or in `<password>` was hashed whole.
+#  11. The `API-Key` scheme before the `key=value` credential rule — that
+#      would mask a `password=` inside its value first, which it never does
+#      after `Authorization:`, and the two forms would carry different tokens.
 # ---------------------------------------------------------------------------
 
 _RULE_TABLE = (
@@ -1803,7 +1809,7 @@ _RULE_TABLE = (
     # 3. Credential — an XML element (<password>s3cret</password>,
     # <wsse:Password Type="PasswordText">…</wsse:Password>), for a body that
     # never went through redact_body: its local name a credential keyword, as
-    # rules 4 and 5 read a key, whatever namespace prefix and attributes it
+    # rules 4 and 6 read a key, whatever namespace prefix and attributes it
     # has. The value runs to the end tag, children and all, and is masked as
     # it decodes (`_element_text`). No end tag, no element: a route in a
     # message (`DELETE /v1/cards/<str:token>/`) is a start tag's shape.
@@ -1824,7 +1830,21 @@ _RULE_TABLE = (
         _has_credential,
         _sub_near_credential_words,
     ),
-    # 5. Credential — ":" / "=" (secret_key=abc123). A value that opens with a
+    # 5. Credential — Ottu's `API-Key` scheme word standing alone (not the end
+    # of a header name, `X-API-Key`), without its `Authorization:`: the
+    # scheme and the value are one value, as after Authorization (rule 6), and
+    # carry the header's token. Any value to its delimiter -- the word is the
+    # evidence, and a key may have no digit (1 in 1,550 of Ottu PG's Fernet
+    # keys). Before rule 6, which would mask a `password=` inside the value
+    # first, as it never does after `Authorization:`.
+    _rule(
+        "default",
+        rf"(?<![\w-])api-key[ \t]+(?!{_WHOLE_TOKEN})(?P<value>{_UNQUOTED_VALUE})",
+        _api_key_scheme,
+        _has_credential,
+        _sub_near_credential_words,
+    ),
+    # 6. Credential — ":" / "=" (secret_key=abc123). A value that opens with a
     # quote a closing one matches runs to it (`quote`); any other, to its
     # delimiter. An empty quoted value is none: quotes doubled as CSV and SQL
     # escape one (`password=""s3cret`) are structure before the value. The
@@ -1848,8 +1868,8 @@ _RULE_TABLE = (
         _has_credential,
         _sub_near_credential_words,
     ),
-    # 6. Credential — a container after the key (`password=['a', 'b']`), as a
-    # %-style argument renders one: rule 5 never starts a value at an opening
+    # 7. Credential — a container after the key (`password=['a', 'b']`), as a
+    # %-style argument renders one: rule 6 never starts a value at an opening
     # bracket, so `password=%(pw)s` with a list shipped it whole (#160054).
     # The whole container is the value, and a repr's quoted key keeps it a
     # string. Not a JSON key's: the key walk masked that container by its keys
@@ -1863,7 +1883,7 @@ _RULE_TABLE = (
         _has_credential_container,
         _sub_near_credential_words,
     ),
-    # 7. CVV — quoted key ("cvv": "123"). The keyed CVV rules (7, 8, 12) are
+    # 8. CVV — quoted key ("cvv": "123"). The keyed CVV rules (8, 9, 13) are
     # `default`: a CVV must not ship from any service, and a default-pack one
     # (Connect) receives the CVV a saved-card payment sends. A value that
     # starts as a CVV runs to its end, as a credential's does: none of it is
@@ -1875,7 +1895,7 @@ _RULE_TABLE = (
         _has_cvv_keyword,
         _sub_near_cvv_words,
     ),
-    # 8. CVV — ":" / "=" (cvv=123).
+    # 9. CVV — ":" / "=" (cvv=123).
     _rule(
         "default",
         rf"\b({_CVV_KEYWORD}(?:\\?[\"']|\s)*[:=](?:\\?[\"']|\s)*)\d{{3}}{_VALUE_UNIT}*",
@@ -1883,33 +1903,32 @@ _RULE_TABLE = (
         _has_cvv_keyword,
         _sub_near_cvv_words,
     ),
-    # 9. Payment/transaction/auth id — quoted key ("payment_id": "abc12345").
+    # 10. Payment/transaction/auth id — quoted key ("payment_id": "abc12345").
     _rule(
         "financial_ids",
         rf"([\"'])({_PAYMENT_ID_KEYWORD})\1(\s*:\s*)\1([A-Za-z0-9_\-]+)\1",
         _payid_quoted,
         _has_id,
     ),
-    # 10. Payment/transaction/auth id (payment_id: abc12345).
+    # 11. Payment/transaction/auth id (payment_id: abc12345).
     _rule(
         "financial_ids",
         rf"\b({_PAYMENT_ID_KEYWORD}\s*[:=]\s*)([A-Za-z0-9_\-]{{8,}})\b",
         _payid_kv,
         _has_id,
     ),
-    # 11. Credential — bare space (Bearer abc12345). A value of eight or more
+    # 12. Credential — bare space (Bearer abc12345). A value of eight or more
     # characters with a digit among them, "ptok:" counted too (Bearer
-    # ptok:hunter2), to its delimiter. After Ottu's `API-Key` scheme word the
-    # scheme and the value are one value, as after Authorization (rule 5).
+    # ptok:hunter2), to its delimiter: prose says "Bearer of bad news".
     _rule(
         "default",
-        rf"\b({_CRED_KEYWORD})\s+(?!{_WHOLE_TOKEN})(?=(?:(?!\d){_VALUE_UNIT})*\d)"
-        rf"({_VALUE_START}{_VALUE_UNIT}{{7,}})",
+        rf"\b(?P<keyword>{_CRED_KEYWORD})\s+(?!{_WHOLE_TOKEN})(?=(?:(?!\d){_VALUE_UNIT})*\d)"
+        rf"(?P<value>{_VALUE_START}{_VALUE_UNIT}{{7,}})",
         _cred_space,
         _has_credential,
         _sub_near_credential_words,
     ),
-    # 12. CVV — bare space (CVV 123).
+    # 13. CVV — bare space (CVV 123).
     _rule(
         "default",
         rf"\b({_CVV_KEYWORD})\s+\d{{3}}{_VALUE_UNIT}*",
@@ -1917,7 +1936,7 @@ _RULE_TABLE = (
         _has_cvv_keyword,
         _sub_near_cvv_words,
     ),
-    # 13. Payment/transaction/auth id — bare space (payment_id abc12345).
+    # 14. Payment/transaction/auth id — bare space (payment_id abc12345).
     _rule(
         "financial_ids",
         
@@ -1925,14 +1944,14 @@ _RULE_TABLE = (
         _payid_space,
         _has_id,
     ),
-    # 14. IBAN (GB33BUKB20201555555555).
+    # 15. IBAN (GB33BUKB20201555555555).
     _rule(
         "financial_ids",
         rf"(?-i:\b(?:{_IBAN_PREFIX})\d{{2}}[A-Z0-9]{{11,30}}\b)",
         _iban,
         _has_iban_shape,
     ),
-    # 15. URL userinfo (postgresql://user:password@host), each part masked as
+    # 16. URL userinfo (postgresql://user:password@host), each part masked as
     # redact_url masks it, the scheme, host and port kept: a DSN in exception
     # text. With a password, empty or not (`https://key:@host`), or a token
     # alone, as masking left a user. A user alone (`user`) names an account
@@ -1949,7 +1968,7 @@ _RULE_TABLE = (
         _userinfo,
         _has_userinfo,
     ),
-    # 16. Phone — international E.164-style or a bare local number. Union of
+    # 17. Phone — international E.164-style or a bare local number. Union of
     # ecsctx's and the ported filter's patterns: dash/space/dot all count as
     # separators, since real phone numbers appear with all three and neither
     # source pattern alone caught every real case.
@@ -1963,7 +1982,7 @@ _RULE_TABLE = (
         _phone,
         _has_phone_shape,
     ),
-    # 17. Email (user@example.com).
+    # 18. Email (user@example.com).
     _rule(
         "default",
         # Bounded by RFC 5321's limits (64-char local part, 255-char domain):
@@ -1973,14 +1992,14 @@ _RULE_TABLE = (
         _email,
         _has_at,
     ),
-    # 18. JWT (eyJhbGciOi....).
+    # 19. JWT (eyJhbGciOi....).
     _rule(
         "default",
         r"\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{3,}\.[A-Za-z0-9_\-]{3,}",
         _jwt,
         _has_jwt_prefix,
     ),
-    # 19. Card number — truncated, bare (411111******1111; last 4
+    # 20. Card number — truncated, bare (411111******1111; last 4
     # only below 15 digits, see _truncate_pan); the middle never survives,
     # starred or not. A whole run of digit groups is read at once, and Luhn
     # decides between its readings: _CardRun.
@@ -1993,14 +2012,14 @@ _RULE_TABLE = (
         _mask_card_run,
         _has_card_shape,
     ),
-    # 20. SSN (123-45-6789).
+    # 21. SSN (123-45-6789).
     _rule(
         "financial_ids",
         r"(?=\d)" + _CARD_LEAD_GUARD + r"\d{3}[-\s]?\d{2}[-\s]?\d{4}\b",
         _ssn,
         _has_ssn_shape,
     ),
-    # 21. CVV beside a card — a bare 3-4 digit group among the fields written
+    # 22. CVV beside a card — a bare 3-4 digit group among the fields written
     # after a card number or its truncation, up to three of them:
     # `4111111111111111 123`, `411111******1111|12/27|123`. A CVV is worth
     # nothing without its card and is written beside it; any other 3-4 digit
@@ -2015,9 +2034,9 @@ _RULE_TABLE = (
         _has_card_and_digits,
         prose_only=True,
     ),
-    # 22. CVV after its word — a bare 3-4 digit group after a CVV word, a
+    # 23. CVV after its word — a bare 3-4 digit group after a CVV word, a
     # sign or a word or two between them (`the cvv is 123`), which the keyed
-    # rules 7, 8 and 12 do not read. Tried near the CVV words, as they are.
+    # rules 8, 9 and 13 do not read. Tried near the CVV words, as they are.
     _rule(
         "pci",
         rf"\b(?P<lead>{_CVV_KEYWORD}{_CVV_LINK}){_CVV_DIGITS}",

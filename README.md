@@ -1171,8 +1171,11 @@ the scheme — what masking the credential alone leaves,
 `Authorization: Bearer ptok:v1:…` — is left as it is, not hashed again with its
 scheme. Ottu's `API-Key` scheme word standing alone does the same, without its
 `Authorization:` — `sending API-Key abc123XYZ to core` carries the header's
-token, `mask_secret("API-Key abc123XYZ")` — while a header name ending in the
-word (`X-API-Key <key>`) is no scheme, and its key alone is masked. A credential
+token, `mask_secret("API-Key abc123XYZ")` — for any key after it, digits or
+none, however short: the word is the evidence (`Bearer` and the other schemes
+keep their eight characters and a digit, since prose says "Bearer of bad
+news"). A header name ending in the word (`X-API-Key <key>`) is no scheme, and
+its key alone is masked. A credential
 keyword that names a CVV or PIN (`cvv_token=123`, `pin_password=1234`) gives
 that label (`[CVV-MASKED]`, `[SAD-MASKED]`), as the key does, never a token.
 

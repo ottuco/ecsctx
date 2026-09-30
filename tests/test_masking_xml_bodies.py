@@ -262,7 +262,7 @@ class TestTheCredentialTextRule:
         assert _text("<Authorization>Bearer abc123def456</Authorization>") == f"<Authorization>{walked}</Authorization>"
 
     def test_a_token_after_the_scheme_is_not_hashed_again(self):
-        # What masking the credential alone leaves, as rule 5 reads it.
+        # What masking the credential alone leaves, as rule 6 reads it.
         text = f"<Authorization>Bearer {hmac_tokenize('abc', bytes(32), 'secret', 'test')}</Authorization>"
         assert _text(text) == text
 

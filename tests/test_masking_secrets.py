@@ -158,7 +158,7 @@ class TestTheKeyWalk:
 
 
 _TEXT_RULES = rules_for(ALL_PACKS)
-# Rule 4 (a quoted key), rule 5 (`key=value`) and rule 11 (an auth scheme).
+# Rule 4 (a quoted key), rule 6 (`key=value`) and rule 12 (an auth scheme).
 CREDENTIAL_TEXTS = [
     'sent {"password": "%s"} to the gateway',
     "login with password=%s failed",
@@ -178,7 +178,7 @@ class TestTheCredentialTextRules:
 
     @pytest.mark.parametrize("value", ["[REDACTED]", "***"])
     def test_a_placeholder_under_a_quoted_key_is_the_label(self, value):
-        # Rules 5 and 11 never take `[REDACTED]`: a value never starts with `[`,
+        # Rules 6 and 12 never take `[REDACTED]`: a value never starts with `[`,
         # which opens a label. `***` after `=` is the label too (below).
         assert mask_by_patterns(CREDENTIAL_TEXTS[0] % value, _TEXT_RULES) == CREDENTIAL_TEXTS[0] % LABEL
 
@@ -1314,6 +1314,44 @@ class TestABareApiKeyScheme:
         assert header == f"Authorization: {mask_secret('API-Key abc123XYZ')}"
         assert bare == f"sending {mask_secret('API-Key abc123XYZ')} to core"
         assert _walk({"Authorization": "API-Key abc123XYZ"})["Authorization"] == mask_secret("API-Key abc123XYZ")
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            # A 44-character Fernet key with no digit (about 1 in 1,550 of Ottu
+            # PG's), a short key, a two-character one: the scheme word is the
+            # evidence, not the key's shape.
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQR",
+            "ab1cd2",
+            "Zx",
+        ],
+    )
+    @pytest.mark.parametrize("scheme", ["API-Key", "api-key"])
+    def test_any_key_after_the_scheme_is_masked_whole(self, scheme, key):
+        value = f"{scheme} {key}"
+        masked = mask_by_patterns(f"calling core with {value} now", _DEFAULT_RULES)
+        assert masked == f"calling core with {mask_secret(value)} now"
+        assert mask_by_patterns(masked, _DEFAULT_RULES) == masked
+        header = mask_by_patterns(f"Authorization: {value}", _DEFAULT_RULES)
+        assert header == f"Authorization: {mask_secret(value)}"
+        assert _walk({"Authorization": value})["Authorization"] == mask_secret(value)
+
+    def test_a_field_inside_the_value_does_not_change_its_token(self):
+        # The key=value rule runs after the scheme, as it does after
+        # `Authorization:`: both forms carry one token for the whole value.
+        value = "API-Key password=s3cr3tVALUE"
+        assert mask_by_patterns(f"sending {value} now", _DEFAULT_RULES) == f"sending {mask_secret(value)} now"
+        assert mask_by_patterns(f"Authorization: {value}", _DEFAULT_RULES) == f"Authorization: {mask_secret(value)}"
+
+    def test_a_field_masking_wrote_after_the_scheme_is_not_hashed_again(self):
+        # What redact_body leaves after the scheme word: its token stands.
+        token = hmac_tokenize("s3cr3t", bytes(32), "secret", "test")
+        text = f"API-Key password={token}"
+        assert mask_by_patterns(text, _DEFAULT_RULES) == text
+
+    @pytest.mark.parametrize("text", ["Bearer of bad news", "basic auth enabled", "Bearer abcdefghij"])
+    def test_the_other_schemes_keep_their_guards(self, text):
+        assert mask_by_patterns(text, _DEFAULT_RULES) == text
 
     def test_a_header_name_ending_in_the_word_is_no_scheme(self):
         # Only the scheme word itself: `X-API-Key <key>` names a header, and
