@@ -30,11 +30,13 @@ import contextlib
 import html
 import json
 import re
+from bisect import bisect_left
 from collections import deque
 from collections.abc import Callable, Iterator
 from functools import lru_cache
 from heapq import merge
 from itertools import accumulate, pairwise
+from operator import methodcaller
 from typing import Any, NamedTuple
 from urllib.parse import unquote
 
@@ -1393,16 +1395,91 @@ def _element_text(raw: str) -> str:
     return html.unescape(raw) if "&" in raw else raw
 
 
-def _cred_element(m: re.Match) -> str:
-    value = _element_text(m.group("value"))
-    keyword = m.group("key")
+# An XML element's start tag: its qualified name, the local name after any
+# namespace prefix, and its attributes. Not an empty-element tag
+# (`<password/>`), which holds no text.
+_XML_START = re.compile(r"<(?P<tag>(?:[A-Za-z_][\w.-]*:)?(?P<local>[A-Za-z_][\w.-]*))(?:\s[^<>]*)?(?<!/)>")
+# ...and an end tag, with its qualified name.
+_XML_END = re.compile(r"</(?P<tag>(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*)\s*>")
+_match_start = methodcaller("start")
+
+
+def _tag_key(tag: str) -> str:
+    """A tag's name as an end tag is paired with a start tag: ignoring case,
+    as the rules read a name."""
+    return tag.translate(_ASCII_FOLDS).casefold()
+
+
+def _end_tags(text: str) -> dict[str, list[re.Match]]:
+    """The end tags in ``text``, in order, by name (`_tag_key`)."""
+    found: dict[str, list[re.Match]] = {}
+    for end in _XML_END.finditer(text):
+        found.setdefault(_tag_key(end.group("tag")), []).append(end)
+    return found
+
+
+def _closing(ends: dict[str, list[re.Match]], start: re.Match) -> re.Match | None:
+    """The end tag that closes the element ``start`` opens -- the first of its
+    name after it -- in ``ends`` (`_end_tags`), or None."""
+    found = ends.get(_tag_key(start.group("tag")))
+    if not found:
+        return None
+    at = bisect_left(found, start.end(), key=_match_start)
+    return found[at] if at < len(found) else None
+
+
+def _mask_elements(text: str, kind: Callable[[str], str | None], mask: Callable[[str, str], str]) -> str:
+    """``text`` with each element's text masked as ``mask(text, kind)`` masks
+    it, where ``kind`` gives the element's local name a kind (None: not one
+    to mask). An element runs to the first end tag of its name after its
+    start tag, children and all, and is read whole: none inside it is looked
+    for. No end tag, no element: a route in a message
+    (`DELETE /v1/cards/<str:token>/`) is a start tag's shape.
+
+    The text's end tags are found once, when the first element of a kind
+    needs one: looked for again from each start tag, a text holding many
+    that nothing closes took quadratic time -- 160 KB of `<password>`,
+    twelve seconds.
+    """
+    parts, copied, after, ends = [], 0, 0, None
+    for start in _XML_START.finditer(text):
+        if start.start() < after:
+            continue
+        if (found := kind(start.group("local"))) is None:
+            continue
+        if ends is None:
+            ends = _end_tags(text)
+        if (closing := _closing(ends, start)) is None:
+            continue
+        after = closing.end()
+        raw = text[start.end() : closing.start()]
+        masked = mask(raw, found)
+        if masked != raw:
+            parts += [text[copied : start.end()], masked]
+            copied = closing.start()
+    if not parts:
+        return text
+    parts.append(text[copied:])
+    return "".join(parts)
+
+
+_CRED_NAME = re.compile(_CRED_KEYWORD, re.IGNORECASE)
+
+
+def _credential_name(local: str) -> str | None:
+    return local if _CRED_NAME.fullmatch(local) else None
+
+
+def _mask_credential_element(raw: str, keyword: str) -> str:
+    value = _element_text(raw)
     if _AUTH_NAME.fullmatch(keyword) and _SCHEME_BEFORE_A_MASK.fullmatch(value):
-        return m.group(0)
+        return raw
     masked = _mask_credential(value, keyword)
-    if masked == value:
-        return m.group(0)
-    text = m.string
-    return f"{text[m.start() : m.start('value')]}{masked}{text[m.end('value') : m.end()]}"
+    return raw if masked == value else masked
+
+
+def _cred_elements(m: re.Match) -> str:
+    return _mask_elements(m.group(0), _credential_name, _mask_credential_element)
 
 
 def _cvv_quoted(m: re.Match) -> str:
@@ -1812,12 +1889,14 @@ _RULE_TABLE = (
     # rules 4 and 6 read a key, whatever namespace prefix and attributes it
     # has. The value runs to the end tag, children and all, and is masked as
     # it decodes (`_element_text`). No end tag, no element: a route in a
-    # message (`DELETE /v1/cards/<str:token>/`) is a start tag's shape.
+    # message (`DELETE /v1/cards/<str:token>/`) is a start tag's shape. The
+    # walk is the rule (`_mask_elements`): the pattern hands it the text from
+    # the first `<`, since a regex pairing each start tag with its end tag
+    # looked for one from every start tag, in quadratic time.
     _rule(
         "default",
-        rf"<(?P<tag>(?:[A-Za-z_][\w.-]*:)?(?P<key>{_CRED_KEYWORD}))(?:\s[^<>]*)?(?<!/)>"
-        rf"(?P<value>[\s\S]*?)</(?P=tag)\s*>",
-        _cred_element,
+        r"<[\s\S]*",
+        _cred_elements,
         _has_credential_element,
     ),
     # 4. Credential — quoted key ("token": "abc123"), the value to its

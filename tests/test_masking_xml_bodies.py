@@ -13,6 +13,7 @@ text rules gain an element form, for a string that never went through
 """
 
 import json
+import time
 
 import pytest
 
@@ -291,3 +292,25 @@ class TestTheCredentialTextRule:
         masked = _processor(json.dumps({"xml": f"<password>{PASSWORD}</password>"}))
         assert PASSWORD not in masked
         assert secret(PASSWORD) in masked
+
+
+class TestAnElementsEndTagIsFoundOnce:
+    """No end tag, no element -- and a text's end tags are found once: looked
+    for again from each start tag, a text holding many that nothing closes
+    took quadratic time, 160 KB of `<password>` twelve seconds in the text
+    rule."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "<password>" * 16000 + "</x>",
+            "".join(f"<p{i}_password>" for i in range(8000)) + "</x>",
+            "<cvv>" * 16000 + "</x>",
+        ],
+        ids=["one_name", "distinct_names", "cvv"],
+    )
+    def test_many_start_tags_nothing_closes_take_linear_time(self, text):
+        for mask in (_default_text, _text, redact_body):
+            started = time.perf_counter()
+            assert mask(text) == text
+            assert time.perf_counter() - started < 0.25, mask.__name__

@@ -28,7 +28,6 @@ import json
 import os
 import re
 from collections.abc import Collection
-from functools import lru_cache
 from http import HTTPStatus
 from typing import Any
 from urllib.parse import unquote_plus, urlparse, urlsplit, urlunsplit
@@ -36,8 +35,11 @@ from xml.sax.saxutils import escape as xml_escape
 
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import (
+    _XML_START,
     ALL_PACKS,
+    _closing,
     _element_text,
+    _end_tags,
     _mask_userinfo,
     classify_key,
     holds_pan_run,
@@ -446,17 +448,6 @@ def redact_body(text: str) -> str:
 # tag.
 _FORM_FIELD = re.compile(r"(?<![\w.\-\[\]%])([\w.\-\[\]%]+)=(" + _FORM_VALUE + ")")
 
-# An XML element's start tag: its qualified name, the local name after any
-# namespace prefix, and its attributes. Not an empty-element tag
-# (`<password/>`), which holds no text.
-_XML_START = re.compile(r"<(?P<tag>(?:[A-Za-z_][\w.-]*:)?(?P<local>[A-Za-z_][\w.-]*))(?:\s[^<>]*)?(?<!/)>")
-
-
-@lru_cache(maxsize=256)
-def _xml_end_tag(tag: str) -> re.Pattern:
-    return re.compile(rf"</{re.escape(tag)}\s*>", re.IGNORECASE)
-
-
 def _is_credential_element(name: str, names: frozenset[str]) -> bool:
     """A credential's element name: one a query param's name would be read
     as (`_is_credential_key`), or one of the secret body keys."""
@@ -468,24 +459,24 @@ def _mask_xml_elements(text: str) -> str:
     masked by that type; entity-encoded text in any other leaf, through the
     body rules as it decodes."""
     names = _get_compiled()[3]
-    parts, copied = [], 0
+    parts, copied, ends = [], 0, None
     for start in _XML_START.finditer(text):
         if start.start() < copied:
             continue  # inside an element already masked whole
+        if ends is None:
+            ends = _end_tags(text)
+        # No end tag, no element: a route (`/v1/cards/<str:token>/`) is a
+        # start tag's shape. Each end tag is found once (`_end_tags`).
+        if (closing := _closing(ends, start)) is None:
+            continue
+        end = closing.start()
         local = start.group("local")
         field_type = _card_field_type(local)
         if field_type is None and not _is_credential_element(local, names):
-            leaf = _encoded_leaf(text, start)
-            if leaf is not None:
-                end, masked = leaf
+            if (masked := _encoded_leaf(text, start.end(), end)) is not None:
                 parts += [text[copied : start.end()], masked]
                 copied = end
             continue
-        # No end tag, no element: a route (`/v1/cards/<str:token>/`) is a
-        # start tag's shape.
-        if (closing := _xml_end_tag(start.group("tag")).search(text, start.end())) is None:
-            continue
-        end = closing.start()
         value = _element_text(text[start.end() : end])
         if field_type is not None:
             masked = _mask_card_field(value, field_type)
@@ -500,27 +491,23 @@ def _mask_xml_elements(text: str) -> str:
     return "".join(parts)
 
 
-def _encoded_leaf(text: str, start: re.Match) -> tuple[int, str] | None:
-    """Where the text of the leaf ``start`` opens ends, and that text masked
-    by the body rules as it decodes, escaped again -- when it is JSON or XML
-    written with entities, and masking changed it. A leaf's raw text needs
-    nothing here, nor a form body's: the body rules read them where they
-    stand, `&amp;` a form's separator either way. Decoded, a form value ran
-    on past `&quot;`, and a leaf the first pass left as a form body read
-    differently on the next."""
-    end = text.find("<", start.end())
-    if end == -1 or "&" not in text[start.end() : end]:
+def _encoded_leaf(text: str, start: int, end: int) -> str | None:
+    """The text of a leaf, ``text[start:end]``, masked by the body rules as
+    it decodes and escaped again -- when it is JSON or XML written with
+    entities, and masking changed it. A leaf's raw text needs nothing here,
+    nor a form body's: the body rules read them where they stand, `&amp;` a
+    form's separator either way. Decoded, a form value ran on past `&quot;`,
+    and a leaf the first pass left as a form body read differently on the
+    next."""
+    if text.find("<", start, end) != -1 or text.find("&", start, end) == -1:
         return None
-    if _xml_end_tag(start.group("tag")).match(text, end) is None:
-        return None
-    raw = text[start.end() : end]
-    decoded = html.unescape(raw)
+    decoded = html.unescape(text[start:end])
     if decoded.lstrip()[:1] not in ("{", "[", "<"):
         return None
     masked = redact_body(decoded)
     if masked == decoded:
         return None
-    return end, xml_escape(masked)
+    return xml_escape(masked)
 
 
 def _mask_card_form_field(match: re.Match) -> str:
