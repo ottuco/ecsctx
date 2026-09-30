@@ -992,6 +992,14 @@ it `mask_secret`
 (and so `redact_url`) hashes such a value. Before 0.15.4 they wrote a fixed
 `[REDACTED]`, whatever the keyset.
 
+Accepted residual: with a keyset, the credential text rules followed by
+`redact_body` are not a fixed point where `redact_body` hashes a form value
+the text rules left, right after a scheme word (`Bearer password=[SECRET-MASKED]"x`,
+`Bearer password='`). The scheme word's rule then reads `password=<token>`
+as its own credential and hashes it again: a token of a token, which affects
+correlation only. Skipping `key=<token>` there would let a credential glued
+to a key name through (`Token abc123abc123api_key=…`).
+
 Configure per deploy without code changes. Precedence: explicit call >
 Django settings > env vars > defaults (same lazy pattern as the masking
 exemptions — settings are read via a guarded import, so there is no
