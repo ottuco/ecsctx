@@ -469,8 +469,8 @@ def _kept_in(masked: str, kept: str) -> None:
 
 
 # CVV and SAD containers in text that are not the key right before the
-# object (review M2). The last four fail closed: an object holding a CVV key,
-# or one whose keys or parse cannot be trusted, is not looked into at all.
+# object (review M2), and the same keys beside the value (review I1): text
+# that names a CVV or SAD key, element or pair label anywhere keeps nothing.
 FLOORED = {
     "a-list-between": '{"cvv": [ PLAIN ]}',
     "a-pair-labelled-cvv": '{"name": "cvv", "value": PLAIN}',
@@ -481,12 +481,16 @@ FLOORED = {
     "a-sibling-of-a-cvv-key": '{"cvv": "123", "token": PLAIN}',
     "a-pair-whose-name-is-written-twice": '{"name": "cvv", "name": "note", "value": PLAIN}',
     "an-object-that-does-not-parse": '{"cvv": undefined, "token": PLAIN}',
-}
-# The same keys beside the kept value, not around it.
-BESIDE = {
     "a-cvv-list-beside": '{"payment": {"cvv": ["123"]}, "token": PLAIN}',
     "a-cvv-pair-beside": '[{"name": "cvv", "value": "123"}, PLAIN]',
     "a-cvv-key-before": '"cvv" = "123", "token" => PLAIN',
+    "a-form-field-before": "a=1&cvv=123 PLAIN",
+    "an-element-after": "PLAIN <pin>1234</pin>",
+}
+# Keys about a CVV, not one: text naming them keeps its value.
+NOT_FLOORED = {
+    "a-flag-about-a-cvv": '{"cvv_required": true, "token": PLAIN}',
+    "a-cvv-word-in-prose": "the cvv check passed for PLAIN",
 }
 
 
@@ -553,8 +557,8 @@ class TestText:
         assert masked == _unconfigured(lambda: _text(text, packs))
         assert SEALED["api_key"] not in masked
 
-    @pytest.mark.parametrize("template", BESIDE.values(), ids=BESIDE.keys())
-    def test_a_value_beside_a_cvv_container_is_still_kept(self, template, packs):
+    @pytest.mark.parametrize("template", NOT_FLOORED.values(), ids=NOT_FLOORED.keys())
+    def test_text_naming_no_cvv_key_keeps_its_value(self, template, packs):
         assert json.dumps(SEALED) in _text(_written(template), packs)
 
     def test_an_outer_label_match_wins(self, packs):
@@ -799,8 +803,8 @@ class TestBodies:
         assert patterns.kept_spans(body, KEEP_RULES) == []
         assert redact_body(body) == _unconfigured(lambda: redact_body(body))
 
-    @pytest.mark.parametrize("template", BESIDE.values(), ids=BESIDE.keys())
-    def test_a_value_beside_a_cvv_container_is_still_kept(self, template):
+    @pytest.mark.parametrize("template", NOT_FLOORED.values(), ids=NOT_FLOORED.keys())
+    def test_text_naming_no_cvv_key_keeps_its_value(self, template):
         assert json.dumps(SEALED) in redact_body(_written(template))
 
     def test_an_element_naming_a_placeholder_gets_no_copy_of_a_kept_value(self):

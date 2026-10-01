@@ -18,6 +18,7 @@ wallet token. Every test runs with a keyset and without one, in the default
 pack and with every pack.
 """
 
+import html
 import json
 import logging
 
@@ -33,8 +34,13 @@ from ecsctx.contrib.ottu.masking import (
     WALLET_RULES,
     WALLET_SAD_RULES,
 )
-from ecsctx.masking import is_kept, patterns
-from ecsctx.masking.config import configure_masking_packs, configure_masking_value_rules
+from ecsctx.contrib.ottu.masking import SAFE_KEYS as OTTU_SAFE_KEYS
+from ecsctx.masking import is_kept, mask_outside_kept, patterns
+from ecsctx.masking.config import (
+    configure_masking_packs,
+    configure_masking_safe_keys,
+    configure_masking_value_rules,
+)
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
 from ecsctx.masking.value_rules import KeepRule, is_keep_rule
@@ -466,6 +472,103 @@ class TestWalletTokensShipAsSent:
         assert before != {"token": saved}
         assert _walk({"token": saved}) == before
         assert "4111111111111111" not in json.dumps(before)
+
+
+# A CVV or SAD container in text around a token, or beside it (review I1):
+# the key walk keeps nothing in any of them, and text that names a CVV or SAD
+# key, element or pair label anywhere keeps nothing.
+FLOORED = {
+    "a-list-between": '{"cvv": [ TOKEN ]}',
+    "a-pair-labelled-cvv": '{"name": "cvv", "value": TOKEN}',
+    "a-pair-in-a-list": '[{"name":"cvv","value": TOKEN}]',
+    "a-pair-labelled-in-words": '{"name": "card security code", "value": TOKEN}',
+    "a-pair-labelled-pin-as-json-text": '{"Name": "PIN", "Value": "ESCAPED"}',
+    "quoted-key-equals": '"cvv" = TOKEN',
+    "quoted-key-arrow": "'cvv' => TOKEN",
+    "bare-key-arrow": "securityCode => TOKEN",
+    "deeper-than-the-text-rules-read": '{"securityCode": {"x": {"y": [TOKEN]}}}',
+    "a-sibling-of-a-cvv-key": '{"cvv": "123", "token": TOKEN}',
+    "an-element-elsewhere": "<pin>1234</pin> TOKEN",
+    "a-key-written-after-it": 'TOKEN and then "cryptogram": "AAAB"',
+}
+FLOOR_TOKENS = {"pk-payment-token": PK_PAYMENT_TOKEN, "apple-pay": APPLE_PAY, "google-pay": GOOGLE_PAY}
+
+
+def _floored(template: str, token: dict) -> str:
+    escaped = json.dumps(json.dumps(token))[1:-1]
+    return template.replace("ESCAPED", escaped).replace("TOKEN", json.dumps(token))
+
+
+def _connect_apple_pay_request() -> dict:
+    """What Connect's SDK sends to pay with Apple Pay."""
+    return {
+        "payment_method": "apple_pay",
+        "code": "apple-pay-kwd",
+        "amount": "100.000",
+        "currency_code": "KWD",
+        "session_id": "b1e2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+        "cvv_required": False,
+        "apple_pay_payload": {"token": {"token": PK_PAYMENT_TOKEN}},
+    }
+
+
+class TestTheFloorInText:
+    @pytest.fixture(params=FLOOR_TOKENS.values(), ids=FLOOR_TOKENS.keys())
+    def token(self, request):
+        return request.param
+
+    @pytest.mark.parametrize("template", FLOORED.values(), ids=FLOORED.keys())
+    def test_mask_by_patterns(self, template, token, packs):
+        text = _floored(template, token)
+        assert patterns.kept_spans(text, WALLET_RULES) == []
+        assert _text(text, packs) == _unconfigured(lambda: _text(text, packs))
+
+    @pytest.mark.parametrize("template", FLOORED.values(), ids=FLOORED.keys())
+    def test_redact_body(self, template, token):
+        # Connect's extra secret keys: what is not kept has its signature masked.
+        configure_redaction(extra_secret_keys=["signature", "hash"])
+        text = _floored(template, token)
+        for body in (
+            text,
+            f"<request><password>S3cretPassw0rd</password><udf9>{text}</udf9></request>",
+            f"<request><password>S3cretPassw0rd</password><udf9>{html.escape(text)}</udf9></request>",
+        ):
+            assert redact_body(body) == _unconfigured(lambda body=body: redact_body(body))
+
+    @pytest.mark.parametrize("template", FLOORED.values(), ids=FLOORED.keys())
+    def test_mask_outside_kept(self, template, token):
+        text = _floored(template, token)
+        assert mask_outside_kept(text, str.upper) == text.upper()
+
+
+class TestStillKeptInText:
+    @pytest.fixture(autouse=True)
+    def ottu_safe_keys(self):
+        configure_masking_safe_keys(OTTU_SAFE_KEYS)
+
+    def test_a_kpay_body(self, packs):
+        written = json.dumps(PK_PAYMENT_TOKEN)
+        body = KPAY_BODY.format(written)
+        for masked in (redact_body(body), _text(body, packs), redact_body(KPAY_BODY.format(html.escape(written)))):
+            assert "S3cretPassw0rd" not in masked
+        assert f"<udf9>{written}</udf9>" in redact_body(body)
+        assert f"<udf9>{written}</udf9>" in _text(body, packs)
+        assert f"<udf9>{html.escape(written)}</udf9>" in redact_body(KPAY_BODY.format(html.escape(written)))
+
+    def test_connects_sdk_apple_pay_request(self, packs):
+        request = json.dumps(_connect_apple_pay_request())
+        written = json.dumps(PK_PAYMENT_TOKEN)
+        assert written in _text(f"pay request {request}", packs)
+        assert written in redact_body(request)
+        assert written in mask_outside_kept(request, str.upper)
+        assert _walk({"payload": _connect_apple_pay_request()}) == {"payload": _connect_apple_pay_request()}
+
+    def test_a_google_pay_payment_data_body(self, packs):
+        body = json.dumps(GOOGLE_PAYMENT_DATA)
+        escaped = json.dumps(json.dumps(GOOGLE_PAY))[1:-1]
+        for masked in (_text(f"google pay {body}", packs), redact_body(body)):
+            assert escaped in masked
+        assert "jane.roe@example.com" not in _text(f"google pay {body}", packs)
 
 
 class TestTheSadVariant:

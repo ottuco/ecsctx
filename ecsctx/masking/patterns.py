@@ -64,7 +64,6 @@ from ecsctx.masking.value_rules import (
     keep_refused,
     keep_rules,
     label_rules,
-    pair_labelled,
     ruling,
     text_ruling,
 )
@@ -1207,29 +1206,58 @@ def mask_objects(text: str, rules: tuple) -> str:
 # or in such a container (filters): a CVV and the rest of Sensitive
 # Authentication Data.
 _FLOOR_TYPES = frozenset({"cvv", "sad"})
-# The key right before an object in text, as the floor reads it: a quoted key
-# and its colon (JSON, a repr, JSON in a JSON string, its quotes escaped) or
-# `=` or `=>`, a key and `:`, `=` or `=>`, or an XML start tag -- then any
-# space and the opening quote of a string the object is the JSON text of.
-_KEY_BEFORE = re.compile(
-    r"(?:(?P<quote>\\?[\"'])(?P<quoted>[^\"'\\]{1,128})(?P=quote)\s*(?::|=>?)"
-    r"|(?<![\w.-])(?P<bare>[\w.-]{1,128})\s*(?::|=>?)"
-    r"|<(?:[A-Za-z_][\w.-]*:)?(?P<tag>[A-Za-z_][\w.-]*)(?:\s[^<>]*)?(?<!/)>)"
-    r"\s*(?:\\?[\"'])?\s*\Z"
-)
-# How far back the key is looked for.
-_KEY_REACH = 192
+# What text names, wherever it is, as the floor reads it: a quoted key (JSON,
+# a repr, JSON in a JSON string, its quotes escaped) then `:`, `=` or `=>`,
+# looked for at every quote so that a quote inside a string never hides the
+# key after it; a bare key, or the word closing a quoted one, then `:` or
+# `=>`; a key and `=` where a key starts (`cvv=`, `&cvv=`, `a=1, cvv=`) --
+# not inside a quoted string, where base64's `=` padding follows a word
+# (`"…/cvvXYZ=="`); and an XML tag, start or end.
+_QUOTED_NAME = re.compile(r"(?=(\\*[\"'])([^\"'\\]{1,128})\1\s*(?::|=>?))")
+_BARE_NAME = re.compile(r"(?<![\w.-])([A-Za-z_][\w.-]{0,127})(?:\\*[\"'])?\s*(?::|=>)")
+_ASSIGNED_NAME = re.compile(r"(?:^|(?<=[\s&?,({\[]))([A-Za-z_][\w.-]{0,127})\s*=")
+_TAG_NAME = re.compile(r"</?(?:[A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*)(?=[\s/>])")
 
 
-def _floored_before(text: str, start: int) -> bool:
-    """Whether the object at ``start`` sits right after a CVV or SAD key --
-    `"cvv": {…}`, `cvv={…}`, `<cvv>{…}</cvv>`, `"pin": "{…}"`: nothing under
-    one is kept, however deep. Every pack on, as the key walk reads a key."""
-    found = _KEY_BEFORE.search(text, max(0, start - _KEY_REACH), start)
-    if found is None:
-        return False
-    name = found.group("quoted") or found.group("bare") or found.group("tag")
-    return classify_key(name, ALL_PACKS) in _FLOOR_TYPES
+@lru_cache(maxsize=1)
+def _pair_label() -> re.Pattern:
+    """A `{name, value}` pair's label as text writes it: an identifier key
+    the key walk reads a pair by (``filters._PAIR_IDENTIFIERS``, imported
+    here: filters imports this module as it loads) and its quoted value."""
+    from ecsctx.masking.filters import _PAIR_IDENTIFIERS
+
+    identifiers = "|".join(map(re.escape, _PAIR_IDENTIFIERS))
+    return re.compile(
+        rf"(?=(\\*[\"'])(?i:{identifiers})\1\s*(?::|=>?)\s*(\\*[\"'])([^\"'\\]{{1,128}})\2)"
+    )
+
+
+def _safe_keys_in_force() -> frozenset[str]:
+    """The service's safe keys (``ECSCTX_MASK_SAFE_KEYS``), as the key walk
+    reads them. Imported here: config imports this module as it loads."""
+    from ecsctx.masking.config import get_masking_safe_keys
+
+    return get_masking_safe_keys()
+
+
+def floored_text(text: str) -> bool:
+    """Whether ``text`` names, anywhere, a CVV or SAD key, an XML tag named
+    so, or a `{name, value}` pair labelled so -- read as the key walk reads a
+    key (every pack on, the service's safe keys honoured), in the text as
+    written and, where it holds an entity, as it decodes. Text that does
+    keeps nothing: a container's reach cannot be told from text the rules
+    read three levels deep, so the whole text fails closed."""
+    safe = _safe_keys_in_force()
+    for written in (text, html.unescape(text)) if "&" in text else (text,):
+        for pattern, group in ((_QUOTED_NAME, 2), (_BARE_NAME, 1), (_ASSIGNED_NAME, 1), (_TAG_NAME, 1)):
+            for m in pattern.finditer(written):
+                if classify_key(m.group(group), ALL_PACKS, safe) in _FLOOR_TYPES:
+                    return True
+        # Uncached, as the key walk classifies a pair's label: free text.
+        for m in _pair_label().finditer(written):
+            if classify_key.__wrapped__(m.group(3), ALL_PACKS, safe) in _FLOOR_TYPES:
+                return True
+    return False
 
 
 def _written_as_parsed(m: re.Match) -> bool:
@@ -1275,60 +1303,43 @@ def _object_as_read(m: re.Match) -> tuple[Any, bool]:
         return None, True
 
 
-def _object_ruling(m: re.Match, rules: tuple) -> tuple[Any, bool]:
-    """``ruling`` of the object a match wrote, and whether nothing inside it
-    may be kept when nothing matched it (``_floors``). A label rule's error
-    reads as a label -- not kept, not looked into -- so finding kept spans
-    never raises, and the text is masked as without a keep rule. An object
-    written otherwise than it parses (``_written_as_parsed``) is not looked
-    into, and a keep match written so is read as one nothing matches."""
+def _object_ruling(m: re.Match, rules: tuple) -> Any:
+    """``ruling`` of the object a match wrote; a label rule's error reads as a
+    label -- not kept, not looked into -- so finding kept spans never raises,
+    and the text is masked as without a keep rule. A keep match written
+    otherwise than it parses (``_written_as_parsed``) is read as one nothing
+    matches."""
     try:
         value, as_written = _object_as_read(m)
         found = ruling(value, rules)
     except Exception:  # noqa: BLE001 -- a service's matcher; rule 2 reports it where it runs
-        return "", True
-    if found is KEEP:
-        return (KEEP, False) if as_written else (None, True)
-    return found, found is None and (not as_written or _floors(value))
-
-
-def _floors(value: Any) -> bool:
-    """Whether nothing in an object, as parsed, may be kept: one with a CVV
-    or SAD key at its top level, whatever stands between that key and a
-    value (`{"cvv": [{…}]}`), or a `{name, value}` pair labelled as one, as
-    the key walk keeps nothing in such a container or as such a pair's
-    value. Fails closed: a value under a sibling key is not kept either, nor
-    anything in an object that does not parse."""
-    if not isinstance(value, dict):
-        return True
-    return pair_labelled(value, _FLOOR_TYPES) or any(
-        classify_key(str(key), ALL_PACKS) in _FLOOR_TYPES for key in value
-    )
+        return ""
+    return None if found is KEEP and not as_written else found
 
 
 def kept_spans(text: str, rules: tuple) -> list[tuple[int, int]]:
     """Where ``text`` writes a value a keep rule among ``rules`` matches first
     and may keep: each JSON object (rule 2's reading), top down. An object a
-    label rule matches first is no span and is not looked into, nor is one
-    right after a CVV or SAD key, nor one holding a CVV or SAD key or
-    labelled as one (``_floors``); one nothing matches is read member by
-    member; a keep match refused (``keep_refused``: the guard, or a label
-    rule matching inside it) is read as one nothing matches. In order, none
-    inside another."""
+    label rule matches first is no span and is not looked into; one nothing
+    matches is read member by member; a keep match refused (``keep_refused``:
+    the guard, or a label rule matching inside it) is read as one nothing
+    matches. In order, none inside another. None at all in text that names a
+    CVV or SAD key, element or pair label anywhere (``floored_text``, read
+    only once a span is found)."""
     spans: list[tuple[int, int]] = []
     _find_kept(text, 0, len(text), rules, spans)
-    return spans
+    return [] if spans and floored_text(text) else spans
 
 
 def _find_kept(text: str, start: int, end: int, rules: tuple, spans: list[tuple[int, int]]) -> None:
     for m in _OBJECT_RULE.pattern.finditer(text, start, end):
         asked = applicable(m.group(0), rules)
-        if not asked or _floored_before(text, m.start()):
+        if not asked:
             continue
-        found, floored = _object_ruling(m, asked)
+        found = _object_ruling(m, asked)
         if found is KEEP:
             spans.append(m.span())
-        elif found is None and not floored:
+        elif found is None:
             _find_kept(text, m.start() + 1, m.end() - 1, rules, spans)
 
 

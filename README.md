@@ -1457,9 +1457,8 @@ Two things no keep rule overrides, not even `KeepRule(lambda value: True)`:
 - **The floor.** Nothing is kept under a CVV or SAD key (`cvv`,
   `securityCode`, `pin`, `cryptogram`, …), inside a CVV or SAD container
   (a key the service lists there included), or as the `value` of a pair
-  labelled as one; in text, right after such a key (quoted or not, then `:`,
-  `=` or `=>`) or XML start tag, and anywhere in an object holding such a key
-  or labelled as one. Such a value is masked exactly as without the rule.
+  labelled as one; in text, anywhere in text that names such a key, element
+  or pair label. Such a value is masked exactly as without the rule.
 - **The guard.** A match that holds, at any depth — JSON text inside it
   included — a key the key rules read as a card, a CVV or other SAD, a
   `{name, value}` pair whose identifier reads as one (as the key walk reads a
@@ -1506,21 +1505,24 @@ value set aside and puts back each placeholder it leaves. Both are in
 `ecsctx.masking` and never raise of their own: `mask_outside_kept` passes on
 an error the caller's `mask` raises.
 
-In text the floor reads the key right before an object (`"cvv": {…}`,
-`cvv={…}`, `'cvv' => {…}`, `<cvv>{…}</cvv>`), and every object the text
-rules read whole: one with a CVV or SAD key at its top level, or a
-`{name, value}` pair labelled as one, is not looked into for a value to keep,
-whatever stands between the key and the value (`{"cvv": [{…}]}`). That fails
-closed: a value under another key of such an object
-(`{"cvv": "123", "token": {…}}`) is not kept in text, though the key walk
-keeps it, and nothing is kept in an object read whole that does not parse or
-names a key twice. A value beside such an object, not in it, is kept. The
-text rules read three levels of nesting, so a kept value two keys below a CVV
-key (`{"cvv": {"x": {"y": {…}}}}`, the value itself nested) is not floored
-there — the guard still holds. An object right after a CVV key in text is
-not kept, but no `default` content rule masks a JSON object there either,
-with or without keep rules; the key walk masks one under a CVV key leaf by
-leaf.
+In text a container's reach cannot be told — the text rules read an object
+three levels deep, and a wallet token's own nesting takes two — so the floor
+reads the whole text: text that names a CVV or SAD key anywhere keeps
+nothing, and is masked as without a keep rule. A name is a quoted key then
+`:`, `=` or `=>` (JSON, a repr, JSON in a JSON string), a bare key then `:` or
+`=>`, a key and `=` where a key starts (`cvv=`, `&cvv=`; not base64's `=`
+padding inside a string), an XML tag, or a `{name, value}` pair's label
+(`"name": "card security code"`), read as the key walk reads a key — every
+pack on, the service's safe keys honoured — in the text as written and, where
+it holds an entity, as it decodes. A word in prose (`the cvv check passed`)
+names no key. That fails closed: a value beside such a key, not under it
+(`{"cvv": "123", "token": {…}}`, or a `<pin>` element elsewhere in a body),
+is not kept in text, though the key walk keeps it. `redact_body` reads an
+element's entity-encoded text the same way, and keeps nothing in it when the
+body around it names one. The text is read for names only once a value to
+keep is found in it. An object right after a CVV key in text is not kept, but
+no `default` content rule masks a JSON object there either, with or without
+keep rules; the key walk masks one under a CVV key leaf by leaf.
 
 The cost: with no keep rule configured none of this runs — a string with no
 `{` pays one check, one with a `{` a look at the rules in force; with keep
