@@ -7,7 +7,9 @@ ecsctx's own PII key-name list. Two independent detection strategies:
    always on, `pci` and `financial_ids` opt-in (ecsctx.masking.config) — each
    behind a literal pre-check, applied to every string the filter reaches.
    Rule order is load-bearing — see the comments on each rule and the
-   ordering invariants they protect. Do not reorder.
+   ordering invariants they protect. Do not reorder. Before any of them reads
+   a string, what a service's keep rule ships as sent is set aside
+   (stash_kept), and put back after.
 2. Key-based (classify_key): in a dict, a key whose words name a sensitive
    field masks the whole value outright, regardless of the value's type or
    content.
