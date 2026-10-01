@@ -1446,8 +1446,13 @@ Two things no keep rule overrides, not even `KeepRule(lambda value: True)`:
   labelled as one; in text, right after such a quoted key, `key=` or XML
   start tag. Such a value is masked exactly as without the rule.
 - **The guard.** A match that holds, at any depth — JSON text inside it
-  included — a key the key rules read as a card, a CVV or other SAD, or a
-  leaf that is a card number, is walked as if nothing had matched. A leaf is
+  included — a key the key rules read as a card, a CVV or other SAD, a
+  `{name, value}` pair whose identifier reads as one (as the key walk reads a
+  pair), or a leaf that is a card number, is walked as if nothing had
+  matched. It reads keys, pairs and whole leaves only: a CVV or a card number
+  written inside a longer string of a kept value (`"note": "cvv=123"`, Track
+  2 data, `"card 4111…"`) ships with it. Keeping that out is the matcher's
+  job, which is why a matcher must be strict about what it matches. A leaf is
   a card number when it is an int `int_is_pan` reads as one, or a string
   `pan_shaped` reads as one whose digits pass `int_is_pan` too: an issuer's
   prefix and Luhn. (`pan_shaped` alone reads Google Pay's thirteen-digit

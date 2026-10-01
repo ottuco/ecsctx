@@ -290,6 +290,32 @@ class TestTheKeyWalk:
         assert card["cvv"] == "[CVV-MASKED]"
         assert card["expiry"] == "12/27"
 
+    @pytest.mark.parametrize(
+        "pair",
+        [
+            {"name": "cvv", "value": "123"},
+            {"Name": "Security Code", "Value": "123"},
+            {"label": "Card Number", "value": "4111111111111111"},
+            {"field": "pin", "value": "1234"},
+            {"key": "cardCvv", "value": "123"},
+        ],
+        ids=["cvv", "security-code", "card-number-label", "pin-field", "card-cvv-key"],
+    )
+    def test_the_guard_reads_a_pair_labelled_as_card_data(self, pair):
+        # The key walk masks a pair's value as its identifier names it, so the
+        # guard reads the pair as a key (review I2).
+        holding = {**SEALED, "fields": [pair]}
+        assert not is_kept(holding)
+        _masked_as_a_walk(_walk({"payload": holding})["payload"])
+        configure_masking_value_rules([KeepRule(lambda value: True)])
+        event = {"payment": {"fields": [pair]}}
+        assert _walk(event) == _unconfigured(lambda: _walk(event))
+        assert _walk(event) != event
+
+    def test_a_pair_labelled_as_anything_else_is_kept(self):
+        holding = {**SEALED, "fields": [{"name": "customer_note", "value": "gift"}]}
+        assert _walk({"payload": holding}) == {"payload": holding}
+
     def test_a_timestamp_is_not_a_card_number_to_the_guard(self):
         # Google Pay's signedKey carries keyExpiration, epoch milliseconds:
         # thirteen digits, shaped like a card number but no issuer's.
