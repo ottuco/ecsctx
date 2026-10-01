@@ -23,9 +23,10 @@ A rule is one of two kinds, both asked in list order, the first match winning:
   applied where a key is known: ``filters``, ``patterns.kept_spans``), and a
   match holding a card, CVV or SAD key, or a card number, at any depth, is
   walked as if nothing matched (the guard, ``holds_card_data``). A match
-  holding a value a label rule labels is walked so too, wherever that rule
-  is listed (``keep_refused``): a label rule wins at any depth inside a keep
-  match, the first match only for the value itself.
+  holding a value whose own first match is a label rule is walked so too
+  (``keep_refused``): a label rule wins at any depth inside a keep match, the
+  first match deciding each value -- a catch-all keep rule listed first is
+  every value's first match.
 
 Both have:
 

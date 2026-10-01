@@ -1428,11 +1428,13 @@ that is JSON text, every JSON object in free text or in a body `redact_body`
 masks. They are asked in list order and **the first match wins**: a label
 rule listed first labels a value a keep rule would have kept, and an object a
 label rule matches is not looked into for one to keep. A label rule wins at
-any depth inside a keep match, though: a keep match holding a value a label
-rule labels (that value's own first match) is walked as if nothing had
-matched, and that value is labelled — with an Apple Pay label rule and
+any depth inside a keep match, though: a keep match holding a value whose
+own first match is a label rule is walked as if nothing had matched, and
+that value is labelled — with an Apple Pay label rule listed before
 `KeepRule(lambda value: True)`, `{"outer": {"inner": <paymentData>}}` is
-`{"outer": {"inner": "[SAD-MASKED]"}}`. A keep match the guard refuses
+`{"outer": {"inner": "[SAD-MASKED]"}}`. Listed after it, the catch-all keep
+rule is the inner value's first match too, and the whole value ships as
+sent. A keep match the guard refuses
 (below) is walked as if nothing had matched too, and either way no rule
 listed after it is asked about the value itself, a label rule for the same
 shape included. A kept value is left as sent under any key and not
@@ -1538,13 +1540,17 @@ rule's hints never asks it; text holding one is read once for the objects in
 it. Every mapping the key walk meets asks every rule, once — a mapping has no
 text to hint with — so a matcher must be cheap: test a literal field first.
 JSON text under a key asks, and its key walk passes on, only the rules whose
-hints it holds. Keep rules cost 2-5% a line, and about 12% more on a line
-that carries a wallet token, which is read for the objects in it and whose
-match is guarded. On the benchmark's lines (`scripts/bench_masking.py`)
-0.17.0 masks within a few percent of 0.16.0, the run-to-run noise, with no
-value rule and with Ottu's `WALLET_RULES` (three keep rules where 0.16.0 had
-two label rules): the key walk now asks each mapping once, where it asked
-twice.
+hints it holds. With Ottu's `WALLET_RULES`, a line carrying no wallet token
+costs 1-4% more than with 0.16.0's two label rules, and 3-15% more than with
+no value rule (most on a line of many small mappings, each of which asks
+every rule; `scripts/bench_masking.py`). A line carrying a token has no
+single figure: about 2.5× 0.16.0's label rules on a short line (an MPGS line
+with the token as `paymentToken`: ~72 µs labelled, ~171 µs kept, ~46 µs with
+no rule; a message holding a Google Pay token: ~135 / ~341 / ~305 µs), and
+less on a body every content rule would otherwise read (KPay `<udf9>`:
+~0.96 ms labelled, ~0.89 ms kept, ~3.1 ms with no rule). The slot checks,
+the guard's card-number runs and the text floor's scan add 15-40% over
+0.17.0 on such lines.
 
 Ottu's wallet tokens ship in logs exactly as sent (#159487): an Apple Pay or
 Google Pay token is single-use, and the token as it was sent is what debugs a

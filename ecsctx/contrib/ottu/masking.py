@@ -156,8 +156,9 @@ _SIGNED_KEY_KEYS = frozenset({"keyValue", "keyExpiration"})
 
 # What a wallet writes in a slot: standard base64 for a key, a signature or
 # ciphertext, hex for an id or a hash, digits for a time -- nothing else.
-# The guard reads keys, pairs and whole leaves, so text in a kept token's
-# slot (`"data": "cvv=123"`) would ship with it (Redmine R3).
+# The guard reads keys, pairs, whole leaves and a card number inside one, so
+# other text in a kept token's slot (`"data": "cvv=123"`) would ship with it
+# (Redmine R3).
 _BASE64 = re.compile(r"[A-Za-z0-9+/]+={0,2}")
 _HEX = re.compile(r"[0-9A-Fa-f]+")
 _DIGITS = re.compile(r"[0-9]+")
