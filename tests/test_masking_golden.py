@@ -9,6 +9,11 @@ written to golden/masking_0156.json. Every run compares against them.
 
 To capture them again, deliberately, when an output is meant to change:
 `ECSCTX_WRITE_GOLDEN=1 pytest tests/test_masking_golden.py`.
+
+The file was captured with Ottu's wallet shapes as label rules, which 0.17.0
+calls WALLET_SAD_RULES; WALLET_RULES became keep rules, which ship a wallet
+token as sent. With them, every input that holds no wallet hint must still
+mask exactly as the file says.
 """
 
 import base64
@@ -20,7 +25,7 @@ import random
 from pathlib import Path
 
 from ecsctx.contrib.net import redact_body
-from ecsctx.contrib.ottu.masking import WALLET_RULES
+from ecsctx.contrib.ottu.masking import WALLET_RULES, WALLET_SAD_RULES
 from ecsctx.masking.config import configure_masking_packs, configure_masking_value_rules
 from ecsctx.masking.filters import MaskPIIFilter, _Pass
 from ecsctx.masking.patterns import (
@@ -179,10 +184,10 @@ def _changed(text: str, masked: str) -> str | None:
     return None if masked == text else masked
 
 
-def _outputs(tmp: Path) -> dict:
-    # As an Ottu service runs: its wallet shapes are value rules it lists,
-    # no longer core's, and the corpus holds wallet tokens.
-    configure_masking_value_rules(WALLET_RULES)
+def _outputs(tmp: Path, value_rules: tuple = WALLET_SAD_RULES) -> dict:
+    # As an Ottu service ran on 0.16.0: its wallet shapes are value rules it
+    # lists, no longer core's, and the corpus holds wallet tokens.
+    configure_masking_value_rules(value_rules)
     texts, events = _texts(), _events()
     outputs: dict = {}
     for mode in ("no-keyset", "keyset"):
@@ -237,3 +242,34 @@ def test_masking_outputs_are_byte_identical_to_the_golden_file(tmp_path):
         for index, expected in enumerate(golden[key]):
             assert outputs[key][index] == expected, (key, index)
     assert text + "\n" == GOLDEN.read_text(encoding="utf-8")
+
+
+# What every wallet token's text holds: Ottu's rules' hints.
+WALLET_HINTS = ("EC_v1", "RSA_v1", "ECv1", "ECv2")
+
+
+def _holds_a_wallet_hint(text: str) -> bool:
+    return any(hint in text for hint in WALLET_HINTS)
+
+
+def test_with_the_keep_rules_every_input_without_a_wallet_hint_masks_as_the_golden_file_says(tmp_path):
+    outputs = _outputs(tmp_path, WALLET_RULES)
+    texts = _texts()
+    inputs = {
+        "redact_body": texts,
+        "text": texts,
+        "prose": texts,
+        "events": [json.dumps(event) for event in _events()],
+        "records": [f"{msg} {args!r}" for msg, args in RECORDS],
+    }
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    compared = skipped = 0
+    for key in sorted(golden):
+        written = inputs[key.rsplit("/", 1)[1]]
+        for index, expected in enumerate(golden[key]):
+            if _holds_a_wallet_hint(written[index]):
+                skipped += 1
+                continue
+            assert outputs[key][index] == expected, (key, index)
+            compared += 1
+    assert compared > 10 * skipped > 0
