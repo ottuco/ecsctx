@@ -36,6 +36,7 @@ from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import (
     _CRED_LITERALS,
     _CVV_LITERALS,
+    _FLOOR_TYPES,
     _KEY_SEPARATORS,
     _MIN_PAN_DIGITS,
     _PAYMENT_ID_KEYWORD,
@@ -57,7 +58,14 @@ from ecsctx.masking.patterns import (
     value_rules_in_force,
 )
 from ecsctx.masking.tokens import make_label, mask_by_field_type
-from ecsctx.masking.value_rules import KEEP, label_rules, label_within, ruling, text_ruling
+from ecsctx.masking.value_rules import (
+    KEEP,
+    applicable,
+    label_rules,
+    label_within,
+    ruling,
+    text_ruling,
+)
 
 _IS_MASKED_ = "_IS_MASKED_"
 
@@ -160,8 +168,8 @@ def _value_rules(ctx: _Pass) -> tuple:
 # object became [CVV-MASKED].
 _WALKED_TYPES = frozenset({"card", "cvv", "sad", "secret"})
 # Under these nothing is weaker than the container: a CVV must not leave as a
-# name token or under a core safe key such as `id`.
-_FLOOR_TYPES = frozenset({"cvv", "sad"})
+# name token or under a core safe key such as `id` -- and nothing is kept
+# (patterns._FLOOR_TYPES, which the text rules' floor reads too).
 _CONTAINERS = (dict, list, tuple, set)
 _CARD_NUMBER_KEYS = frozenset({"number", "pan", "cardnumber", "maskednumber", "maskedpan"})
 
@@ -940,8 +948,11 @@ class MaskPIIFilter(logging.Filter):
         # Never at path (): the record's skip keys (log, service, session_id)
         # describe the record, not a payload that happens to use the names.
         # Key rules only: the content rules run once, on the whole text below,
-        # not once per value and again on the text.
-        masked = self._mask_value(parsed, path or (_JSON_TEXT,), ctx._replace(rules=()))
+        # not once per value and again on the text. And only the value rules
+        # whose hints the text holds: no other can match a mapping in it.
+        rules = _value_rules(ctx)
+        walk = ctx._replace(rules=(), values=[applicable(text, rules)] if rules else ctx.values)
+        masked = self._mask_value(parsed, path or (_JSON_TEXT,), walk)
         if masked == parsed:
             return self._mask_string(text, ctx)
         return self._mask_string(json.dumps(masked, ensure_ascii=False, default=str), ctx)

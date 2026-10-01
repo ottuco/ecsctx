@@ -29,10 +29,11 @@ from ecsctx.masking import (
     ValueRule,
     configure_masking_value_rules,
     get_masking_value_rules,
+    patterns,
 )
 from ecsctx.masking.config import configure_masking_packs, configure_masking_safe_keys
 from ecsctx.masking.filters import MaskPIIFilter
-from ecsctx.masking.patterns import ALL_PACKS
+from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
 from ecsctx.masking.value_rules import keep_rules, label_rules
 from ecsctx.pii import configure_pii
 from ecsctx.processors import mask_sensitive_data
@@ -60,6 +61,10 @@ KEEP_RULE = KeepRule(_is_sealed, hints=("sealed-box",))
 KEEP_RULES = (KEEP_RULE,)
 LABEL_RULE = ValueRule("sad", _is_sealed, hints=("sealed-box",))
 LABEL = "[SAD-MASKED]"
+OUTER_RULE = ValueRule("secret", lambda value: value.get("kind") == "outer-box", hints=("outer-box",))
+# A label rule with a hint of its own, which never matches.
+OTHER_RULE = ValueRule("secret", lambda value: value.get("kind") == "never", hints=("other-shape",))
+PASSWORD = "password=s3cret-Hunter2"
 
 
 class DuckKeep:
@@ -108,6 +113,10 @@ def keep():
 
 def _walk(event: dict) -> dict:
     return mask_sensitive_data(None, "info", json.loads(json.dumps(event)))
+
+
+def _text(text: str, packs: frozenset[str]) -> str:
+    return mask_by_patterns(text, rules_for(packs | {"default"}))
 
 
 def _message(msg, *args) -> str:
@@ -325,3 +334,142 @@ class TestTheKeyWalk:
         masked = _walk({"password": json.dumps({"wrapper": SEALED})})["password"]
         assert masked.startswith("ptok:v1:") or masked == "[SECRET-MASKED]"
 
+
+
+def _kept_in(masked: str, kept: str) -> None:
+    assert kept in masked
+    assert "s3cret-Hunter2" not in masked
+
+
+@pytest.mark.usefixtures("keep")
+class TestText:
+    def test_a_message_ships_it_as_sent_and_masks_the_rest(self, packs):
+        text = f"got {json.dumps(SEALED)} with {PASSWORD}"
+        for masked in (_text(text, packs), _message(text), _walk({"event": text})["event"]):
+            _kept_in(masked, json.dumps(SEALED))
+
+    def test_a_python_repr(self, packs):
+        text = f"got {SEALED!r} with {PASSWORD}"
+        _kept_in(_text(text, packs), repr(SEALED))
+        _kept_in(_message("got %s with %s", SEALED, PASSWORD), repr(SEALED))
+
+    def test_json_in_a_json_string(self, packs):
+        text = "sent " + json.dumps({"blob": json.dumps(SEALED), "password": "s3cret-Hunter2"})
+        _kept_in(_text(text, packs), json.dumps(json.dumps(SEALED)))
+
+    def test_json_text_walked_by_its_keys_then_read_by_the_text_rules(self):
+        masked = json.loads(_walk({"body": json.dumps({"wrapper": SEALED, "password": "s3cret-Hunter2"})})["body"])
+        assert masked["wrapper"] == SEALED
+        assert masked["password"] != "s3cret-Hunter2"
+
+    def test_a_template_with_a_credential_word(self):
+        assert _message("token %s", json.dumps(SEALED)) == f"token {json.dumps(SEALED)}"
+        assert _message("token %(t)s", {"t": SEALED}) == f"token {SEALED}"
+
+    @pytest.mark.parametrize(
+        "template",
+        ["token={}", '{{"token": {}}}', "Authorization: Bearer {}", "<password>{}</password>", "password: {}"],
+        ids=["token=", "quoted-token", "bearer", "password-element", "password:"],
+    )
+    @pytest.mark.parametrize("separators", [None, (",", ":")], ids=["spaced", "compact"])
+    def test_a_credential_before_it_does_not_stop_it(self, template, separators, packs):
+        sealed = json.dumps(SEALED, separators=separators)
+        text = f"{template.format(sealed)} {PASSWORD}"
+        _kept_in(_text(text, packs), sealed)
+
+    @pytest.mark.parametrize(
+        "template",
+        ["<cvv>{}</cvv>", '{{"securityCode": {}}}', "{{'cvv': {}}}", "cvv={}", '{{"pin": "{}"}}'],
+        ids=["cvv-element", "securityCode", "repr-cvv", "cvv=", "pin-json-string"],
+    )
+    def test_nothing_under_a_cvv_or_sad_key_is_kept(self, template, packs):
+        sealed = json.dumps(SEALED)
+        if template.endswith('"}}'):
+            sealed = json.dumps(sealed)[1:-1]
+        elif "'" in template:
+            sealed = repr(SEALED)
+        text = template.format(sealed)
+        assert _text(text, packs) != text
+
+    def test_an_outer_label_match_wins(self, packs):
+        configure_masking_value_rules([KEEP_RULE, OUTER_RULE])
+        text = "got " + json.dumps({"kind": "outer-box", "inner": SEALED})
+        assert _text(text, packs) == "got [SECRET-MASKED]"
+
+    def test_an_inner_label_match_is_kept_with_the_kept_object(self, packs):
+        configure_masking_value_rules([KEEP_RULE, OUTER_RULE])
+        sealed = {**SEALED, "inner": {"kind": "outer-box"}}
+        text = f"got {json.dumps(sealed)}"
+        assert _text(text, packs) == text
+
+    def test_a_label_rule_listed_first_labels_it(self, packs):
+        configure_masking_value_rules([LABEL_RULE, KEEP_RULE])
+        assert _text(f"got {json.dumps(SEALED)}", packs) == f"got {LABEL}"
+
+    def test_the_guard(self, packs):
+        holding = json.dumps({**SEALED, "note": json.dumps({"cvv": "123"})})
+        assert _text(f"got {holding}", packs) != f"got {holding}"
+
+    def test_masking_twice_masks_once(self, packs):
+        once = _text(f"a {json.dumps(SEALED)} b {PASSWORD} c {SEALED!r}", packs)
+        assert _text(once, packs) == once
+        assert "s3cret-Hunter2" not in once
+
+    def test_text_already_holding_the_placeholder_is_masked_as_before(self, packs):
+        text = f"[KEPT-A-MASKED] {json.dumps(SEALED)}"
+        assert SEALED["api_key"] not in _text(text, packs)
+
+    def test_a_placeholder_some_rule_destroyed_is_not_restored(self, packs):
+        # Inside a credential's quoted value the rule hashes the placeholder
+        # with the rest of the value: the kept object goes with it.
+        text = '{"password": "x ' + json.dumps(SEALED).replace('"', '\\"') + '"}'
+        masked = _text(text, packs)
+        assert BOX not in masked
+        assert "KEPT-" not in masked
+
+
+@pytest.mark.usefixtures("keep")
+class TestCost:
+    @pytest.fixture
+    def finder_calls(self, monkeypatch):
+        calls: list = []
+        finder = patterns.kept_spans
+
+        def counting(*args):
+            calls.append(args)
+            return finder(*args)
+
+        monkeypatch.setattr(patterns, "kept_spans", counting)
+        return calls
+
+    @pytest.mark.parametrize("rules", [(), (LABEL_RULE,)], ids=["nothing", "label-rules-only"])
+    def test_the_span_finder_is_never_called_without_a_keep_rule(self, rules, finder_calls, packs):
+        configure_masking_value_rules(rules)
+        text = f"got {json.dumps(SEALED)} back"
+        _text(text, packs)
+        _message(text)
+        _walk({"event": text, "x": SEALED, "y": json.dumps({"z": SEALED})})
+        assert finder_calls == []
+
+    def test_the_span_finder_runs_with_one(self, finder_calls, packs):
+        _text(f"got {json.dumps(SEALED)} back", packs)
+        assert finder_calls
+
+    def test_a_keep_rule_is_never_asked_about_text_holding_none_of_its_hints(self, packs):
+        configure_masking_value_rules([KEEP_RULE, OTHER_RULE])
+        ASKED.clear()
+        text = "got " + json.dumps({"kind": "other-shape", "nested": {"kind": "other-shape"}})
+        _text(text, packs)
+        _message(text)
+        _walk({"x": json.dumps({"kind": "other-shape"}), "y": json.dumps({"z": {"kind": "other-shape"}})})
+        assert ASKED == []
+
+    def test_rule_2_does_not_run_with_keep_rules_only(self, monkeypatch, packs):
+        calls: list = []
+        monkeypatch.setattr(patterns, "_mask_object", lambda m, rules: calls.append(m) or m.group(0))
+        text = "got " + json.dumps({"kind": "note", "about": "sealed-box"})
+        assert not patterns._has_value_object(text, text.lower())
+        _text(text, packs)
+        assert calls == []
+        configure_masking_value_rules([KEEP_RULE, LABEL_RULE])
+        assert patterns._has_value_object(text, text.lower())
