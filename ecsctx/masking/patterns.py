@@ -1279,9 +1279,9 @@ def _object_ruling(m: re.Match, rules: tuple) -> tuple[Any, bool]:
     """``ruling`` of the object a match wrote, and whether nothing inside it
     may be kept when nothing matched it (``_floors``). A label rule's error
     reads as a label -- not kept, not looked into -- so finding kept spans
-    never raises, and the text is masked as without a keep rule. A keep
-    match written otherwise than it parses (``_written_as_parsed``) is read
-    as one nothing matches."""
+    never raises, and the text is masked as without a keep rule. An object
+    written otherwise than it parses (``_written_as_parsed``) is not looked
+    into, and a keep match written so is read as one nothing matches."""
     try:
         value, as_written = _object_as_read(m)
         found = ruling(value, rules)

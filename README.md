@@ -1486,7 +1486,16 @@ A keep decision rests on the text as written, since that is what ships: JSON
 that names a key twice in one object (`json.loads` keeps the last) is not
 kept, and a JSON-text leaf naming one inside a match is card data to the
 guard; a Python repr is kept only where its parse renders back to it exactly
-(a comment, or a key written twice, is dropped by the parse).
+(a comment, or a key written twice, is dropped by the parse). So a repr whose
+strings hold a `"` — a Google Pay token's `signedMessage` — written inside
+JSON text, where that quote is escaped, is not kept: it no longer renders
+back as written (fails closed).
+
+An entity-encoded value (`{&quot;…&quot;}`, an XML element's text) is set
+aside by `redact_body`, which reads such text as it decodes, but not by the
+text rules the log processor runs, which read it as written: there it is not
+kept and the content rules read into it — with `pci`, about one
+entity-encoded Google Pay token in ten comes out altered (fails closed).
 
 A service that masks again after ecsctx — Connect does — asks
 `is_kept(value, key=None)` (a mapping or JSON text; the rules in force, first
@@ -1494,7 +1503,8 @@ match, the guard, and the floor on `key`; False with no keep rule configured)
 before masking a field, and runs its text masker through
 `mask_outside_kept(text, mask)`, which hands `mask` the text with each kept
 value set aside and puts back each placeholder it leaves. Both are in
-`ecsctx.masking` and never raise.
+`ecsctx.masking` and never raise of their own: `mask_outside_kept` passes on
+an error the caller's `mask` raises.
 
 In text the floor reads the key right before an object (`"cvv": {…}`,
 `cvv={…}`, `'cvv' => {…}`, `<cvv>{…}</cvv>`), and every object the text
@@ -1519,10 +1529,13 @@ rule's hints never asks it; text holding one is read once for the objects in
 it. Every mapping the key walk meets asks every rule, once — a mapping has no
 text to hint with — so a matcher must be cheap: test a literal field first.
 JSON text under a key asks, and its key walk passes on, only the rules whose
-hints it holds. On the benchmark's lines (`scripts/bench_masking.py`) 0.17.0
-masks within a few percent of 0.16.0, the run-to-run noise, with no value rule
-and with Ottu's `WALLET_RULES` (three keep rules where 0.16.0 had two label
-rules): the key walk now asks each mapping once, where it asked twice.
+hints it holds. Keep rules cost 2-5% a line, and about 12% more on a line
+that carries a wallet token, which is read for the objects in it and whose
+match is guarded. On the benchmark's lines (`scripts/bench_masking.py`)
+0.17.0 masks within a few percent of 0.16.0, the run-to-run noise, with no
+value rule and with Ottu's `WALLET_RULES` (three keep rules where 0.16.0 had
+two label rules): the key walk now asks each mapping once, where it asked
+twice.
 
 Ottu's wallet tokens ship in logs exactly as sent (#159487): an Apple Pay or
 Google Pay token is single-use, and the token as it was sent is what debugs a
