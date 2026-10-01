@@ -854,6 +854,33 @@ class TestBodies:
         assert f"<udf9>{encoded}</udf9>" in masked
         assert "S3cretPassw0rd" not in masked
 
+    def test_a_label_rule_that_raises_inside_a_keep_match_refuses_it_and_raises_nothing(self, packs):
+        # Asked about a keep match's members (review M5): its error refuses
+        # the keep, and the value is masked as with the label rule alone.
+        def raises_on_members(value):
+            if value.get("kind") == "inner-box":
+                raise RuntimeError("rule failed")
+            return False
+
+        label_rule = ValueRule("sad", raises_on_members, hints=("sealed-box",))
+        sealed = {**SEALED, "inner": {"kind": "inner-box"}}
+        compact = json.dumps(sealed, separators=(",", ":"))
+
+        def every_path():
+            return (
+                _text(f"got {json.dumps(sealed)} back", packs),
+                redact_body(json.dumps(sealed)),
+                redact_body(KPAY.format(json.dumps(sealed).replace('"', "&quot;"))),
+                redact_url(f"https://pg.example/pay?card_number={compact}&password=s3cret"),
+                mask_outside_kept(f"got {json.dumps(sealed)} back", str.upper),
+            )
+
+        configure_masking_value_rules([KEEP_RULE, label_rule])
+        masked = every_path()
+        configure_masking_value_rules([label_rule])
+        assert masked == every_path()
+        assert SEALED["api_key"] not in masked[0]
+
     def test_redact_url_never_raises_with_a_keep_rule_that_raises(self):
         def broken(_value):
             raise RuntimeError("rule failed")

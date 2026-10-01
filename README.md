@@ -1450,7 +1450,10 @@ without the value (an element's entity-encoded text decodes to one) is not a
 placeholder and restores nothing. Text that already holds `[KEPT-` is masked
 as if no keep rule were configured. A keep rule that raises counts as no
 match: keep rules are asked on paths that must never raise (`redact_url`,
-`redact_body`, `mask_card_value`).
+`redact_body`, `mask_card_value`). So does a label rule asked about what is
+inside a keep match: its error refuses the keep and raises nothing there,
+and the value is masked as with the label rules alone — whose error reaches
+the caller only where the walk itself asks them, as before.
 
 Two things no keep rule overrides, not even `KeepRule(lambda value: True)`:
 

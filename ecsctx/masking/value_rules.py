@@ -415,12 +415,18 @@ def keep_refused(value: dict, rules: Iterable[Any]) -> bool:
     refuses it (``holds_card_data``), or a label rule among ``rules`` labels
     something strictly inside it (``label_within``, over its members): a
     label rule wins at any depth inside a keep match. For the value itself
-    the first match still wins. Only with a label rule among ``rules``."""
+    the first match still wins. Only with a label rule among ``rules``; one
+    that raises there refuses the keep, and raises nothing: keep rules are
+    asked on paths that must never raise, and a member is asked here that
+    the walk might never ask."""
     if holds_card_data(value):
         return True
-    return bool(_split(rules).label) and any(
-        label_within(member, rules, 1) is not None for member in value.values()
-    )
+    if not _split(rules).label:
+        return False
+    try:
+        return any(label_within(member, rules, 1) is not None for member in value.values())
+    except Exception:  # noqa: BLE001 -- a service's label matcher; refusing the keep fails closed
+        return True
 
 
 def ruling(value: Any, rules: Iterable[Any]) -> str | _Keep | None:
