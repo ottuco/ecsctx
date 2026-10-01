@@ -1276,10 +1276,20 @@ class KeptStash(NamedTuple):
     text: str
     originals: dict[str, str]
 
+    def hold(self, value: str) -> str:
+        """A new placeholder standing for ``value``, for the caller to put
+        where it stood: ``contrib.net.redact_body`` sets aside an element's
+        entity-encoded text that holds a kept value."""
+        placeholder = f"{_KEPT_HEAD}{_letters(len(self.originals))}-MASKED]"
+        self.originals[placeholder] = value
+        return placeholder
+
     def restore(self, masked: str) -> str:
         """``masked`` with each placeholder that is still in it put back as
         the value was written. One a rule destroyed -- hashed or labelled with
         what was around it -- is not: the value goes with it."""
+        if not self.originals:
+            return masked
         return _KEPT_PLACEHOLDER.sub(lambda m: self.originals.get(m.group(), m.group()), masked)
 
 

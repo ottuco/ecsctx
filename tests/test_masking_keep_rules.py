@@ -24,6 +24,13 @@ import pytest
 from django.test import override_settings
 
 from ecsctx.contrib.django.checks import find_masking_errors
+from ecsctx.contrib.net import (
+    configure_redaction,
+    loggable_body,
+    loggable_request_body,
+    redact_body,
+    redact_url,
+)
 from ecsctx.masking import (
     KeepRule,
     ValueRule,
@@ -449,6 +456,8 @@ class TestCost:
         _text(text, packs)
         _message(text)
         _walk({"event": text, "x": SEALED, "y": json.dumps({"z": SEALED})})
+        encoded = json.dumps(SEALED).replace('"', "&quot;")
+        redact_body(f"{text} <udf9>{encoded}</udf9>")
         assert finder_calls == []
 
     def test_the_span_finder_runs_with_one(self, finder_calls, packs):
@@ -462,6 +471,8 @@ class TestCost:
         _text(text, packs)
         _message(text)
         _walk({"x": json.dumps({"kind": "other-shape"}), "y": json.dumps({"z": {"kind": "other-shape"}})})
+        encoded = text.replace('"', "&quot;")
+        redact_body(f"{text} <udf9>{encoded}</udf9>")
         assert ASKED == []
 
     def test_rule_2_does_not_run_with_keep_rules_only(self, monkeypatch, packs):
@@ -473,3 +484,92 @@ class TestCost:
         assert calls == []
         configure_masking_value_rules([KEEP_RULE, LABEL_RULE])
         assert patterns._has_value_object(text, text.lower())
+
+
+# Keys Connect lists as extra secret body keys (ECSCTX_REDACT_EXTRA_SECRET_KEYS).
+SIGNED = {**SEALED, "signature": "c2lnbmF0dXJlLWJsb2I=", "hash": "aGFzaC1ibG9i"}
+# Past the default body cap, as an Apple Pay token is (about 5 KB).
+LARGE = {**SEALED, "box": "QUJD" * 1500}
+KPAY = "<request><id>TRANPORTAL123</id><password>S3cretPassw0rd</password><udf9>{}</udf9><amt>10.000</amt></request>"
+
+
+class _Response:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.headers = {"Content-Type": "application/json"}
+        self.status_code = 200
+
+
+@pytest.mark.usefixtures("keep")
+class TestBodies:
+    def test_a_json_body(self):
+        masked = json.loads(redact_body(json.dumps({"blob": SEALED, "password": "s3cret-Hunter2"})))
+        assert masked["blob"] == SEALED
+        assert masked["password"] != "s3cret-Hunter2"
+
+    def test_json_text_in_a_json_string_under_a_credential_key(self):
+        # Split around the object, the JSON value rule left `""` behind.
+        body = json.dumps({"token": json.dumps(SEALED), "access_token": "s3cret-Hunter2"})
+        masked = redact_body(body)
+        assert json.loads(masked)["token"] == json.dumps(SEALED)
+        assert "s3cret-Hunter2" not in masked
+        assert redact_body(masked) == masked
+
+    def test_connects_extra_secret_keys_leave_it_intact(self):
+        configure_redaction(extra_secret_keys=["signature", "hash"])
+        body = json.dumps({"blob": SIGNED, "signature": "outer-signature"})
+        masked = json.loads(redact_body(body))
+        assert masked["blob"] == SIGNED
+        assert masked["signature"] != "outer-signature"
+
+    def test_an_element_holding_it_with_a_password_beside_it(self):
+        configure_redaction(extra_secret_keys=["signature", "hash"])
+        body = KPAY.format(json.dumps(SIGNED))
+        masked = redact_body(body)
+        assert f"<udf9>{json.dumps(SIGNED)}</udf9>" in masked
+        assert "S3cretPassw0rd" not in masked
+        assert redact_body(masked) == masked
+
+    def test_an_entity_encoded_element(self):
+        configure_redaction(extra_secret_keys=["signature", "hash"])
+        encoded = json.dumps(SIGNED).replace('"', "&quot;")
+        masked = redact_body(KPAY.format(encoded))
+        assert f"<udf9>{encoded}</udf9>" in masked
+        assert "S3cretPassw0rd" not in masked
+
+    def test_an_entity_encoded_element_whose_base64_reads_as_a_form_field(self):
+        # `…cvvXYZ==` is a form field named like a CVV to the form rule: the
+        # kept text is set aside with its element, so no rule reads it.
+        padded = {**SEALED, "box": "QUJDcvvXYZ=="}
+        encoded = json.dumps(padded).replace('"', "&quot;")
+        plain = json.dumps(padded)
+        assert f"<udf9>{encoded}</udf9>" in redact_body(KPAY.format(encoded))
+        assert f"<udf9>{plain}</udf9>" in redact_body(KPAY.format(plain))
+
+    def test_loggable_request_body_with_a_raised_cap(self):
+        configure_redaction(body_log_cap=64 * 1024)
+        masked = json.loads(loggable_request_body(None, {"blob": LARGE, "password": "s3cret-Hunter2"}))
+        assert masked["blob"] == LARGE
+        assert masked["password"] != "s3cret-Hunter2"
+
+    def test_loggable_body_with_a_raised_cap(self):
+        configure_redaction(body_log_cap=64 * 1024)
+        masked = json.loads(loggable_body(_Response(json.dumps({"blob": LARGE, "password": "s3cret-Hunter2"}))))
+        assert masked["blob"] == LARGE
+        assert masked["password"] != "s3cret-Hunter2"
+
+    def test_the_default_cap_cuts_it(self):
+        assert len(loggable_request_body(None, {"blob": LARGE})) == 4096
+
+    def test_nothing_under_a_cvv_key_is_kept(self):
+        assert SEALED["api_key"] not in redact_body(KPAY.format(json.dumps({"cvv": SEALED})))
+        assert BOX not in redact_body(f"<cvv>{json.dumps(SEALED)}</cvv>")
+
+    def test_redact_url_never_raises_with_a_keep_rule_that_raises(self):
+        def broken(_value):
+            raise RuntimeError("rule failed")
+
+        configure_masking_value_rules([KeepRule(broken)])
+        url = "https://pg.example/pay?card_number=" + json.dumps(SEALED).replace(" ", "") + "&password=s3cret"
+        assert "s3cret" not in redact_url(url)
+        assert "s3cret-Hunter2" not in redact_body(f"{json.dumps(SEALED)} {PASSWORD}")
