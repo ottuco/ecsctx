@@ -1558,16 +1558,16 @@ it. Every mapping the key walk meets asks every rule, once — a mapping has no
 text to hint with — so a matcher must be cheap: test a literal field first.
 JSON text under a key asks, and its key walk passes on, only the rules whose
 hints it holds. With Ottu's `WALLET_RULES`, a line carrying no wallet token
-costs 1-4% more than with 0.16.0's two label rules, and 3-15% more than with
+costs 1-4% more than with 0.16.0's two label rules, and 5-16% more than with
 no value rule (most on a line of many small mappings, each of which asks
 every rule; `scripts/bench_masking.py`). A line carrying a token has no
-single figure: about 2.5× 0.16.0's label rules on a short line (an MPGS line
-with the token as `paymentToken`: ~72 µs labelled, ~171 µs kept, ~46 µs with
-no rule; a message holding a Google Pay token: ~135 / ~341 / ~305 µs), and
-less on a body every content rule would otherwise read (KPay `<udf9>`:
-~0.96 ms labelled, ~0.89 ms kept, ~3.1 ms with no rule). The slot checks,
-the guard's card-number runs and the text floor's scan add 15-40% over
-0.17.0 on such lines.
+single figure: about 2.3-2.5× 0.16.0's label rules on a short line (an MPGS
+line with the token as `paymentToken`: ~73 µs labelled, ~175 µs kept, ~47 µs
+with no rule; a message holding a Google Pay token: ~135 / ~300 / ~305 µs),
+and less on a body every content rule would otherwise read (KPay `<udf9>`:
+~0.96 ms labelled, ~0.87 ms kept, ~3.1 ms with no rule). The slot checks,
+the guard's digit runs and the text floor's scan add 10-35% over 0.17.0 on
+such lines.
 
 Ottu's wallet tokens ship in logs exactly as sent (#159487): an Apple Pay or
 Google Pay token is single-use, and the token as it was sent is what debugs a
