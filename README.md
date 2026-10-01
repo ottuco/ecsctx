@@ -1554,7 +1554,7 @@ writes, and every leaf text in its alphabet: standard base64 for a key, a
 signature or ciphertext (`data`, `signature`, the header's
 `ephemeralPublicKey`, `publicKeyHash` and `wrappedKey`, Google Pay's
 `signatures`, and the fields of its `signedMessage` and `signedKey`, each
-JSON text of its own fields and nothing else), hex for an id or a hash
+JSON text of all its fields and nothing else), hex for an id or a hash
 (`transactionId`, `applicationData`, `transactionIdentifier`), digits for
 `keyExpiration`, and for what `paymentMethod` says about the card short
 text: its `network` and `type` at most 64 characters, its `displayName` at

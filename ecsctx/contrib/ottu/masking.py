@@ -230,7 +230,7 @@ def _is_pk_payment_token(value: Any) -> bool:
 
 def _signed_object(text: Any, keys: frozenset[str]) -> dict | None:
     """JSON text a Google Pay token signs, read as the keep decision reads
-    JSON (a key written twice refused): an object of ``keys`` at most, or
+    JSON (a key written twice refused): an object of exactly ``keys``, or
     None."""
     if not isinstance(text, str):
         return None
@@ -238,21 +238,21 @@ def _signed_object(text: Any, keys: frozenset[str]) -> dict | None:
         parsed = json_as_written(text)
     except (ValueError, RecursionError):
         return None
-    return parsed if isinstance(parsed, dict) and parsed.keys() <= keys else None
+    return parsed if isinstance(parsed, dict) and parsed.keys() == keys else None
 
 
 def _is_signed_message(text: Any) -> bool:
     """`signedMessage`: JSON text of the encrypted message, its ephemeral
-    public key and tag, each in base64."""
+    public key and tag, each in base64, and nothing else."""
     message = _signed_object(text, _SIGNED_MESSAGE_KEYS)
     return message is not None and all(_written_in(field, _BASE64) for field in message.values())
 
 
 def _is_signed_key(text: Any) -> bool:
     """`signedKey`: JSON text of the intermediate signing key in base64 and
-    its expiration, epoch milliseconds."""
+    its expiration, epoch milliseconds, and nothing else."""
     key = _signed_object(text, _SIGNED_KEY_KEYS)
-    return key is not None and _absent_or_in(key, "keyValue", _BASE64) and _absent_or_in(key, "keyExpiration", _DIGITS)
+    return key is not None and _written_in(key["keyValue"], _BASE64) and _written_in(key["keyExpiration"], _DIGITS)
 
 
 def _is_google_pay_payment_token(value: Any) -> bool:

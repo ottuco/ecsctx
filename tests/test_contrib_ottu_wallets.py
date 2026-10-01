@@ -79,7 +79,11 @@ GOOGLE_PAY = {
     "protocolVersion": "ECv2",
     "signedMessage": json.dumps({"encryptedMessage": "ZW5j", "ephemeralPublicKey": "ZXBr", "tag": "dGFn"}),
 }
-GOOGLE_PAY_V1 = {"signature": "MEQCIA==", "protocolVersion": "ECv1", "signedMessage": '{"encryptedMessage":"ZW5j"}'}
+GOOGLE_PAY_V1 = {
+    "signature": "MEQCIA==",
+    "protocolVersion": "ECv1",
+    "signedMessage": '{"encryptedMessage":"ZW5j","ephemeralPublicKey":"ZXBr","tag":"dGFn"}',
+}
 NOT_A_WALLET = {"amount": "10.000", "currency": "KWD"}
 TOKENS = [APPLE_PAY, APPLE_PAY_RSA, PK_PAYMENT_TOKEN, GOOGLE_PAY, GOOGLE_PAY_V1]
 TOKEN_IDS = ["apple-pay", "apple-pay-rsa", "pk-payment-token", "google-pay", "google-pay-v1"]
@@ -141,7 +145,10 @@ NOT_TOKEN_TEXT = {
         "signedMessage": json.dumps({**json.loads(GOOGLE_PAY["signedMessage"]), "note": "cvv=123"}),
     },
     "google-signature-cvv": {**GOOGLE_PAY, "signature": "cvv=123"},
-    "google-v1-encrypted-message-cvv": {**GOOGLE_PAY_V1, "signedMessage": '{"encryptedMessage":"cvv=123"}'},
+    "google-v1-encrypted-message-cvv": {
+        **GOOGLE_PAY_V1,
+        "signedMessage": '{"encryptedMessage":"cvv=123","ephemeralPublicKey":"ZXBr","tag":"dGFn"}',
+    },
     # Text in a slot's own alphabet holding a card number (review I2).
     "apple-data-pan-and-cvv-in-base64": {**APPLE_PAY, "data": "4111111111111111+cvv+123"},
     "apple-transaction-id-pan-in-hex": {
@@ -293,6 +300,27 @@ class TestTheRules:
                 },
             },
             {**GOOGLE_PAY, "intermediateSigningKey": {**GOOGLE_PAY["intermediateSigningKey"], "signedKey": "a2V5"}},
+            # Each signed object holds every field it is documented to hold
+            # (review M7).
+            {**GOOGLE_PAY, "signedMessage": "{}"},
+            {**GOOGLE_PAY, "signedMessage": json.dumps({"encryptedMessage": "ZW5j", "ephemeralPublicKey": "ZXBr"})},
+            {**GOOGLE_PAY, "signedMessage": json.dumps({"encryptedMessage": "ZW5j", "tag": "dGFn"})},
+            {**GOOGLE_PAY, "signedMessage": json.dumps({"ephemeralPublicKey": "ZXBr", "tag": "dGFn"})},
+            {**GOOGLE_PAY, "intermediateSigningKey": {**GOOGLE_PAY["intermediateSigningKey"], "signedKey": "{}"}},
+            {
+                **GOOGLE_PAY,
+                "intermediateSigningKey": {
+                    **GOOGLE_PAY["intermediateSigningKey"],
+                    "signedKey": json.dumps({"keyValue": "a2V5"}),
+                },
+            },
+            {
+                **GOOGLE_PAY,
+                "intermediateSigningKey": {
+                    **GOOGLE_PAY["intermediateSigningKey"],
+                    "signedKey": json.dumps({"keyExpiration": "1700000000000"}),
+                },
+            },
         ],
         ids=[
             "apple-extra-key", "apple-version", "apple-data-not-text", "apple-header-extra-key",
@@ -309,6 +337,9 @@ class TestTheRules:
             "google-signed-message-a-list", "google-signed-message-duplicate-key",
             "google-signed-message-a-mapping-inside", "google-signatures-cvv", "google-signed-key-extra-key",
             "google-key-value-pin", "google-key-expiration-not-digits", "google-signed-key-not-json",
+            "google-signed-message-empty", "google-signed-message-no-tag", "google-signed-message-no-ephemeral-key",
+            "google-signed-message-no-encrypted-message", "google-signed-key-empty", "google-signed-key-no-expiration",
+            "google-signed-key-no-key-value",
         ],
     )
     def test_the_matchers_are_strict(self, value):
