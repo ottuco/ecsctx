@@ -1529,10 +1529,19 @@ nothing, and is masked as without a keep rule. A name is a quoted key then
 `:`, `=` or `=>` (JSON, a repr, JSON in a JSON string), a bare key then `:` or
 `=>`, a key and `=` where a key starts (`cvv=`, `&cvv=`; not base64's `=`
 padding inside a string), an XML tag, or a `{name, value}` pair's label
-(`"name": "card security code"`), read as the key walk reads a key — every
-pack on, the service's safe keys honoured — in the text as written and, where
-it holds an entity, as it decodes. A word in prose (`the cvv check passed`)
-names no key. That fails closed: a value beside such a key, not under it
+(`"name": "card security code"`), classified as the key walk classifies a
+key — every pack on, the service's safe keys honoured. It is read as
+written: a quoted key, tag or pair label up to 128 characters (a longer key
+by its last 128, before `:` or `=>`), with no `\uXXXX` escape decoded, in the
+text as it stands and, where it holds an entity, as the entities decode. The
+key walk reads more: it parses JSON, so a key written with escapes
+(`"\u0063vv"`), or longer than 128 characters with its CVV word first, is a
+CVV key there and not to the text floor, which can keep a value under it in
+text where the key walk would not. Through Ottu's `WALLET_RULES` that gap
+ships nothing but a wallet token's own text: their matchers fix every key a
+token holds and every slot's alphabet, and the guard reads them, so nothing
+else can ride in what they keep. A word in prose (`the cvv check passed`) names
+no key. That fails closed: a value beside such a key, not under it
 (`{"cvv": "123", "token": {…}}`, or a `<pin>` element elsewhere in a body),
 is not kept in text, though the key walk keeps it. `redact_body` reads an
 element's entity-encoded text the same way, and keeps nothing in it when the
