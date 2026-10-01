@@ -516,6 +516,7 @@ FLOORED = {
     "a-cvv-key-before": '"cvv" = "123", "token" => PLAIN',
     "a-form-field-before": "a=1&cvv=123 PLAIN",
     "an-element-after": "PLAIN <pin>1234</pin>",
+    "a-key-longer-than-a-key-is-read": '{"' + "x" * 200 + '_cvv": "123", "token": PLAIN}',
 }
 # Keys about a CVV, not one: text naming them keeps its value.
 NOT_FLOORED = {

@@ -814,6 +814,14 @@ _DIGIT_RUN = re.compile(rf"\+?\d(?:{_CARD_SEP}?\d)*")
 # joined by single separators at most, as the card rule joins them, with no
 # digit next to either end.
 _CARD_RUN_IN_TEXT = re.compile(rf"(?<!\d)(?<!\d{_CARD_SEP})\d(?:{_CARD_SEP}?\d){{12,18}}(?!{_CARD_SEP}?\d)")
+# ASCII text with each digit marked 0 and each separator the card rule reads
+# 2: text with neither thirteen 0s in a row nor a 2 -- base64 and hex, a
+# wallet's ciphertext -- holds no run, found in one bytes translate where the
+# regex costs thirty times as much.
+_DIGIT_MARKS = bytes(
+    0 if chr(code) in "0123456789" else 2 if code < 128 and re.fullmatch(_CARD_SEP, chr(code)) else code or 1
+    for code in range(256)
+)
 
 
 def holds_card_run(text: str) -> bool:
@@ -824,6 +832,10 @@ def holds_card_run(text: str) -> bool:
     reads every text leaf of a keep match with it. Stricter than
     ``holds_pan_run`` about what a card number is (Luhn, 13 digits up), so
     ciphertext and hex ids are rarely refused."""
+    if text.isascii():
+        marked = text.encode("ascii").translate(_DIGIT_MARKS)
+        if b"\0" * 13 not in marked and b"\2" not in marked:
+            return False
     for m in _CARD_RUN_IN_TEXT.finditer(text):
         run = m.group()
         if not _EPOCH_MILLISECONDS.fullmatch(run) and _luhn_valid(re.sub(r"\D", "", run)):
@@ -1228,30 +1240,82 @@ def mask_objects(text: str, rules: tuple) -> str:
 # or in such a container (filters): a CVV and the rest of Sensitive
 # Authentication Data.
 _FLOOR_TYPES = frozenset({"cvv", "sad"})
-# What text names, wherever it is, as the floor reads it: a quoted key (JSON,
-# a repr, JSON in a JSON string, its quotes escaped) then `:`, `=` or `=>`,
-# looked for at every quote so that a quote inside a string never hides the
-# key after it; a bare key, or the word closing a quoted one, then `:` or
-# `=>`; a key and `=` where a key starts (`cvv=`, `&cvv=`, `a=1, cvv=`) --
-# not inside a quoted string, where base64's `=` padding follows a word
-# (`"…/cvvXYZ=="`); and an XML tag, start or end.
-_QUOTED_NAME = re.compile(r"(?=(\\*[\"'])([^\"'\\]{1,128})\1\s*(?::|=>?))")
-_BARE_NAME = re.compile(r"(?<![\w.-])([A-Za-z_][\w.-]{0,127})(?:\\*[\"'])?\s*(?::|=>)")
-_ASSIGNED_NAME = re.compile(r"(?:^|(?<=[\s&?,({\[]))([A-Za-z_][\w.-]{0,127})\s*=")
+# A key in text, as the floor reads it, is found from the `:`, `=` or `=>`
+# after it and read back from there (``_key_names``): a quoted key (JSON, a
+# repr, JSON in a JSON string, its quotes escaped), or a bare one -- after a
+# `=`, only where a key starts, never inside a quoted string, where base64's
+# `=` padding follows a word (`"…/cvvXYZ=="`). A find per separator, not a
+# regex tried at every character: this reads a 7 KB wallet body in
+# microseconds.
+_NAME_LIMIT = 128
+_QUOTES = "\"'"
+# What a key assigned with `=` follows, besides whitespace and the text's start.
+_KEY_STARTS = frozenset("&?,({[")
+# The name characters a bare key ends with, matched on the text before its
+# separator reversed: matched forward, from every position, a long word cost
+# its length squared.
+_NAME_RUN = re.compile(r"[\w.-]*")
 _TAG_NAME = re.compile(r"</?(?:[A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*)(?=[\s/>])")
 
 
+def _key_at(text: str, at: int, assigned: bool) -> str | None:
+    """The key written before the separator at ``at``: quoted, or a bare name
+    starting with a letter or `_` (where a key starts, for a bare ``=``)."""
+    end = at
+    while end > 0 and text[end - 1].isspace():
+        end -= 1
+    if end and text[end - 1] in _QUOTES:
+        close = end - 1
+        while close > 0 and text[close - 1] == "\\":
+            close -= 1
+        opening = text.rfind(text[end - 1], max(0, close - _NAME_LIMIT - 1), close)
+        if opening != -1 and not any(quote in text[opening + 1 : close] for quote in "\"'\\"):
+            return text[opening + 1 : close] or None
+        end = close
+    length = _NAME_RUN.match(text[max(0, end - _NAME_LIMIT - 1) : end][::-1]).end()
+    if length > _NAME_LIMIT:
+        # Longer than a key is read: its end, which names what it holds --
+        # never after a bare `=`, as base64 padding follows a long word.
+        return None if assigned else text[end - _NAME_LIMIT : end]
+    start = end - length
+    name = text[start:end]
+    if not name or not (name[0].isalpha() or name[0] == "_"):
+        return None
+    if assigned and start and not (text[start - 1].isspace() or text[start - 1] in _KEY_STARTS):
+        return None
+    return name
+
+
+def _quoted_after(text: str, at: int) -> str | None:
+    """The quoted text right after ``at`` (whitespace and escapes skipped),
+    as a `{name, value}` pair writes its label: None for anything else."""
+    while at < len(text) and (text[at].isspace() or text[at] == "\\"):
+        at += 1
+    if at >= len(text) or text[at] not in _QUOTES:
+        return None
+    closing = text.find(text[at], at + 1, at + 2 + _NAME_LIMIT)
+    label = text[at + 1 : closing].rstrip("\\") if closing != -1 else ""
+    return label if label and not any(quote in label for quote in "\"'\\") else None
+
+
+def _key_names(text: str) -> Iterator[tuple[str, int]]:
+    """Each key ``text`` writes, and where what follows its separator starts."""
+    for separator in ":=":
+        at = text.find(separator)
+        while at != -1:
+            arrow = separator == "=" and text.startswith(">", at + 1)
+            if (name := _key_at(text, at, separator == "=" and not arrow)) is not None:
+                yield name, at + 1 + arrow
+            at = text.find(separator, at + 1)
+
+
 @lru_cache(maxsize=1)
-def _pair_label() -> re.Pattern:
-    """A `{name, value}` pair's label as text writes it: an identifier key
-    the key walk reads a pair by (``filters._PAIR_IDENTIFIERS``, imported
-    here: filters imports this module as it loads) and its quoted value."""
+def _pair_identifiers() -> frozenset[str]:
+    """The identifier keys the key walk reads a `{name, value}` pair by.
+    Imported here: filters imports this module as it loads."""
     from ecsctx.masking.filters import _PAIR_IDENTIFIERS
 
-    identifiers = "|".join(map(re.escape, _PAIR_IDENTIFIERS))
-    return re.compile(
-        rf"(?=(\\*[\"'])(?i:{identifiers})\1\s*(?::|=>?)\s*(\\*[\"'])([^\"'\\]{{1,128}})\2)"
-    )
+    return frozenset(_PAIR_IDENTIFIERS)
 
 
 def _safe_keys_in_force() -> frozenset[str]:
@@ -1264,21 +1328,27 @@ def _safe_keys_in_force() -> frozenset[str]:
 
 def floored_text(text: str) -> bool:
     """Whether ``text`` names, anywhere, a CVV or SAD key, an XML tag named
-    so, or a `{name, value}` pair labelled so -- read as the key walk reads a
-    key (every pack on, the service's safe keys honoured), in the text as
-    written and, where it holds an entity, as it decodes. Text that does
-    keeps nothing: a container's reach cannot be told from text the rules
-    read three levels deep, so the whole text fails closed."""
+    so, or a `{name, value}` pair labelled so -- an identifier key and the
+    quoted label after it -- read as the key walk reads a key (every pack
+    on, the service's safe keys honoured), in the text as written and,
+    where it holds an entity, as it decodes. Text that does keeps nothing: a
+    container's reach cannot be told from text the rules read three levels
+    deep, so the whole text fails closed."""
     safe = _safe_keys_in_force()
+    identifiers = _pair_identifiers()
     for written in (text, html.unescape(text)) if "&" in text else (text,):
-        for pattern, group in ((_QUOTED_NAME, 2), (_BARE_NAME, 1), (_ASSIGNED_NAME, 1), (_TAG_NAME, 1)):
-            for m in pattern.finditer(written):
-                if classify_key(m.group(group), ALL_PACKS, safe) in _FLOOR_TYPES:
-                    return True
-        # Uncached, as the key walk classifies a pair's label: free text.
-        for m in _pair_label().finditer(written):
-            if classify_key.__wrapped__(m.group(3), ALL_PACKS, safe) in _FLOOR_TYPES:
+        for name, after in _key_names(written):
+            if classify_key(name, ALL_PACKS, safe) in _FLOOR_TYPES:
                 return True
+            if (
+                name.lower() in identifiers
+                and (label := _quoted_after(written, after)) is not None
+                # Uncached, as the key walk classifies a pair's label: free text.
+                and classify_key.__wrapped__(label, ALL_PACKS, safe) in _FLOOR_TYPES
+            ):
+                return True
+        if any(classify_key(m.group(1), ALL_PACKS, safe) in _FLOOR_TYPES for m in _TAG_NAME.finditer(written)):
+            return True
     return False
 
 
