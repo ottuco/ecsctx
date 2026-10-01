@@ -33,6 +33,7 @@ from collections.abc import Iterable
 from contextvars import ContextVar
 from functools import lru_cache
 
+from ecsctx.masking import patterns
 from ecsctx.masking.patterns import ALL_PACKS, classify_key, never_safe
 from ecsctx.masking.value_rules import load_value_rules
 
@@ -294,6 +295,15 @@ def configure_masking_value_rules(rules: Iterable | str | None) -> None:
             raise ValueError("; ".join(problems))
         _explicit_rules = loaded
     _resolved_rules = None
+    _forget_clean_strings()
+
+
+def _forget_clean_strings() -> None:
+    """Empty the known-clean set (``patterns._clean``). It is keyed on the
+    content rules alone, and what is clean depends on the value rules too: a
+    string masked clean with none configured came back as it was once one
+    was."""
+    patterns._clean.clear()
 
 
 def masking_value_rule_errors() -> list[str]:
@@ -356,3 +366,4 @@ def _reset_masking_config() -> None:
     _explicit_rules = None
     _resolved_rules = None
     _warned.clear()
+    _forget_clean_strings()

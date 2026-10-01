@@ -22,7 +22,7 @@ from ecsctx.masking import (
     configure_masking_value_rules,
     get_masking_value_rules,
 )
-from ecsctx.masking.config import configure_masking_packs
+from ecsctx.masking.config import _reset_masking_config, configure_masking_packs
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
 from ecsctx.pii import configure_pii
@@ -168,6 +168,23 @@ class TestConfiguration:
             assert _walk({"x": BLOB}) == {"x": LABEL}
         [error] = [error for error in find_masking_errors({}) if "ECSCTX_MASK_VALUE_RULES" in error]
         assert "no_such_module.RULES" in error
+
+    def test_configuring_them_forgets_the_strings_known_clean(self):
+        # The known-clean set is keyed on the content rules alone: a string
+        # masked clean with no value rule came back unmasked once one was on.
+        text = f"got {json.dumps(BLOB)} back"
+        configure_masking_value_rules(())
+        assert _text(text) == text
+        configure_masking_value_rules(RULES)
+        assert _text(text) == f"got {LABEL} back"
+
+    def test_a_reset_forgets_them_too(self, monkeypatch):
+        text = f"got {json.dumps(BLOB)} back"
+        configure_masking_value_rules(())
+        assert _text(text) == text
+        _reset_masking_config()
+        monkeypatch.setenv("ECSCTX_MASK_VALUE_RULES", "tests.test_masking_value_rules.RULES")
+        assert _text(text) == f"got {LABEL} back"
 
     def test_a_rule_that_raises_leaves_the_marker_never_an_exception(self):
         def broken(_value):
