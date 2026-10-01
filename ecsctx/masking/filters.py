@@ -61,7 +61,9 @@ from ecsctx.masking.tokens import make_label, mask_by_field_type
 from ecsctx.masking.value_rules import (
     KEEP,
     applicable,
+    keep_rules,
     label_rules,
+    parses_as_written,
     label_within,
     ruling,
     text_ruling,
@@ -949,9 +951,17 @@ class MaskPIIFilter(logging.Filter):
         # describe the record, not a payload that happens to use the names.
         # Key rules only: the content rules run once, on the whole text below,
         # not once per value and again on the text. And only the value rules
-        # whose hints the text holds: no other can match a mapping in it.
+        # whose hints the text holds: no other can match a mapping in it --
+        # the label rules alone where the text names a key twice, since the
+        # parse is then not all the text ships.
         rules = _value_rules(ctx)
-        walk = ctx._replace(rules=(), values=[applicable(text, rules)] if rules else ctx.values)
+        if rules:
+            asked = applicable(text, rules)
+            if keep_rules(asked) and not parses_as_written(text):
+                asked = label_rules(asked)
+            walk = ctx._replace(rules=(), values=[asked])
+        else:
+            walk = ctx._replace(rules=())
         masked = self._mask_value(parsed, path or (_JSON_TEXT,), walk)
         if masked == parsed:
             return self._mask_string(text, ctx)

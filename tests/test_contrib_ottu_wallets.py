@@ -109,6 +109,22 @@ KPAY_BODY = (
     "<amt>10.000</amt><trackid>TRK1</trackid><udf9>{}</udf9></request>"
 )
 PASSWORD = "password=s3cret-Hunter2"
+# A token written so that what parses is not what ships: a duplicate key
+# json.loads drops, a comment ast.literal_eval drops (review C1).
+DUP_DATA = (
+    '{"version":"EC_v1","data":"4111111111111111","data":"Zm9v","signature":"c2ln",'
+    '"header":{"transactionId":"abc"}}'
+)
+DUP_HEADER = (
+    '{"version":"EC_v1","data":"Zm9v","signature":"c2ln",'
+    '"header":{"cvv":"123"},"header":{"transactionId":"abc"}}'
+)
+NESTED_DUP = {
+    "signature": "MEQC",
+    "protocolVersion": "ECv2",
+    "signedMessage": '{"encryptedMessage": {"cvv": "123", "number": "4111111111111111"}, "encryptedMessage": "ZW5j"}',
+}
+REPR_COMMENT = "{'version': 'EC_v1', 'data': 'Zm9v', 'header': {'transactionId': 'abc' # 4111111111111111 cvv=123\n}}"
 
 PACKS = [["default"], sorted(ALL_PACKS)]
 
@@ -293,6 +309,34 @@ class TestWalletTokensShipAsSent:
             # default pack has no rule for an object after a CVV key in text.
             text = f'{{"securityCode": {json.dumps(APPLE_PAY)}}}'
             assert "7134e7d22988391fa183a61a191ae14c" not in _text(text, packs)
+
+    @pytest.mark.parametrize("written", [DUP_DATA, DUP_HEADER], ids=["duplicate-data", "duplicate-header"])
+    def test_a_token_with_a_duplicate_key_is_masked_as_without_the_rules(self, written, packs):
+        def every_path():
+            return (
+                _message("body %s", written),
+                _message(written),
+                _walk({"payload": written}),
+                _walk({"paymentToken": written}),
+                _text(f"token {written} end", packs),
+                redact_body(f'{{"token": {written}, "amt": "1"}}'),
+                redact_body(json.dumps({"paymentToken": written})),
+            )
+
+        assert every_path() == _unconfigured(every_path)
+        assert not is_kept(written)
+
+    def test_a_json_text_leaf_with_a_duplicate_key_is_card_data(self, packs):
+        assert _walk({"payload": NESTED_DUP}) == _unconfigured(lambda: _walk({"payload": NESTED_DUP}))
+        assert not is_kept(NESTED_DUP)
+        text = f"got {json.dumps(NESTED_DUP)}"
+        assert _text(text, packs) == _unconfigured(lambda: _text(text, packs))
+
+    def test_a_repr_with_a_comment_is_not_kept(self, packs):
+        text = f"got {REPR_COMMENT} end"
+        masked = _text(text, packs)
+        assert masked == _unconfigured(lambda: _text(text, packs))
+        assert "cvv=123" not in masked
 
     def test_a_payment_data_that_is_no_wallet_is_masked_as_usual(self):
         masked = _walk({"paymentData": {"cardNumber": "4111111111111111", "email": "jane.roe@example.com"}})

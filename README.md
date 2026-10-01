@@ -1458,6 +1458,12 @@ JSON text under a key that would hash it whole — a credential's — and that
 holds a kept value deeper is still hashed whole: a keep never cuts a value out
 of a string. A kept mapping is a copy: the record is masked in place.
 
+A keep decision rests on the text as written, since that is what ships: JSON
+that names a key twice in one object (`json.loads` keeps the last) is not
+kept, and a JSON-text leaf naming one inside a match is card data to the
+guard; a Python repr is kept only where its parse renders back to it exactly
+(a comment, or a key written twice, is dropped by the parse).
+
 A service that masks again after ecsctx — Connect does — asks
 `is_kept(value, key=None)` (a mapping or JSON text; the rules in force, first
 match, the guard, and the floor on `key`; False with no keep rule configured)

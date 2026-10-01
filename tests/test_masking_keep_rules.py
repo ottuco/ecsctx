@@ -638,3 +638,77 @@ class TestHelpers:
     def test_mask_outside_kept_with_nothing_configured_masks_it_all(self):
         sealed = {**SEALED, "note": "secret"}
         assert "secret" not in mask_outside_kept(f"secret {json.dumps(sealed)}", _shout)
+
+
+# What ships is the text as written, so a keep decision rests on it as
+# written: a duplicate key json.loads drops, or a comment ast.literal_eval
+# drops, must not carry card data past the guard (review C1).
+DUP_PAN = '{"kind": "sealed-box", "box": "4111111111111111", "box": "Zm9v", "api_key": "sk_test_fake_0123456789"}'
+DUP_CVV = '{"kind": "sealed-box", "box": "Zm9v", "meta": {"cvv": "123"}, "meta": {"n": 1}}'
+NESTED_DUP = {
+    "kind": "sealed-box",
+    "box": "Zm9v",
+    "inner": '{"blob": {"cvv": "123", "number": "4111111111111111"}, "blob": "ZW5j"}',
+}
+REPR_COMMENT = "{'kind': 'sealed-box', 'box': 'Zm9v', 'meta': {'n': 'abc' # 4111111111111111 cvv=123\n}}"
+
+
+def _unconfigured(mask):
+    """What ``mask()`` gives with no value rule configured."""
+    rules = get_masking_value_rules()
+    configure_masking_value_rules(())
+    try:
+        return mask()
+    finally:
+        configure_masking_value_rules(rules)
+
+
+@pytest.mark.usefixtures("keep")
+class TestWhatShipsIsWhatWasJudged:
+    @pytest.mark.parametrize("written", [DUP_PAN, DUP_CVV, json.dumps(NESTED_DUP)], ids=["pan", "cvv", "nested"])
+    def test_the_key_walk_keeps_no_json_text_with_a_duplicate_key(self, written):
+        for event in ({"payload": written}, {"token": written}, {"event": written}):
+            assert _walk(event) == _unconfigured(lambda event=event: _walk(event))
+        assert _message(written) == _unconfigured(lambda: _message(written))
+        assert _walk({"payload": written}) != {"payload": written}
+
+    def test_a_json_text_leaf_with_a_duplicate_key_is_card_data(self):
+        assert _walk({"payload": NESTED_DUP}) == _unconfigured(lambda: _walk({"payload": NESTED_DUP}))
+        assert _walk({"payload": NESTED_DUP}) != {"payload": NESTED_DUP}
+
+    @pytest.mark.parametrize("written", [DUP_PAN, DUP_CVV, json.dumps(NESTED_DUP), REPR_COMMENT])
+    def test_text_keeps_no_object_written_otherwise_than_it_parses(self, written, packs):
+        text = f"got {written} end"
+        masked = _text(text, packs)
+        assert masked == _unconfigured(lambda: _text(text, packs))
+        assert masked != text
+        escaped = "sent " + json.dumps({"blob": written})
+        assert _text(escaped, packs) == _unconfigured(lambda: _text(escaped, packs))
+
+    def test_a_python_repr_that_round_trips_is_still_kept(self, packs):
+        text = f"got {SEALED!r} end"
+        assert _text(text, packs) == text
+
+    @pytest.mark.parametrize("written", [DUP_PAN, json.dumps(NESTED_DUP)], ids=["pan", "nested"])
+    def test_bodies(self, written):
+        body = f'{{"token": {written}, "amt": "1"}}'
+        masked = redact_body(body)
+        assert masked == _unconfigured(lambda: redact_body(body))
+        if written == DUP_PAN:
+            assert SEALED["api_key"] not in masked
+        escaped = json.dumps({"paymentToken": written, "amt": "1"})
+        assert redact_body(escaped) == _unconfigured(lambda: redact_body(escaped))
+
+    @pytest.mark.parametrize("written", [DUP_PAN, DUP_CVV, json.dumps(NESTED_DUP)], ids=["pan", "cvv", "nested"])
+    def test_is_kept(self, written):
+        assert not is_kept(written)
+
+    def test_is_kept_reads_a_json_text_leaf_strictly(self):
+        assert not is_kept(NESTED_DUP)
+
+    def test_mask_outside_kept(self, packs):
+        def own(text: str) -> str:
+            return text.replace("123", "[OWN-MASKED]")
+
+        text = f"got {DUP_CVV}"
+        assert mask_outside_kept(text, own) == own(text)

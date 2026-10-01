@@ -55,9 +55,11 @@ from ecsctx.masking.tokens import (
 )
 from ecsctx.masking.value_rules import (
     KEEP,
+    DuplicateKey,
     applicable,
     hinted,
     is_keep_rule,
+    json_as_written,
     keep_rules,
     label_rules,
     rule_of,
@@ -1222,14 +1224,39 @@ def _floored_before(text: str, start: int) -> bool:
     return classify_key(name, ALL_PACKS) in _FLOOR_TYPES
 
 
+def _written_as_parsed(m: re.Match) -> bool:
+    """Whether the object a match wrote is all its parse says, as a keep
+    decision needs: what ships is the text as written. JSON, or JSON in a
+    JSON string as it decodes, that names no key twice; a Python repr whose
+    parse renders back to it exactly -- a comment or a key written twice is
+    dropped by the parse, and would ship unread."""
+    written = m.group(0)
+    try:
+        if m.group("plain") is None:
+            json_as_written(json.loads(f'"{written}"'))
+            return True
+        try:
+            json_as_written(written)
+        except DuplicateKey:
+            return False
+        except ValueError:
+            return repr(ast.literal_eval(written)) == written
+        return True
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return False
+
+
 def _object_ruling(m: re.Match, rules: tuple) -> Any:
     """``ruling`` of the object a match wrote; a label rule's error reads as a
     label -- not kept, not looked into -- so finding kept spans never raises,
-    and the text is masked as without a keep rule."""
+    and the text is masked as without a keep rule. A keep match written
+    otherwise than it parses (``_written_as_parsed``) is read as one nothing
+    matches."""
     try:
-        return ruling(_object_value(m), rules)
+        found = ruling(_object_value(m), rules)
     except Exception:  # noqa: BLE001 -- a service's matcher; rule 2 reports it where it runs
         return ""
+    return None if found is KEEP and not _written_as_parsed(m) else found
 
 
 def kept_spans(text: str, rules: tuple) -> list[tuple[int, int]]:

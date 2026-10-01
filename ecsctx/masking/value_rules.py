@@ -240,6 +240,35 @@ def hinted(text: str, rules: tuple) -> bool:
     return False
 
 
+class DuplicateKey(ValueError):
+    """JSON text naming a key twice in one object: json.loads keeps the last,
+    and the text as written keeps both."""
+
+
+def _unique_keys(pairs: list[tuple[str, Any]]) -> dict:
+    found = dict(pairs)
+    if len(found) != len(pairs):
+        raise DuplicateKey("a key written twice in one object")
+    return found
+
+
+def json_as_written(text: str) -> Any:
+    """``text`` parsed as JSON, refusing a key written twice anywhere in it
+    (``DuplicateKey``, a ValueError). A keep decision rests on the parse, and
+    the text as written is what ships: a duplicate json.loads drops would
+    carry what the guard never saw."""
+    return json.loads(text, object_pairs_hook=_unique_keys)
+
+
+def parses_as_written(text: str) -> bool:
+    """Whether JSON text names no key twice: its parse is all it ships."""
+    try:
+        json_as_written(text)
+    except (ValueError, RecursionError):
+        return False
+    return True
+
+
 # Deeper than any payload a rule matches, shallow enough that a cycle or a
 # crafted body stops long before Python's recursion limit.
 _MAX_DEPTH = 64
@@ -260,8 +289,9 @@ def holds_card_data(value: Any) -> bool:
     a card number -- Google Pay's ``signedKey`` carries one, so no Google Pay
     token would ever be kept -- and not ``holds_pan_run``, which flags hex ids.
     Anything that is no JSON value (an object whose text is not judged here),
-    and nesting past the depth cap, count as holding card data: such a match
-    is walked, not shipped.
+    nesting past the depth cap, and a leaf of JSON text that names a key twice
+    (``json_as_written``: what ships would not be what was read) count as
+    holding card data: such a match is walked, not shipped.
     """
     # Imported here: patterns imports this module as it loads.
     from ecsctx.masking.patterns import (
@@ -294,8 +324,10 @@ def holds_card_data(value: Any) -> bool:
             if item.lstrip()[:1] not in ("{", "["):
                 return False
             try:
-                parsed = json.loads(item)
-            except (ValueError, RecursionError):
+                parsed = json_as_written(item)
+            except (DuplicateKey, RecursionError):
+                return True
+            except ValueError:
                 return False
             return holds(parsed, depth + 1)
         return True
@@ -343,11 +375,14 @@ def parsed_json(text: str, rules: tuple) -> Any:
 
 def text_ruling(text: str, rules: Iterable[Any]) -> str | _Keep | None:
     """``ruling`` for a string that is JSON text, asking only the rules whose
-    hints it holds."""
+    hints it holds. Not ``KEEP`` for text naming a key twice: kept, it would
+    ship the key json.loads dropped, which the guard never read. A label
+    rule's reading is 0.16.0's."""
     asked = applicable(text, rules)
     if not asked:
         return None
-    return ruling(_json_in(text), asked)
+    found = ruling(_json_in(text), asked)
+    return None if found is KEEP and not parses_as_written(text) else found
 
 
 def label_of(value: Any, rules: Iterable[Any]) -> str | None:
