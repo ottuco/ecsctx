@@ -17,6 +17,7 @@ produces the same token.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import logging
@@ -35,6 +36,7 @@ from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import (
     _CRED_LITERALS,
     _CVV_LITERALS,
+    _FLOOR_TYPES,
     _KEY_SEPARATORS,
     _MIN_PAN_DIGITS,
     _PAYMENT_ID_KEYWORD,
@@ -56,7 +58,16 @@ from ecsctx.masking.patterns import (
     value_rules_in_force,
 )
 from ecsctx.masking.tokens import make_label, mask_by_field_type
-from ecsctx.masking.value_rules import label_of, label_within, text_label
+from ecsctx.masking.value_rules import (
+    KEEP,
+    applicable,
+    keep_rules,
+    label_rules,
+    parses_as_written,
+    label_within,
+    ruling,
+    text_ruling,
+)
 
 _IS_MASKED_ = "_IS_MASKED_"
 
@@ -159,8 +170,8 @@ def _value_rules(ctx: _Pass) -> tuple:
 # object became [CVV-MASKED].
 _WALKED_TYPES = frozenset({"card", "cvv", "sad", "secret"})
 # Under these nothing is weaker than the container: a CVV must not leave as a
-# name token or under a core safe key such as `id`.
-_FLOOR_TYPES = frozenset({"cvv", "sad"})
+# name token or under a core safe key such as `id` -- and nothing is kept
+# (patterns._FLOOR_TYPES, which the text rules' floor reads too).
 _CONTAINERS = (dict, list, tuple, set)
 _CARD_NUMBER_KEYS = frozenset({"number", "pan", "cardnumber", "maskednumber", "maskedpan"})
 
@@ -502,18 +513,44 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
 _JSON_STARTS = frozenset("{[ \t\r\n")
 
 
-def _value_label(value: Any, ctx: _Pass) -> str | None:
-    """The label of a value a value rule in force matches, as a mapping or as
-    JSON text (value_rules): under any key, a credential's or a card's
-    included, never hashed, never shown."""
+def _value_ruling(value: Any, ctx: _Pass) -> Any:
+    """What the first value rule in force a value matches, as a mapping or as
+    JSON text (value_rules), makes of it: its label -- under any key, a
+    credential's or a card's included, never hashed, never shown -- ``KEEP``,
+    or None: nothing matched, or a keep rule did and the guard refused it."""
     kind = type(value)
     if kind is dict:
         rules = _value_rules(ctx)
-        return label_of(value, rules) if rules else None
+        return ruling(value, rules) if rules else None
     if kind is str and value[:1] in _JSON_STARTS:
         rules = _value_rules(ctx)
-        return text_label(value, rules) if rules else None
+        return text_ruling(value, rules) if rules else None
     return None
+
+
+def _floored(key: Any, inherited: str | None, pair_type: str | None, ctx: _Pass) -> bool:
+    """Whether nothing may be kept here: under a CVV or SAD key, inside a CVV
+    or SAD container, or as the `value` of a pair labelled as one. Such a
+    value is masked exactly as it would be with no keep rule."""
+    if inherited in _FLOOR_TYPES:
+        return True
+    lookup_key = str(key)
+    if pair_type in _FLOOR_TYPES and lookup_key.lower() == "value":
+        return True
+    return classify_key(lookup_key, ctx.packs, ctx.safe) in _FLOOR_TYPES
+
+
+def _without_keep(ctx: _Pass) -> _Pass:
+    """``ctx`` asking only the label rules in force, for what reads through a
+    CVV or SAD container -- a key the service listed: nothing below it is
+    kept, however deep, as the floor requires."""
+    return ctx._replace(values=[label_rules(_value_rules(ctx))])
+
+
+def _kept(value: Any) -> Any:
+    """A value a keep rule ships: a mapping copied, since the record is
+    masked in place and must not share the caller's; a string as it is."""
+    return copy.deepcopy(value) if type(value) is dict else value
 
 
 def _mask_card_list_element(value: Any) -> Any:
@@ -620,11 +657,17 @@ class MaskPIIFilter(logging.Filter):
             if path == () and key in self._skip_keys:
                 result[key] = self._mask_skipped(key, value, ctx)
                 continue
-            if (label := _value_label(value, ctx)) is not None:
-                # Under any key, a credential's or a card's included: never
-                # hashed, never shown.
-                result[key] = label
-                continue
+            if (found := _value_ruling(value, ctx)) is not None:
+                if found is not KEEP:
+                    # Under any key, a credential's or a card's included: never
+                    # hashed, never shown.
+                    result[key] = found
+                    continue
+                if not _floored(key, inherited, pair_type, ctx):
+                    # As sent, under any key, a credential's or a card's
+                    # included, and not descended into.
+                    result[key] = _kept(value)
+                    continue
             if isinstance(value, bool):
                 # One bit: never PII, SAD or a credential, whatever its key or
                 # container. Masking it only destroyed the flag.
@@ -634,7 +677,7 @@ class MaskPIIFilter(logging.Filter):
             child_path = path + (lookup_key,)
             if pair_labels and key in pair_labels:
                 # A field label, not a person: judged by content alone.
-                result[key] = self._mask_value(value, child_path, ctx)
+                result[key] = self._mask_value(value, child_path, ctx, ruled=True)
                 continue
             field_type = classify_key(lookup_key, ctx.packs, ctx.safe)
             if pair_type is not None and lookup_key.lower() == "value":
@@ -652,7 +695,7 @@ class MaskPIIFilter(logging.Filter):
                 # reads through; anything else is the container's type, however
                 # it classifies on its own.
                 if field_type is None and _listed(lookup_key, ctx.safe):
-                    result[key] = self._mask_value(value, child_path, ctx)
+                    result[key] = self._mask_value(value, child_path, _without_keep(ctx))
                     continue
                 field_type = inherited
             elif field_type is None:
@@ -678,7 +721,7 @@ class MaskPIIFilter(logging.Filter):
                         and inherited not in _WALKED_TYPES
                         and classify_key(lookup_key, ctx.packs) in (None, "payment_id")
                     )
-                    result[key] = self._mask_value(value, child_path, ctx, verbatim_digits=verbatim)
+                    result[key] = self._mask_value(value, child_path, ctx, verbatim_digits=verbatim, ruled=True)
                     continue
                 if value is None:
                     # An empty field of a container carries nothing to mask.
@@ -706,7 +749,7 @@ class MaskPIIFilter(logging.Filter):
             ):
                 # Never below a card, credential, CVV or SAD container: a broad
                 # exempt prefix must not expose `…token.name_on_card`.
-                result[key] = self._mask_value(value, child_path, ctx)
+                result[key] = self._mask_value(value, child_path, ctx, ruled=True)
             elif (
                 isinstance(value, str)
                 and value[:1] in _JSON_STARTS
@@ -735,7 +778,7 @@ class MaskPIIFilter(logging.Filter):
                 # out rather than made exemptable because `exemptable` also
                 # governs ECSCTX_MASK_EXEMPT_PATHS (above), and none of them may
                 # ever be whitelistable.
-                result[key] = self._mask_value(value, child_path, ctx, inherited=field_type)
+                result[key] = self._mask_value(value, child_path, ctx, inherited=field_type, ruled=True)
             else:
                 result[key] = _mask_pii_leaf(str(value), field_type, ctx)
         return result
@@ -769,6 +812,7 @@ class MaskPIIFilter(logging.Filter):
         inherited: str | None = None,
         *,
         verbatim_digits: bool = False,
+        ruled: bool = False,
     ) -> Any:
         """Apply appropriate masking based on value type.
 
@@ -778,12 +822,14 @@ class MaskPIIFilter(logging.Filter):
         level so legitimate values (status codes, counts) are not mangled by
         the CVV/card patterns — a key-based match still overrides this, see
         _mask_dict. Inside a PII container (``inherited``) a bare value in a
-        list is masked as the container's type.
+        list is masked as the container's type. ``ruled``: the value rules
+        were asked about this value already, with this ``ctx`` -- by
+        _mask_dict, for every value it walks -- and are not asked again.
         """
         if ctx is None:
             ctx = self._context()
             with call_packs(ctx.packs):
-                return self._mask_value(value, path, ctx, inherited, verbatim_digits=verbatim_digits)
+                return self._mask_value(value, path, ctx, inherited, verbatim_digits=verbatim_digits, ruled=ruled)
         if value is None:
             return value
         if len(path) > _MAX_DEPTH:
@@ -797,16 +843,18 @@ class MaskPIIFilter(logging.Filter):
         if verbatim_digits and _is_reference_number(value):
             return value
         # The two exact types nearly every value is, first: this runs for
-        # every value of every record. Each is a value rule's label before
-        # anything else reads it (`_value_label`, spelled out here).
+        # every value of every record. Each is a value rule's label, or kept,
+        # before anything else reads it (`_value_ruling`, spelled out here).
         kind = type(value)
         if kind is str:
             if (
-                value[:1] in _JSON_STARTS
+                not ruled
+                and value[:1] in _JSON_STARTS
                 and (rules := _value_rules(ctx))
-                and (label := text_label(value, rules)) is not None
+                and (found := text_ruling(value, rules)) is not None
+                and (found is not KEEP or inherited not in _FLOOR_TYPES)
             ):
-                return label
+                return value if found is KEEP else found
             if inherited == "card":
                 return _mask_card_list_element(value)
             if inherited is not None:
@@ -817,8 +865,13 @@ class MaskPIIFilter(logging.Filter):
             # is a field value, and its key has already had its say.
             return self._mask_string(value, ctx, scalar=path != ())
         if kind is dict:
-            if (rules := _value_rules(ctx)) and (label := label_of(value, rules)) is not None:
-                return label
+            if (
+                not ruled
+                and (rules := _value_rules(ctx))
+                and (found := ruling(value, rules)) is not None
+                and (found is not KEEP or inherited not in _FLOOR_TYPES)
+            ):
+                return _kept(value) if found is KEEP else found
             return self._mask_dict(value, path, ctx, inherited)
         if isinstance(value, dict):
             return self._mask_dict(value, path, ctx, inherited)
@@ -897,8 +950,19 @@ class MaskPIIFilter(logging.Filter):
         # Never at path (): the record's skip keys (log, service, session_id)
         # describe the record, not a payload that happens to use the names.
         # Key rules only: the content rules run once, on the whole text below,
-        # not once per value and again on the text.
-        masked = self._mask_value(parsed, path or (_JSON_TEXT,), ctx._replace(rules=()))
+        # not once per value and again on the text. And only the value rules
+        # whose hints the text holds: no other can match a mapping in it --
+        # the label rules alone where the text names a key twice, since the
+        # parse is then not all the text ships.
+        rules = _value_rules(ctx)
+        if rules:
+            asked = applicable(text, rules)
+            if keep_rules(asked) and not parses_as_written(text):
+                asked = label_rules(asked)
+            walk = ctx._replace(rules=(), values=[asked])
+        else:
+            walk = ctx._replace(rules=())
+        masked = self._mask_value(parsed, path or (_JSON_TEXT,), walk)
         if masked == parsed:
             return self._mask_string(text, ctx)
         return self._mask_string(json.dumps(masked, ensure_ascii=False, default=str), ctx)
@@ -907,6 +971,10 @@ class MaskPIIFilter(logging.Filter):
         if isinstance(args, tuple):
             return tuple(self._mask_arg(arg, ctx) for arg in args)
         if isinstance(args, dict):
+            if _value_ruling(args, ctx) is KEEP:
+                # `log.info("got %s", value)` with one mapping makes it the
+                # args: rendered whole, it is the value a keep rule ships.
+                return _kept(args)
             # "%(amount).3f": key rules still apply, numbers stay numbers.
             masked = self._mask_dict(args, (), ctx)
             return {

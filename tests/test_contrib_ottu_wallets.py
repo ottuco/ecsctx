@@ -1,27 +1,21 @@
-"""With Ottu's WALLET_RULES, a wallet token's payment data is `[SAD-MASKED]`
-in every pack (#160054).
+"""Ottu's wallet tokens in logs (#159487, decided 2026-10-01).
 
-An Apple Pay or Google Pay token carries the device card number and the
-payment cryptogram, encrypted. It is never hashed: the whole token is the SAD
-label, as a cryptogram under its own key is. It is found by its shape, not by
-a key name, so an unrelated `paymentData` stays readable and the token is
-masked under any key -- `paymentData`, TAP's `token_data`, MPGS's
-`paymentToken` (a JSON string), Google Pay's `tokenizationData.token`, KPay's
-`<udf9>`.
+Apple Pay and Google Pay tokens ship exactly as sent: a token is
+single-use, and the token as it was sent is what debugs a wallet payment.
+Saved-card tokens stay masked.
 
-The shapes are Ottu's, not ecsctx's: `ecsctx.contrib.ottu.masking.WALLET_RULES`,
-value rules a service lists in ECSCTX_MASK_VALUE_RULES. Every test here runs
-with them configured, but the last, which runs with nothing configured: core
-masks no wallet token of its own accord.
+- `WALLET_RULES` are keep rules: a token they match is left as sent under any
+  key -- `paymentData`, TAP's `token_data`, MPGS's `paymentToken` (a JSON
+  string), Google Pay's `tokenizationData.token`, KPay's `<udf9>` -- and in a
+  message or a body, and no rule reads into it. The matchers are strict: a
+  token with a key no wallet writes is walked as before.
+- `WALLET_SAD_RULES` are 0.16.0's label rules: the token's payment data is
+  `[SAD-MASKED]`, for a service that must not log it.
 
-- Apple Pay (PKPaymentToken's `paymentData`): an object whose `version` is
-  `EC_v1` or `RSA_v1`, with the encrypted `data`. `signature` and `header`
-  are useless without it, so the whole object is the label.
-- Google Pay (the payment method token): an object, or a JSON string, whose
-  `protocolVersion` is `ECv1`, `ECv2` or `ECv2SigningOnly`, with a
-  `signedMessage`.
-
-Every test runs with a keyset and without one.
+The shapes are Ottu's, not ecsctx's: value rules a service lists in
+ECSCTX_MASK_VALUE_RULES. With nothing configured core keeps and labels no
+wallet token. Every test runs with a keyset and without one, in the default
+pack and with every pack.
 """
 
 import json
@@ -29,11 +23,21 @@ import logging
 
 import pytest
 
-from ecsctx.contrib.net import loggable_request_body, redact_body
-from ecsctx.contrib.ottu.masking import WALLET_RULES
+from ecsctx.contrib.net import configure_redaction, loggable_request_body, redact_body
+from ecsctx.contrib.ottu.masking import (
+    APPLE_PAY_KEEP_RULE,
+    APPLE_PAY_RULE,
+    APPLE_PAY_TOKEN_KEEP_RULE,
+    GOOGLE_PAY_KEEP_RULE,
+    GOOGLE_PAY_RULE,
+    WALLET_RULES,
+    WALLET_SAD_RULES,
+)
+from ecsctx.masking import is_kept, patterns
 from ecsctx.masking.config import configure_masking_packs, configure_masking_value_rules
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
+from ecsctx.masking.value_rules import is_keep_rule
 from ecsctx.pii import configure_pii
 from ecsctx.processors import mask_sensitive_data
 
@@ -71,6 +75,56 @@ GOOGLE_PAY = {
 }
 GOOGLE_PAY_V1 = {"signature": "MEQCIA==", "protocolVersion": "ECv1", "signedMessage": '{"encryptedMessage":"ZW5j"}'}
 NOT_A_WALLET = {"amount": "10.000", "currency": "KWD"}
+TOKENS = [APPLE_PAY, APPLE_PAY_RSA, PK_PAYMENT_TOKEN, GOOGLE_PAY, GOOGLE_PAY_V1]
+TOKEN_IDS = ["apple-pay", "apple-pay-rsa", "pk-payment-token", "google-pay", "google-pay-v1"]
+
+# Google Pay's PaymentData: the token is a JSON string under
+# tokenizationData.token, beside the payer's own details.
+GOOGLE_PAYMENT_DATA = {
+    "apiVersion": 2,
+    "apiVersionMinor": 0,
+    "email": "jane.roe@example.com",
+    "paymentMethodData": {
+        "type": "CARD",
+        "description": "Visa 1234",
+        "info": {
+            "cardNetwork": "VISA",
+            "cardDetails": "1234",
+            "billingAddress": {"name": "Jane Roe", "postalCode": "13001", "phoneNumber": "+96550000000"},
+        },
+        "tokenizationData": {"type": "PAYMENT_GATEWAY", "token": json.dumps(GOOGLE_PAY)},
+    },
+}
+# ottu_pg's webhook sends the saved card under `token`.
+SAVED_CARD = {
+    "token": "tok_saved_card_fake_0001",
+    "brand": "VISA",
+    "number": "4111111111111111",
+    "expiry_month": "12",
+    "expiry_year": "27",
+    "pg_code": "mpgs",
+}
+KPAY_BODY = (
+    "<request><id>TRANPORTAL123</id><password>S3cretPassw0rd</password><action>1</action>"
+    "<amt>10.000</amt><trackid>TRK1</trackid><udf9>{}</udf9></request>"
+)
+PASSWORD = "password=s3cret-Hunter2"
+# A token written so that what parses is not what ships: a duplicate key
+# json.loads drops, a comment ast.literal_eval drops (review C1).
+DUP_DATA = (
+    '{"version":"EC_v1","data":"4111111111111111","data":"Zm9v","signature":"c2ln",'
+    '"header":{"transactionId":"abc"}}'
+)
+DUP_HEADER = (
+    '{"version":"EC_v1","data":"Zm9v","signature":"c2ln",'
+    '"header":{"cvv":"123"},"header":{"transactionId":"abc"}}'
+)
+NESTED_DUP = {
+    "signature": "MEQC",
+    "protocolVersion": "ECv2",
+    "signedMessage": '{"encryptedMessage": {"cvv": "123", "number": "4111111111111111"}, "encryptedMessage": "ZW5j"}',
+}
+REPR_COMMENT = "{'version': 'EC_v1', 'data': 'Zm9v', 'header': {'transactionId': 'abc' # 4111111111111111 cvv=123\n}}"
 
 PACKS = [["default"], sorted(ALL_PACKS)]
 
@@ -107,12 +161,226 @@ def _message(msg: str, *args) -> str:
     return record.getMessage()
 
 
+def _unconfigured(mask):
+    """What ``mask()`` gives with no value rule, as before WALLET_RULES."""
+    configure_masking_value_rules(())
+    try:
+        return mask()
+    finally:
+        configure_masking_value_rules(WALLET_RULES)
+
+
 def _holds_no_wallet_data(text: str) -> None:
     for secret in ("ZGF0YWJsb2JkYXRhYmxvYg==", "c2lnbmF0dXJlLWJsb2I=", "ZXBoZW1lcmFsLWtleQ==", "MEQCIGZha2Utc2lnbmF0dXJl"):
         assert secret not in text
 
 
-class TestTheKeyWalk:
+class TestTheRules:
+    def test_wallet_rules_are_the_keep_rules(self):
+        assert WALLET_RULES == (APPLE_PAY_TOKEN_KEEP_RULE, APPLE_PAY_KEEP_RULE, GOOGLE_PAY_KEEP_RULE)
+        assert all(is_keep_rule(rule) for rule in WALLET_RULES)
+
+    def test_wallet_sad_rules_are_0_16_0s(self):
+        assert WALLET_SAD_RULES == (APPLE_PAY_RULE, GOOGLE_PAY_RULE)
+        assert {rule.field_type for rule in WALLET_SAD_RULES} == {"sad"}
+
+    @pytest.mark.parametrize("token", TOKENS, ids=TOKEN_IDS)
+    def test_each_token_is_kept(self, token):
+        assert is_kept(token)
+        assert is_kept(json.dumps(token))
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            {**APPLE_PAY, "extra": "x"},
+            {**APPLE_PAY, "version": "EC_v2"},
+            {**APPLE_PAY, "data": {"blob": "x"}},
+            {**APPLE_PAY, "header": {**APPLE_PAY["header"], "extra": "x"}},
+            {**APPLE_PAY, "header": {**APPLE_PAY["header"], "publicKeyHash": 1}},
+            {**APPLE_PAY, "header": "cGto"},
+            {key: value for key, value in APPLE_PAY.items() if key != "data"},
+            {**PK_PAYMENT_TOKEN, "billingContact": {"givenName": "Jane"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {**PK_PAYMENT_TOKEN["paymentMethod"], "billingAddress": "x"}},
+            {**PK_PAYMENT_TOKEN, "paymentData": NOT_A_WALLET},
+            {**GOOGLE_PAY, "extra": "x"},
+            {**GOOGLE_PAY, "protocolVersion": "v3"},
+            {**GOOGLE_PAY, "intermediateSigningKey": {**GOOGLE_PAY["intermediateSigningKey"], "x": 1}},
+            {key: value for key, value in GOOGLE_PAY.items() if key != "signedMessage"},
+            NOT_A_WALLET,
+            # Every leaf a wallet writes is text (review I2): a pair-labelled
+            # CVV rode in a slot whose type nothing checked.
+            {**APPLE_PAY, "signature": [{"name": "cvv", "value": "123"}]},
+            {**APPLE_PAY, "signature": ["c2ln"]},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": {"name": "securityCode", "value": "123"}}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {**PK_PAYMENT_TOKEN["paymentMethod"], "network": ["Visa"]}},
+            {**PK_PAYMENT_TOKEN, "transactionIdentifier": 7134},
+            {"protocolVersion": "ECv2", "signedMessage": {"name": "cvv", "value": "123"}, "signature": "x"},
+            {**GOOGLE_PAY, "signedMessage": {"encryptedMessage": "ZW5j"}},
+            {**GOOGLE_PAY, "signature": 1},
+            {**GOOGLE_PAY, "intermediateSigningKey": {"signedKey": {"keyValue": "a2V5"}, "signatures": ["c2ln"]}},
+            {**GOOGLE_PAY, "intermediateSigningKey": {"signedKey": "{}", "signatures": "c2ln"}},
+            {**GOOGLE_PAY, "intermediateSigningKey": {"signedKey": "{}", "signatures": [{"x": "c2ln"}]}},
+        ],
+        ids=[
+            "apple-extra-key", "apple-version", "apple-data-not-text", "apple-header-extra-key",
+            "apple-header-not-text", "apple-header-not-a-mapping", "apple-no-data", "pk-extra-key",
+            "pk-payment-method-extra-key", "pk-no-wallet", "google-extra-key", "google-version",
+            "google-signing-key-extra-key", "google-no-signed-message", "not-a-wallet",
+            "apple-signature-pair", "apple-signature-list", "pk-display-name-pair", "pk-network-list",
+            "pk-transaction-identifier-number", "google-signed-message-pair", "google-signed-message-mapping",
+            "google-signature-number", "google-signed-key-mapping", "google-signatures-text",
+            "google-signatures-mappings",
+        ],
+    )
+    def test_the_matchers_are_strict(self, value):
+        assert not is_kept(value)
+
+
+class TestWalletTokensShipAsSent:
+    @pytest.mark.parametrize("token", TOKENS, ids=TOKEN_IDS)
+    def test_under_token(self, token):
+        assert _walk({"token": token}) == {"token": token}
+
+    def test_under_payload_content(self):
+        event = {"payload": {"content": PK_PAYMENT_TOKEN, "amount": "10.000"}}
+        assert _walk(event) == event
+
+    @pytest.mark.parametrize("key", ["paymentData", "token_data", "apple_pay", "payload", "udf9", "token", "card"])
+    @pytest.mark.parametrize("token", [APPLE_PAY, APPLE_PAY_RSA], ids=["ec", "rsa"])
+    def test_payment_data_under_any_key(self, key, token):
+        assert _walk({key: token}) == {key: token}
+
+    @pytest.mark.parametrize("key", ["token", "paymentToken", "payload", "note"])
+    @pytest.mark.parametrize("token", TOKENS, ids=TOKEN_IDS)
+    def test_the_token_as_json_text(self, key, token):
+        text = json.dumps(token)
+        assert _walk({key: text}) == {key: text}
+
+    def test_google_pay_under_tokenization_data_the_rest_masked_as_before(self):
+        before = _unconfigured(lambda: _walk({"google_pay_payload": GOOGLE_PAYMENT_DATA}))
+        after = _walk({"google_pay_payload": GOOGLE_PAYMENT_DATA})
+        tokenized = after["google_pay_payload"]["paymentMethodData"]["tokenizationData"]
+        assert tokenized["token"] == json.dumps(GOOGLE_PAY)
+        assert before["google_pay_payload"]["paymentMethodData"]["tokenizationData"]["token"] != tokenized["token"]
+        before["google_pay_payload"]["paymentMethodData"]["tokenizationData"]["token"] = tokenized["token"]
+        assert after == before
+        assert after["google_pay_payload"]["email"] != "jane.roe@example.com"
+
+    def test_the_mpgs_device_payment_body(self):
+        body = {
+            "apiOperation": "PAY",
+            "sourceOfFunds": {
+                "type": "CARD",
+                "provided": {"card": {"devicePayment": {"paymentToken": json.dumps(PK_PAYMENT_TOKEN)}}},
+            },
+            "order": {"amount": "10.000", "currency": "KWD", "walletProvider": "APPLE_PAY"},
+        }
+        assert _walk({"payload": body}) == {"payload": body}
+        assert json.loads(loggable_request_body(None, body)) == body
+
+    @pytest.mark.parametrize("token", TOKENS, ids=TOKEN_IDS)
+    def test_a_message_and_a_repr(self, token, packs):
+        for written in (json.dumps(token), repr(token)):
+            text = f"apple pay token {written} received, {PASSWORD}"
+            masked = _text(text, packs)
+            assert written in masked
+            assert "s3cret-Hunter2" not in masked
+            assert _text(masked, packs) == masked
+        assert _message("token %s", json.dumps(token)) == f"token {json.dumps(token)}"
+        assert _message("token %r", token) == f"token {token!r}"
+        assert _walk({"event": f"got {json.dumps(token)}"}) == {"event": f"got {json.dumps(token)}"}
+
+    @pytest.mark.parametrize("token", [APPLE_PAY, PK_PAYMENT_TOKEN], ids=["payment-data", "pk-payment-token"])
+    def test_kpay_udf9_through_redact_body_and_the_processor(self, token, packs):
+        written = json.dumps(token)
+        body = KPAY_BODY.format(written)
+        for masked in (redact_body(body), _walk({"http": {"body": body}})["http"]["body"]):
+            assert f"<udf9>{written}</udf9>" in masked
+            assert '"transactionId": "7134e7d22988391fa183a61a191ae14c"' in masked
+            assert "S3cretPassw0rd" not in masked
+
+    @pytest.mark.parametrize("token", TOKENS, ids=TOKEN_IDS)
+    def test_entity_encoded_and_with_connects_extra_secret_keys(self, token):
+        configure_redaction(extra_secret_keys=["signature", "hash"])
+        plain = json.dumps(token)
+        for written in (plain, plain.replace('"', "&quot;")):
+            masked = redact_body(KPAY_BODY.format(written))
+            assert f"<udf9>{written}</udf9>" in masked
+            assert "S3cretPassw0rd" not in masked
+        masked = json.loads(redact_body(json.dumps({"paymentToken": plain, "signature": "outer-signature"})))
+        assert masked["paymentToken"] == plain
+        assert masked["signature"] != "outer-signature"
+
+    def test_a_cvv_beside_it_is_still_masked(self):
+        masked = _walk({"payload": {"paymentData": APPLE_PAY, "cvv": "123"}})
+        assert masked == {"payload": {"paymentData": APPLE_PAY, "cvv": "[CVV-MASKED]"}}
+
+    @pytest.mark.parametrize("written", ["mapping", "json-text"])
+    def test_nothing_under_a_cvv_key_is_kept(self, written, packs):
+        token = APPLE_PAY if written == "mapping" else json.dumps(APPLE_PAY)
+        _holds_no_wallet_data(json.dumps(_walk({"cvv": token})))
+        _holds_no_wallet_data(redact_body(f"<cvv>{json.dumps(APPLE_PAY)}</cvv>"))
+        _holds_no_wallet_data(_text(f"<cvv>{json.dumps(APPLE_PAY)}</cvv>", packs))
+        if "financial_ids" in packs:
+            # Not kept, so the payment-id rule reads its transactionId; the
+            # default pack has no rule for an object after a CVV key in text.
+            text = f'{{"securityCode": {json.dumps(APPLE_PAY)}}}'
+            assert "7134e7d22988391fa183a61a191ae14c" not in _text(text, packs)
+
+    @pytest.mark.parametrize("written", [DUP_DATA, DUP_HEADER], ids=["duplicate-data", "duplicate-header"])
+    def test_a_token_with_a_duplicate_key_is_masked_as_without_the_rules(self, written, packs):
+        def every_path():
+            return (
+                _message("body %s", written),
+                _message(written),
+                _walk({"payload": written}),
+                _walk({"paymentToken": written}),
+                _text(f"token {written} end", packs),
+                redact_body(f'{{"token": {written}, "amt": "1"}}'),
+                redact_body(json.dumps({"paymentToken": written})),
+            )
+
+        assert every_path() == _unconfigured(every_path)
+        assert not is_kept(written)
+
+    def test_a_json_text_leaf_with_a_duplicate_key_is_card_data(self, packs):
+        assert _walk({"payload": NESTED_DUP}) == _unconfigured(lambda: _walk({"payload": NESTED_DUP}))
+        assert not is_kept(NESTED_DUP)
+        text = f"got {json.dumps(NESTED_DUP)}"
+        assert _text(text, packs) == _unconfigured(lambda: _text(text, packs))
+
+    def test_a_repr_with_a_comment_is_not_kept(self, packs):
+        text = f"got {REPR_COMMENT} end"
+        masked = _text(text, packs)
+        assert masked == _unconfigured(lambda: _text(text, packs))
+        assert "cvv=123" not in masked
+
+    def test_a_payment_data_that_is_no_wallet_is_masked_as_usual(self):
+        masked = _walk({"paymentData": {"cardNumber": "4111111111111111", "email": "jane.roe@example.com"}})
+        assert masked["paymentData"]["cardNumber"] == "411111******1111"
+        assert masked["paymentData"]["email"] != "jane.roe@example.com"
+
+    def test_a_token_with_extra_keys_is_not_kept_whole(self):
+        wrapper = {**PK_PAYMENT_TOKEN, "cardholderName": "Jane Roe"}
+        masked = _walk({"token": wrapper})["token"]
+        assert masked["paymentData"] == APPLE_PAY
+        assert masked["cardholderName"] != "Jane Roe"
+
+    @pytest.mark.parametrize("saved", ["tok_saved_card_fake_0001", SAVED_CARD], ids=["string", "card-object"])
+    def test_saved_card_tokens_stay_masked(self, saved):
+        before = _unconfigured(lambda: _walk({"token": saved}))
+        assert before != {"token": saved}
+        assert _walk({"token": saved}) == before
+        assert "4111111111111111" not in json.dumps(before)
+
+
+class TestTheSadVariant:
+    """0.16.0's assertions, with WALLET_SAD_RULES."""
+
+    @pytest.fixture(autouse=True)
+    def wallet_rules(self):
+        configure_masking_value_rules(WALLET_SAD_RULES)
+
     @pytest.mark.parametrize("key", ["paymentData", "token_data", "apple_pay", "payload", "udf9", "token", "card"])
     def test_an_apple_pay_token_under_any_key_is_the_label(self, key):
         assert _walk({key: APPLE_PAY}) == {key: SAD}
@@ -132,8 +400,6 @@ class TestTheKeyWalk:
     @pytest.mark.parametrize("key", ["token", "paymentToken", "payload"])
     @pytest.mark.parametrize("token", [APPLE_PAY, GOOGLE_PAY])
     def test_a_token_as_a_json_string_is_the_label(self, key, token):
-        # MPGS's paymentToken, Google Pay's tokenizationData.token: a JSON
-        # string under a credential key was hashed.
         assert _walk({key: json.dumps(token)}) == {key: SAD}
 
     def test_the_mpgs_device_payment_body(self):
@@ -162,7 +428,6 @@ class TestTheKeyWalk:
         assert _walk({"tokens": [APPLE_PAY, json.dumps(GOOGLE_PAY)]}) == {"tokens": [SAD, SAD]}
 
     def test_a_wrapper_as_a_string_under_a_credential_key_is_the_label(self):
-        # Never hashed, even with the token inside something else.
         assert _walk({"token": json.dumps(PK_PAYMENT_TOKEN)}) == {"token": SAD}
 
     def test_a_wrapper_as_a_string_under_any_other_key_keeps_its_shape(self):
@@ -187,8 +452,6 @@ class TestTheKeyWalk:
         assert _message("apple pay token %s", json.dumps(APPLE_PAY)) == f"apple pay token {SAD}"
         assert _message("token %(t)s", {"t": APPLE_PAY}) == f"token {SAD}"
 
-
-class TestText:
     @pytest.mark.parametrize("token", [APPLE_PAY, APPLE_PAY_RSA, GOOGLE_PAY, GOOGLE_PAY_V1])
     def test_a_token_in_a_message_is_the_label(self, token, packs):
         assert _text(f"apple pay token {json.dumps(token)} received", packs) == f"apple pay token {SAD} received"
@@ -227,8 +490,6 @@ class TestText:
         assert "ptok:v1:" not in once
         assert _text(once, packs) == once
 
-
-class TestBodies:
     def test_redact_body(self):
         masked = redact_body(json.dumps({"paymentData": APPLE_PAY, "amount": "10.000"}))
         assert json.loads(masked) == {"paymentData": SAD, "amount": "10.000"}
@@ -243,10 +504,7 @@ class TestBodies:
         assert json.loads(masked) == {"paymentToken": SAD, "amount": "10.000"}
 
     def test_kpay_udf9_through_redact_body_and_the_processor(self, packs):
-        body = (
-            "<request><id>TRANPORTAL123</id><password>S3cretPassw0rd</password><action>1</action>"
-            f"<amt>10.000</amt><trackid>TRK1</trackid><udf9>{json.dumps(PK_PAYMENT_TOKEN)}</udf9></request>"
-        )
+        body = KPAY_BODY.format(json.dumps(PK_PAYMENT_TOKEN))
         for masked in (redact_body(body), _walk({"http": {"body": body}})["http"]["body"]):
             _holds_no_wallet_data(masked)
             udf9 = masked.split("<udf9>")[1].split("</udf9>")[0]
@@ -254,7 +512,6 @@ class TestBodies:
             assert json.loads(udf9)["paymentMethod"] == PK_PAYMENT_TOKEN["paymentMethod"]
 
     def test_kpay_udf9_holding_the_payment_data_itself(self):
-        # What KPay's client sends: udf9 is the paymentData object, unwrapped.
         body = f"<udf8>7134E7D2</udf8><udf9>{json.dumps(APPLE_PAY)}</udf9><amt>10.000</amt>"
         expected = f"<udf8>7134E7D2</udf8><udf9>{SAD}</udf9><amt>10.000</amt>"
         assert redact_body(body) == expected
@@ -267,11 +524,21 @@ class TestBodies:
     def test_a_credential_element_holding_a_token_is_the_label_not_its_hash(self):
         assert redact_body(f"<password>{json.dumps(APPLE_PAY)}</password>") == f"<password>{SAD}</password>"
 
+    def test_the_span_finder_never_runs(self, monkeypatch, packs):
+        calls: list = []
+        monkeypatch.setattr(patterns, "kept_spans", lambda *args: calls.append(args) or [])
+        text = f"apple pay token {json.dumps(PK_PAYMENT_TOKEN)} {json.dumps(GOOGLE_PAY)}"
+        _text(text, packs)
+        _message(text)
+        redact_body(KPAY_BODY.format(text))
+        _walk({"event": text, "token": PK_PAYMENT_TOKEN, "note": json.dumps(GOOGLE_PAY)})
+        assert calls == []
+
 
 class TestNothingConfigured:
-    """Core names no wallet shape: without WALLET_RULES in
-    ECSCTX_MASK_VALUE_RULES, a wallet token is not the label -- the opt-in is
-    explicit."""
+    """Core names no wallet shape: without Ottu's rules in
+    ECSCTX_MASK_VALUE_RULES, a wallet token is neither kept nor labelled --
+    the opt-in is explicit."""
 
     @pytest.fixture(autouse=True)
     def no_value_rules(self, wallet_rules):
@@ -283,6 +550,12 @@ class TestNothingConfigured:
         assert SAD not in redact_body(json.dumps({"paymentData": APPLE_PAY}))
         assert SAD not in _walk({"google_pay": json.dumps(GOOGLE_PAY)})["google_pay"]
 
+    def test_a_token_is_not_kept_by_core(self):
+        assert _walk({"paymentData": APPLE_PAY}) != {"paymentData": APPLE_PAY}
+        assert not is_kept(APPLE_PAY)
+
     def test_the_setting_opts_in(self):
         configure_masking_value_rules(["ecsctx.contrib.ottu.masking.WALLET_RULES"])
+        assert _walk({"paymentData": APPLE_PAY}) == {"paymentData": APPLE_PAY}
+        configure_masking_value_rules(["ecsctx.contrib.ottu.masking.WALLET_SAD_RULES"])
         assert _walk({"paymentData": APPLE_PAY}) == {"paymentData": SAD}

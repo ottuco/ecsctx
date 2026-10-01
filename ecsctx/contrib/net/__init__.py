@@ -35,7 +35,9 @@ from xml.sax.saxutils import escape as xml_escape
 
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import (
+    _KEPT_HEAD,
     _XML_START,
+    KeptStash,
     _card_field_type,
     _closing,
     _element_text,
@@ -46,9 +48,11 @@ from ecsctx.masking.patterns import (
     mask_card_elements,
     mask_objects,
     mask_secret,
+    stash_kept,
     value_rules_in_force,
 )
 from ecsctx.masking.tokens import _MASKED_VALUE, _PLACEHOLDER, make_label
+from ecsctx.masking.value_rules import keep_rules
 
 _SECRET_LABEL = f"[{make_label('secret')}]"
 
@@ -411,12 +415,35 @@ def redact_body(text: str) -> str:
 
     A value a value rule in force matches (``ECSCTX_MASK_VALUE_RULES``), as
     JSON anywhere in the body or as JSON in a JSON string, is the rule's
-    label first, before a credential's rule could hash it.
+    label first, before a credential's rule could hash it -- or, for a keep
+    rule, set aside before any of these rules reads the body and put back as
+    it was sent (``patterns.stash_kept``): a credential's JSON value, an extra
+    secret key such as ``signature`` and a form value's ``=`` never read into
+    it. An element's entity-encoded JSON is read as it decodes, and a value
+    kept there is set aside with the element's text, as it was written.
     """
+    return _redact_body(text)[0]
+
+
+def _redact_body(text: str) -> tuple[str, bool]:
+    """``redact_body``'s result, and whether it set a kept value aside."""
+    stash = None
     if "{" in text and (rules := value_rules_in_force()):
         text = mask_objects(text, rules)
+        stash = stash_kept(text, rules)
+        if stash is None and "&" in text and keep_rules(rules) and _KEPT_HEAD not in text:
+            # None in the text as written; an element's entity-encoded text
+            # may hold one (_encoded_leaf).
+            stash = KeptStash(text, {})
+    if stash is None:
+        return _redact_body_text(text, None), False
+    return stash.restore(_redact_body_text(stash.text, stash)), bool(stash.originals)
+
+
+def _redact_body_text(text: str, stash: KeptStash | None) -> str:
+    """``redact_body``'s rules, once its value rules have read the body."""
     if "<" in text:
-        text = _mask_xml_elements(text)
+        text = _mask_xml_elements(text, stash)
     if "=" in text:
         text = _FORM_FIELD.sub(_mask_card_form_field, text)
     hint_re, json_re, form_re, _names = _get_compiled()
@@ -443,13 +470,16 @@ def _is_credential_element(name: str, names: frozenset[str]) -> bool:
     return _is_credential_key(name) or name.lower() in names
 
 
-def _mask_xml_elements(text: str) -> str:
+def _mask_xml_elements(text: str, stash: KeptStash | None = None) -> str:
     """Each element named as a card, CVV or SAD key is, its text masked by
     that type, as the text rule masks one (`mask_card_elements`) -- first, so
     a CVV inside a credential's element is its label, not part of the text
     the credential's token hashes. Then each element named as a credential
     key is, its text masked as a credential; and entity-encoded text in any
-    other leaf, through the body rules as it decodes."""
+    other leaf, through the body rules as it decodes -- set aside in
+    ``stash`` when it holds a kept value, so the form and JSON rules that
+    read the body next never read into it (base64's `==` after a run holding
+    `cvv` reads as a CVV form field)."""
     text = mask_card_elements(text)
     names = _get_compiled()[3]
     parts, copied, ends = [], 0, None
@@ -464,7 +494,10 @@ def _mask_xml_elements(text: str) -> str:
             continue
         end = closing.start()
         if not _is_credential_element(start.group("local"), names):
-            if (masked := _encoded_leaf(text, start.end(), end)) is not None:
+            if (leaf := _encoded_leaf(text, start.end(), end)) is not None:
+                masked, kept = leaf
+                if kept and stash is not None:
+                    masked = stash.hold(masked)
                 parts += [text[copied : start.end()], masked]
                 copied = end
             continue
@@ -479,23 +512,24 @@ def _mask_xml_elements(text: str) -> str:
     return "".join(parts)
 
 
-def _encoded_leaf(text: str, start: int, end: int) -> str | None:
+def _encoded_leaf(text: str, start: int, end: int) -> tuple[str, bool] | None:
     """The text of a leaf, ``text[start:end]``, masked by the body rules as
     it decodes and escaped again -- when it is JSON or XML written with
-    entities, and masking changed it. A leaf's raw text needs nothing here,
-    nor a form body's: the body rules read them where they stand, `&amp;` a
-    form's separator either way. Decoded, a form value ran on past `&quot;`,
-    and a leaf the first pass left as a form body read differently on the
-    next."""
+    entities, and masking changed it or kept a value in it (then as written,
+    if nothing else changed) -- and whether it kept one. A leaf's raw text
+    needs nothing here, nor a form body's: the body rules read them where
+    they stand, `&amp;` a form's separator either way. Decoded, a form value
+    ran on past `&quot;`, and a leaf the first pass left as a form body read
+    differently on the next."""
     if text.find("<", start, end) != -1 or text.find("&", start, end) == -1:
         return None
     decoded = html.unescape(text[start:end])
     if decoded.lstrip()[:1] not in ("{", "[", "<"):
         return None
-    masked = redact_body(decoded)
+    masked, kept = _redact_body(decoded)
     if masked == decoded:
-        return None
-    return xml_escape(masked)
+        return (text[start:end], True) if kept else None
+    return xml_escape(masked), kept
 
 
 def _mask_card_form_field(match: re.Match) -> str:

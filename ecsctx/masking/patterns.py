@@ -7,7 +7,9 @@ ecsctx's own PII key-name list. Two independent detection strategies:
    always on, `pci` and `financial_ids` opt-in (ecsctx.masking.config) — each
    behind a literal pre-check, applied to every string the filter reaches.
    Rule order is load-bearing — see the comments on each rule and the
-   ordering invariants they protect. Do not reorder.
+   ordering invariants they protect. Do not reorder. Before any of them reads
+   a string, what a service's keep rule ships as sent is set aside
+   (stash_kept), and put back after.
 2. Key-based (classify_key): in a dict, a key whose words name a sensitive
    field masks the whole value outright, regardless of the value's type or
    content.
@@ -32,7 +34,7 @@ import json
 import re
 from bisect import bisect_left
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from functools import lru_cache
 from heapq import merge
 from itertools import accumulate, pairwise
@@ -51,7 +53,19 @@ from ecsctx.masking.tokens import (
     make_label,
     mask_by_field_type,
 )
-from ecsctx.masking.value_rules import hinted, label_of
+from ecsctx.masking.value_rules import (
+    KEEP,
+    DuplicateKey,
+    _first_match,
+    applicable,
+    hinted,
+    holds_card_data,
+    json_as_written,
+    keep_rules,
+    label_rules,
+    ruling,
+    text_ruling,
+)
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -1068,9 +1082,11 @@ def _mask_userinfo(userinfo: str) -> str:
 # Value rules in text
 # ---------------------------------------------------------------------------
 # A JSON object written in text -- JSON, a Python repr, or JSON in a JSON
-# string -- is asked of the service's value rules (value_rules), and one a
-# rule matches is that rule's label, never a token. ecsctx names no shape of
-# its own: nothing configured, nothing runs.
+# string -- is asked of the service's value rules (value_rules): one a label
+# rule matches is that rule's label, never a token (rule 2); one a keep rule
+# matches is set aside before any rule reads the text, and put back as it was
+# written after (stash_kept). ecsctx names no shape of its own: nothing
+# configured, nothing runs.
 
 
 def value_rules_in_force() -> tuple:
@@ -1136,16 +1152,29 @@ def _object_value(m: re.Match) -> Any:
 
 
 def _mask_object(m: re.Match, rules: tuple) -> str:
-    """The label where an object a rule matches stood: a JSON string where it
-    was a JSON value (after `:`, `,` or `[`), escaped where that JSON is
-    itself in a string; bare anywhere else -- in prose, an element's text, a
-    string of its own. An object no rule matches is read member by member,
-    so one inside it is still found."""
+    """The label where an object a label rule matches stood: a JSON string
+    where it was a JSON value (after `:`, `,` or `[`), escaped where that JSON
+    is itself in a string; bare anywhere else -- in prose, an element's text,
+    a string of its own. An object no rule matches is read member by member,
+    so one inside it is still found; one a keep rule matches first is left as
+    written and not looked into, unless the guard refuses it or it is
+    written otherwise than it parses: then it is read as one nothing matches.
+    Only the rules whose hints the object's text holds are asked."""
     written = m.group(0)
-    label = label_of(_object_value(m), rules)
-    if label is None:
+    asked = applicable(written, rules)
+    if not asked:
+        return written  # nothing in it can match: every match holds a hint
+    value = _object_value(m)
+    found = _first_match(value, asked)
+    if found is not None and found[1] and (holds_card_data(value) or not _written_as_parsed(m)):
+        found = None
+    if found is None:
         inner = mask_objects(written[1:-1], rules)
         return written if inner == written[1:-1] else f"{{{inner}}}"
+    rule, keep = found
+    if keep:
+        return written
+    label = f"[{make_label(rule.field_type)}]"
     text, position = m.string, m.start() - 1
     while position >= 0 and text[position].isspace():
         position -= 1
@@ -1157,15 +1186,235 @@ def _mask_object(m: re.Match, rules: tuple) -> str:
 
 def _value_object(m: re.Match) -> str:
     rules = value_rules_in_force()
-    return _mask_object(m, rules) if rules else m.group(0)
+    return _mask_object(m, rules) if label_rules(rules) else m.group(0)
 
 
 def mask_objects(text: str, rules: tuple) -> str:
-    """Each JSON object written in ``text`` that one of ``rules`` matches, as
-    its label: rule 2 alone, for ``contrib.net.redact_body``."""
-    if not rules or "{" not in text or not hinted(text, rules):
+    """Each JSON object written in ``text`` that a label rule among ``rules``
+    matches first, as its label: rule 2 alone, for ``contrib.net.redact_body``.
+    Only the label rules' hints open the text: keep rules alone write no
+    label."""
+    labels = label_rules(rules)
+    if not labels or "{" not in text or not hinted(text, labels):
         return text
     return _OBJECT_RULE.pattern.sub(lambda m: _mask_object(m, rules), text)
+
+
+# Nothing is kept under these, as the key walk keeps nothing under such a key
+# or in such a container (filters): a CVV and the rest of Sensitive
+# Authentication Data.
+_FLOOR_TYPES = frozenset({"cvv", "sad"})
+# The key right before an object in text, as the floor reads it: a quoted key
+# and its colon (JSON, a repr, JSON in a JSON string, its quotes escaped), a
+# key and `=` or `:`, or an XML start tag -- then any space and the opening
+# quote of a string the object is the JSON text of.
+_KEY_BEFORE = re.compile(
+    r"(?:(?P<quote>\\?[\"'])(?P<quoted>[^\"'\\]{1,128})(?P=quote)\s*:"
+    r"|(?<![\w.-])(?P<bare>[\w.-]{1,128})\s*[:=]"
+    r"|<(?:[A-Za-z_][\w.-]*:)?(?P<tag>[A-Za-z_][\w.-]*)(?:\s[^<>]*)?(?<!/)>)"
+    r"\s*(?:\\?[\"'])?\s*\Z"
+)
+# How far back the key is looked for.
+_KEY_REACH = 192
+
+
+def _floored_before(text: str, start: int) -> bool:
+    """Whether the object at ``start`` sits right after a CVV or SAD key --
+    `"cvv": {…}`, `cvv={…}`, `<cvv>{…}</cvv>`, `"pin": "{…}"`: nothing under
+    one is kept, however deep. Every pack on, as the key walk reads a key."""
+    found = _KEY_BEFORE.search(text, max(0, start - _KEY_REACH), start)
+    if found is None:
+        return False
+    name = found.group("quoted") or found.group("bare") or found.group("tag")
+    return classify_key(name, ALL_PACKS) in _FLOOR_TYPES
+
+
+def _written_as_parsed(m: re.Match) -> bool:
+    """Whether the object a match wrote is all its parse says, as a keep
+    decision needs: what ships is the text as written. JSON, or JSON in a
+    JSON string as it decodes, that names no key twice; a Python repr whose
+    parse renders back to it exactly -- a comment or a key written twice is
+    dropped by the parse, and would ship unread."""
+    written = m.group(0)
+    try:
+        if m.group("plain") is None:
+            json_as_written(json.loads(f'"{written}"'))
+            return True
+        try:
+            json_as_written(written)
+        except DuplicateKey:
+            return False
+        except ValueError:
+            return repr(ast.literal_eval(written)) == written
+        return True
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return False
+
+
+def _object_as_read(m: re.Match) -> tuple[Any, bool]:
+    """``_object_value`` and ``_written_as_parsed`` at once, for a keep
+    decision: JSON parsed strictly first, and as json.loads reads it only
+    where a key is written twice."""
+    written = m.group(0)
+    try:
+        if m.group("plain") is None:
+            written = json.loads(f'"{written}"')
+        try:
+            return json_as_written(written), True
+        except DuplicateKey:
+            return json.loads(written), False
+        except ValueError:
+            if m.group("plain") is None:
+                return None, True
+        value = ast.literal_eval(written)
+        return value, repr(value) == written
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return None, True
+
+
+def _object_ruling(m: re.Match, rules: tuple) -> Any:
+    """``ruling`` of the object a match wrote; a label rule's error reads as a
+    label -- not kept, not looked into -- so finding kept spans never raises,
+    and the text is masked as without a keep rule. A keep match written
+    otherwise than it parses (``_written_as_parsed``) is read as one nothing
+    matches."""
+    try:
+        value, as_written = _object_as_read(m)
+        found = ruling(value, rules)
+    except Exception:  # noqa: BLE001 -- a service's matcher; rule 2 reports it where it runs
+        return ""
+    return None if found is KEEP and not as_written else found
+
+
+def kept_spans(text: str, rules: tuple) -> list[tuple[int, int]]:
+    """Where ``text`` writes a value a keep rule among ``rules`` matches first
+    and may keep: each JSON object (rule 2's reading), top down. An object a
+    label rule matches first is no span and is not looked into, nor is one
+    right after a CVV or SAD key; one nothing matches is read member by
+    member; a keep match the guard refuses (``holds_card_data``) is read as
+    one nothing matches. In order, none inside another."""
+    spans: list[tuple[int, int]] = []
+    _find_kept(text, 0, len(text), rules, spans)
+    return spans
+
+
+def _find_kept(text: str, start: int, end: int, rules: tuple, spans: list[tuple[int, int]]) -> None:
+    for m in _OBJECT_RULE.pattern.finditer(text, start, end):
+        asked = applicable(m.group(0), rules)
+        if not asked or _floored_before(text, m.start()):
+            continue
+        found = _object_ruling(m, asked)
+        if found is KEEP:
+            spans.append(m.span())
+        elif found is None:
+            _find_kept(text, m.start() + 1, m.end() - 1, rules, spans)
+
+
+# What a kept span stands as while the rules read the text: a label's shape,
+# which every rule leaves as it is, with no digit in it for a rule to read.
+_KEPT_HEAD = "[KEPT-"
+_KEPT_PLACEHOLDER = re.compile(r"\[KEPT-[A-Z]+-MASKED\]")
+
+
+def _letters(index: int) -> str:
+    """0 is A, 25 is Z, 26 is AA: a placeholder's own, digit-free name."""
+    letters = ""
+    index += 1
+    while index:
+        index, rest = divmod(index - 1, 26)
+        letters = chr(ord("A") + rest) + letters
+    return letters
+
+
+class KeptStash(NamedTuple):
+    """Text with each kept span set aside (``text``), and what each
+    placeholder stands for."""
+
+    text: str
+    originals: dict[str, str]
+
+    def hold(self, value: str) -> str:
+        """A new placeholder standing for ``value``, for the caller to put
+        where it stood: ``contrib.net.redact_body`` sets aside an element's
+        entity-encoded text that holds a kept value."""
+        placeholder = f"{_KEPT_HEAD}{_letters(len(self.originals))}-MASKED]"
+        self.originals[placeholder] = value
+        return placeholder
+
+    def restore(self, masked: str) -> str:
+        """``masked`` with each placeholder that is still in it put back as
+        the value was written. One a rule destroyed -- hashed or labelled with
+        what was around it -- is not: the value goes with it."""
+        if not self.originals:
+            return masked
+        return _KEPT_PLACEHOLDER.sub(lambda m: self.originals.get(m.group(), m.group()), masked)
+
+
+def stash_kept(text: str, rules: tuple | None = None) -> KeptStash | None:
+    """``text`` with each value a keep rule ships set aside as a placeholder
+    (``[KEPT-A-MASKED]``), for the rules to read around it -- or None when
+    there is none: no keep rule among ``rules`` (the rules in force when
+    None), none whose hints the text holds, no span (``kept_spans``), or text
+    that already holds a placeholder's head, which is masked as before.
+    Never raises."""
+    if "{" not in text:
+        return None
+    if rules is None:
+        rules = value_rules_in_force()
+    if not rules or not (keep := keep_rules(rules)) or not hinted(text, keep) or _KEPT_HEAD in text:
+        return None
+    spans = kept_spans(text, rules)
+    if not spans:
+        return None
+    parts: list[str] = []
+    originals: dict[str, str] = {}
+    copied = 0
+    for index, (start, end) in enumerate(spans):
+        placeholder = f"{_KEPT_HEAD}{_letters(index)}-MASKED]"
+        originals[placeholder] = text[start:end]
+        parts += [text[copied:start], placeholder]
+        copied = end
+    parts.append(text[copied:])
+    return KeptStash("".join(parts), originals)
+
+
+def is_kept(value: Any, *, key: str | None = None) -> bool:
+    """Whether masking ships ``value`` as sent: a mapping, or JSON text, that
+    a keep rule in force matches first (``ECSCTX_MASK_VALUE_RULES``, asked in
+    their order), that the guard lets through -- no card, CVV or SAD key and
+    no card number in it, at any depth -- and, given the ``key`` it sits
+    under, not under a CVV or SAD key. False with no keep rule configured,
+    for a label rule's match, and for anything else. Never raises.
+
+    For a service's own masking pass after ecsctx's, which must leave such a
+    value as ecsctx did: ask before masking a field."""
+    if not isinstance(value, (str, Mapping)):
+        return False
+    rules = value_rules_in_force()
+    if not keep_rules(rules):
+        return False
+    if key is not None and classify_key(str(key), ALL_PACKS) in _FLOOR_TYPES:
+        return False
+    try:
+        if isinstance(value, str):
+            return text_ruling(value, rules) is KEEP
+        return ruling(value if isinstance(value, dict) else dict(value), rules) is KEEP
+    except Exception:  # noqa: BLE001 -- a label rule's error: not kept, and a log path never raises
+        return False
+
+
+def mask_outside_kept(text: str, mask: Callable[[str], str]) -> str:
+    """``mask(text)`` with each value ecsctx keeps in ``text`` set aside: a
+    placeholder in a label's shape, ``[KEPT-<letters>-MASKED]``, stands for
+    it while ``mask`` reads the rest, and is put back as the value was
+    written. One ``mask`` destroys is not put back: the value goes with it.
+
+    For a service's own text masking after ecsctx's, which would otherwise
+    read into what ecsctx ships as sent."""
+    stash = stash_kept(text)
+    if stash is None:
+        return mask(text)
+    return stash.restore(mask(stash.text))
 
 
 def _mask_pem(match: re.Match) -> str:
@@ -1717,7 +1966,9 @@ def _has_credential(_text: str, lowered: str) -> bool:
 
 
 def _has_value_object(text: str, _lowered: str) -> bool:
-    return "{" in text and bool(rules := value_rules_in_force()) and hinted(text, rules)
+    # The label rules only: a keep rule writes no label, and what it keeps is
+    # set aside before this rule reads the text (stash_kept).
+    return "{" in text and bool(rules := label_rules(value_rules_in_force())) and hinted(text, rules)
 
 
 def _has_credential_container(text: str, lowered: str) -> bool:
@@ -1939,6 +2190,12 @@ def _rule(pack, regex, repl, gate, scan=None, prose_only=False):
 #      a `<cvv>` inside `<password>` was part of the text the credential's
 #      token hashed, where the key walk gives a CVV under a credential key
 #      its label.
+#  13. Kept spans are stashed before every rule (mask_by_patterns →
+#      stash_kept): what a keep rule ships is a placeholder while the rules
+#      read the text, so none of them reads into it -- a credential rule
+#      would hash it, the payment-id rule mask its `"transactionId"` -- and
+#      one that splits text around it never misreads a quote. A placeholder a
+#      rule destroys takes the value with it.
 # ---------------------------------------------------------------------------
 
 _RULE_TABLE = (
@@ -1950,11 +2207,11 @@ _RULE_TABLE = (
         _has_pem,
     ),
     # 2. Value rules — a JSON object in text, or in a JSON string, that a
-    # value rule in force matches (`value_rules`, ECSCTX_MASK_VALUE_RULES):
-    # the rule's label, never a token, in every pack. Nothing configured,
-    # nothing runs; text holding none of the rules' hints is never parsed.
-    # Before the credential rules, which would hash one under `"token": …`
-    # first.
+    # label rule in force matches first (`value_rules`,
+    # ECSCTX_MASK_VALUE_RULES): the rule's label, never a token, in every
+    # pack. Nothing configured, or keep rules alone, nothing runs; text
+    # holding none of the label rules' hints is never parsed. Before the
+    # credential rules, which would hash one under `"token": …` first.
     _rule(
         "default",
         _OBJECT_TEXT,
@@ -2343,6 +2600,10 @@ def mask_by_patterns(text: str, rules: tuple[Rule, ...]) -> str:
     clean = _clean_set(rules)
     if text in clean:
         return text
+    if (stash := stash_kept(text)) is not None:
+        # Not recorded as clean: it is no fixed point of the rules, which
+        # would read into what it ships.
+        return stash.restore(mask_by_patterns(stash.text, rules))
     for _ in range(_MAX_PASSES):
         masked = _mask_once(text, rules)
         if masked == text:
