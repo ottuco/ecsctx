@@ -17,8 +17,10 @@ without one, and in the default pack and with every pack.
 """
 
 import copy
+import html
 import json
 import logging
+import re
 
 import pytest
 from django.test import override_settings
@@ -502,6 +504,42 @@ class TestText:
         assert BOX not in masked
         assert "KEPT-" not in masked
 
+    def test_a_placeholder_is_named_from_the_value_it_holds(self):
+        # Not by position (review M3, M4): the same value has the same name in
+        # any text, another value another name, all of one length.
+        sealed, other = json.dumps(SEALED), json.dumps({**SEALED, "n": 1})
+        stash = patterns.stash_kept(f"a {sealed} b {other} c {sealed}", KEEP_RULES)
+        names = re.findall(r"\[KEPT-[A-Z]+-MASKED\]", stash.text)
+        assert len(names) == 3
+        assert names[0] == names[2] != names[1]
+        assert len(names[0]) == len(names[1])
+        assert stash.originals == {names[0]: sealed, names[1]: other}
+        assert patterns.stash_kept(f"x {sealed}", KEEP_RULES).text == f"x {names[0]}"
+
+    def test_two_identical_kept_values_are_both_restored(self, packs):
+        text = f"a {json.dumps(SEALED)} b {PASSWORD} c {json.dumps(SEALED)}"
+        masked = _text(text, packs)
+        assert masked.count(json.dumps(SEALED)) == 2
+        assert "s3cret-Hunter2" not in masked
+
+    def test_a_credential_hashed_around_a_kept_value_carries_that_value(self, mode, packs):
+        # The credential's token hashes the placeholder: named by position,
+        # every kept value there gave one token, where the key walk gives
+        # each its own (review M3).
+        def in_a_secret(sealed: dict) -> str:
+            return json.dumps({"secret": json.dumps({"k": sealed})})
+
+        first, second = {**SEALED, "n": 1}, {**SEALED, "n": 2}
+        masked = _text(in_a_secret(first), packs)
+        assert BOX not in masked
+        assert masked == _text(in_a_secret(first), packs)
+        if mode == "keyset":
+            assert masked != _text(in_a_secret(second), packs)
+
+    def test_a_value_holding_a_lone_surrogate_is_kept_and_nothing_raises(self, packs):
+        text = "got " + json.dumps({**SEALED, "note": "\ud800"}, ensure_ascii=False)
+        assert _text(text, packs) == text
+
 
 @pytest.mark.usefixtures("keep")
 class TestCost:
@@ -648,6 +686,23 @@ class TestBodies:
     def test_nothing_under_a_cvv_key_is_kept(self):
         assert SEALED["api_key"] not in redact_body(KPAY.format(json.dumps({"cvv": SEALED})))
         assert BOX not in redact_body(f"<cvv>{json.dumps(SEALED)}</cvv>")
+
+    def test_an_element_naming_a_placeholder_gets_no_copy_of_a_kept_value(self):
+        # Its entity-encoded text decodes to a placeholder's name, which the
+        # outer restore filled with the kept value beside it (review M4).
+        forged = "&#123;&quot;password&quot;:&quot;pw&quot;,&quot;n&quot;:&quot;&#91;KEPT-A-MASKED&#93;&quot;&#125;"
+        masked = redact_body(f"<r><x>{forged}</x><udf9>{json.dumps(SEALED)}</udf9></r>")
+        element = json.loads(html.unescape(masked.split("<x>")[1].split("</x>")[0]))
+        assert element["n"] == "[KEPT-A-MASKED]"
+        assert element["password"] != "pw"
+        assert f"<udf9>{json.dumps(SEALED)}</udf9>" in masked
+
+    def test_two_identical_entity_encoded_elements_are_both_restored(self):
+        encoded = json.dumps(SEALED).replace('"', "&quot;")
+        masked = redact_body(f"<r><udf8>{encoded}</udf8><password>S3cretPassw0rd</password><udf9>{encoded}</udf9></r>")
+        assert f"<udf8>{encoded}</udf8>" in masked
+        assert f"<udf9>{encoded}</udf9>" in masked
+        assert "S3cretPassw0rd" not in masked
 
     def test_redact_url_never_raises_with_a_keep_rule_that_raises(self):
         def broken(_value):

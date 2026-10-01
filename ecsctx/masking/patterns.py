@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import hashlib
 import html
 import json
 import re
@@ -1314,16 +1315,24 @@ def _find_kept(text: str, start: int, end: int, rules: tuple, spans: list[tuple[
 # which every rule leaves as it is, with no digit in it for a rule to read.
 _KEPT_HEAD = "[KEPT-"
 _KEPT_PLACEHOLDER = re.compile(r"\[KEPT-[A-Z]+-MASKED\]")
+# A placeholder's letters: its value's 8-byte digest in base 26, always this
+# many (26**14 > 2**64), so no two names differ by length alone.
+_NAME_LETTERS = 14
 
 
-def _letters(index: int) -> str:
-    """0 is A, 25 is Z, 26 is AA: a placeholder's own, digit-free name."""
-    letters = ""
-    index += 1
-    while index:
-        index, rest = divmod(index - 1, 26)
-        letters = chr(ord("A") + rest) + letters
-    return letters
+def _placeholder(value: str) -> str:
+    """The placeholder standing for ``value``, named from a digest of it, not
+    by position: the same value has the same name in any text, so a
+    credential hashed with one around it carries that value in its token, as
+    under a key; and only who has the value can write its name, so a name
+    written into the text (an element's entity-encoded text decodes to one)
+    restores nothing. Digit-free; never raises (a lone surrogate passes)."""
+    digest = hashlib.blake2b(value.encode("utf-8", "surrogatepass"), digest_size=8).digest()
+    number, letters = int.from_bytes(digest, "big"), []
+    for _ in range(_NAME_LETTERS):
+        number, rest = divmod(number, 26)
+        letters.append(chr(ord("A") + rest))
+    return f"{_KEPT_HEAD}{''.join(letters)}-MASKED]"
 
 
 class KeptStash(NamedTuple):
@@ -1334,11 +1343,14 @@ class KeptStash(NamedTuple):
     originals: dict[str, str]
 
     def hold(self, value: str) -> str:
-        """A new placeholder standing for ``value``, for the caller to put
+        """The placeholder standing for ``value``, for the caller to put
         where it stood: ``contrib.net.redact_body`` sets aside an element's
-        entity-encoded text that holds a kept value."""
-        placeholder = f"{_KEPT_HEAD}{_letters(len(self.originals))}-MASKED]"
-        self.originals[placeholder] = value
+        entity-encoded text that holds a kept value. ``value`` itself where
+        its name already stands for another value: the rules then read it,
+        and may mask what is in it."""
+        placeholder = _placeholder(value)
+        if self.originals.setdefault(placeholder, value) != value:
+            return value
         return placeholder
 
     def restore(self, masked: str) -> str:
@@ -1352,11 +1364,12 @@ class KeptStash(NamedTuple):
 
 def stash_kept(text: str, rules: tuple | None = None) -> KeptStash | None:
     """``text`` with each value a keep rule ships set aside as a placeholder
-    (``[KEPT-A-MASKED]``), for the rules to read around it -- or None when
-    there is none: no keep rule among ``rules`` (the rules in force when
-    None), none whose hints the text holds, no span (``kept_spans``), or text
-    that already holds a placeholder's head, which is masked as before.
-    Never raises."""
+    named from it (``[KEPT-<letters>-MASKED]``; the same value twice, one
+    name), for the rules to read around it -- or None when there is none: no
+    keep rule among ``rules`` (the rules in force when None), none whose
+    hints the text holds, no span (``kept_spans``), text that already holds a
+    placeholder's head, or two values whose names collide; such text is
+    masked as before. Never raises."""
     if "{" not in text:
         return None
     if rules is None:
@@ -1369,9 +1382,11 @@ def stash_kept(text: str, rules: tuple | None = None) -> KeptStash | None:
     parts: list[str] = []
     originals: dict[str, str] = {}
     copied = 0
-    for index, (start, end) in enumerate(spans):
-        placeholder = f"{_KEPT_HEAD}{_letters(index)}-MASKED]"
-        originals[placeholder] = text[start:end]
+    for start, end in spans:
+        value = text[start:end]
+        placeholder = _placeholder(value)
+        if originals.setdefault(placeholder, value) != value:
+            return None
         parts += [text[copied:start], placeholder]
         copied = end
     parts.append(text[copied:])

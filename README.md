@@ -1435,10 +1435,14 @@ value itself, not something the key says about it. In text, what a keep rule
 ships is set aside as a `[KEPT-<letters>-MASKED]` placeholder before every
 content rule, and put back as it was written after; a placeholder a rule
 destroys — a credential hashed with what was around it — takes the value with
-it. Text that already holds `[KEPT-` is masked as if no keep rule were
-configured. A keep rule that raises counts as no match: keep rules are asked
-on paths that must never raise (`redact_url`, `redact_body`,
-`mask_card_value`).
+it. A placeholder is named from a digest of the value it stands for: the same
+value has the same name, so a credential hashed around one carries that value
+in its token, as under a key, and a name written into the text by anyone
+without the value (an element's entity-encoded text decodes to one) is not a
+placeholder and restores nothing. Text that already holds `[KEPT-` is masked
+as if no keep rule were configured. A keep rule that raises counts as no
+match: keep rules are asked on paths that must never raise (`redact_url`,
+`redact_body`, `mask_card_value`).
 
 Two things no keep rule overrides, not even `KeepRule(lambda value: True)`:
 
