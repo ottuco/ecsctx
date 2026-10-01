@@ -71,6 +71,7 @@ def _is_sealed(value) -> bool:
 
 KEEP_RULE = KeepRule(_is_sealed, hints=("sealed-box",))
 KEEP_RULES = (KEEP_RULE,)
+KEEP_ALL = KeepRule(lambda value: True)
 LABEL_RULE = ValueRule("sad", _is_sealed, hints=("sealed-box",))
 LABEL = "[SAD-MASKED]"
 OUTER_RULE = ValueRule("secret", lambda value: value.get("kind") == "outer-box", hints=("outer-box",))
@@ -370,6 +371,30 @@ class TestTheKeyWalk:
         configure_masking_value_rules([KEEP_RULE, LABEL_RULE])
         assert _walk({"x": SEALED, "y": json.dumps(SEALED)}) == {"x": SEALED, "y": json.dumps(SEALED)}
 
+    def test_a_label_rule_wins_inside_a_keep_match(self, packs):
+        # A keep rule matching the outer mapping first shipped what a label
+        # rule names inside it unlabelled (review M8).
+        configure_masking_value_rules([LABEL_RULE, KEEP_ALL])
+        event = {"outer": {"inner": SEALED}, "note": "x"}
+        labelled = {"outer": {"inner": LABEL}, "note": "x"}
+        assert _walk({"payload": event}) == {"payload": labelled}
+        assert json.loads(_walk({"payload": json.dumps(event)})["payload"]) == labelled
+        assert _walk({"password": json.dumps(event)}) == {"password": LABEL}
+        assert _text(f"got {json.dumps(event)} back", packs) == f"got {json.dumps(labelled)} back"
+        assert json.loads(redact_body(json.dumps(event))) == labelled
+        assert not is_kept(event)
+        assert not is_kept(json.dumps(event))
+        assert is_kept({"outer": {"note": "x"}})
+
+    def test_a_label_rule_listed_after_a_keep_match_of_the_same_value_is_not_asked(self, packs):
+        # The first match still wins for the value itself: a keep rule listed
+        # first that matches every value labels nothing inside.
+        configure_masking_value_rules([KEEP_ALL, LABEL_RULE])
+        event = {"outer": {"inner": SEALED}, "note": "x"}
+        assert _walk({"payload": event}) == {"payload": event}
+        assert _text(f"got {json.dumps(event)} back", packs) == f"got {json.dumps(event)} back"
+        assert is_kept(event)
+
     def test_a_keep_match_the_guard_refuses_asks_no_rule_listed_after_it(self, packs):
         configure_masking_value_rules([KEEP_RULE, LABEL_RULE])
         holding = {**SEALED, "cvv": "123"}
@@ -501,11 +526,17 @@ class TestText:
         text = "got " + json.dumps({"kind": "outer-box", "inner": SEALED})
         assert _text(text, packs) == "got [SECRET-MASKED]"
 
-    def test_an_inner_label_match_is_kept_with_the_kept_object(self, packs):
+    def test_an_inner_label_match_wins_over_the_keep_match_around_it(self, packs):
+        # 0.17.0 kept it with the kept object (review M8): the keep match is
+        # now read as one nothing matches, the inner match labelled.
         configure_masking_value_rules([KEEP_RULE, OUTER_RULE])
         sealed = {**SEALED, "inner": {"kind": "outer-box"}}
         text = f"got {json.dumps(sealed)}"
-        assert _text(text, packs) == text
+        masked = _text(text, packs)
+        assert '"inner": "[SECRET-MASKED]"' in masked
+        assert SEALED["api_key"] not in masked
+        configure_masking_value_rules([OUTER_RULE])
+        assert masked == _text(text, packs)
 
     def test_a_label_rule_listed_first_labels_it(self, packs):
         configure_masking_value_rules([LABEL_RULE, KEEP_RULE])

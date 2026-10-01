@@ -37,7 +37,7 @@ from ecsctx.masking import is_kept, patterns
 from ecsctx.masking.config import configure_masking_packs, configure_masking_value_rules
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
-from ecsctx.masking.value_rules import is_keep_rule
+from ecsctx.masking.value_rules import KeepRule, is_keep_rule
 from ecsctx.pii import configure_pii
 from ecsctx.processors import mask_sensitive_data
 
@@ -310,6 +310,15 @@ class TestWalletTokensShipAsSent:
         masked = json.loads(redact_body(json.dumps({"paymentToken": plain, "signature": "outer-signature"})))
         assert masked["paymentToken"] == plain
         assert masked["signature"] != "outer-signature"
+
+    def test_a_label_rule_inside_a_keep_match_wins(self, packs):
+        # A keep rule matching the outer mapping first shipped the token a
+        # label rule names inside it unlabelled (review M8).
+        configure_masking_value_rules([APPLE_PAY_RULE, KeepRule(lambda value: True)])
+        event = {"outer": {"inner": APPLE_PAY}}
+        assert _walk({"payload": event}) == {"payload": {"outer": {"inner": SAD}}}
+        assert _text(f"got {json.dumps(event)}", packs) == f'got {{"outer": {{"inner": "{SAD}"}}}}'
+        assert redact_body(json.dumps(event)) == f'{{"outer": {{"inner": "{SAD}"}}}}'
 
     def test_a_cvv_beside_it_is_still_masked(self):
         masked = _walk({"payload": {"paymentData": APPLE_PAY, "cvv": "123"}})

@@ -60,8 +60,8 @@ from ecsctx.masking.value_rules import (
     _first_match,
     applicable,
     hinted,
-    holds_card_data,
     json_as_written,
+    keep_refused,
     keep_rules,
     label_rules,
     pair_labelled,
@@ -1159,16 +1159,17 @@ def _mask_object(m: re.Match, rules: tuple) -> str:
     is itself in a string; bare anywhere else -- in prose, an element's text,
     a string of its own. An object no rule matches is read member by member,
     so one inside it is still found; one a keep rule matches first is left as
-    written and not looked into, unless the guard refuses it or it is
-    written otherwise than it parses: then it is read as one nothing matches.
-    Only the rules whose hints the object's text holds are asked."""
+    written and not looked into, unless it is refused (``keep_refused``: the
+    guard, or a label rule matching inside it) or written otherwise than it
+    parses: then it is read as one nothing matches. Only the rules whose
+    hints the object's text holds are asked."""
     written = m.group(0)
     asked = applicable(written, rules)
     if not asked:
         return written  # nothing in it can match: every match holds a hint
     value = _object_value(m)
     found = _first_match(value, asked)
-    if found is not None and found[1] and (holds_card_data(value) or not _written_as_parsed(m)):
+    if found is not None and found[1] and (keep_refused(value, asked) or not _written_as_parsed(m)):
         found = None
     if found is None:
         inner = mask_objects(written[1:-1], rules)
@@ -1311,8 +1312,9 @@ def kept_spans(text: str, rules: tuple) -> list[tuple[int, int]]:
     label rule matches first is no span and is not looked into, nor is one
     right after a CVV or SAD key, nor one holding a CVV or SAD key or
     labelled as one (``_floors``); one nothing matches is read member by
-    member; a keep match the guard refuses (``holds_card_data``) is read as
-    one nothing matches. In order, none inside another."""
+    member; a keep match refused (``keep_refused``: the guard, or a label
+    rule matching inside it) is read as one nothing matches. In order, none
+    inside another."""
     spans: list[tuple[int, int]] = []
     _find_kept(text, 0, len(text), rules, spans)
     return spans

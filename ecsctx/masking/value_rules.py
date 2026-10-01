@@ -22,7 +22,10 @@ A rule is one of two kinds, both asked in list order, the first match winning:
   is kept under a CVV or SAD key or inside a CVV or SAD container (the floor,
   applied where a key is known: ``filters``, ``patterns.kept_spans``), and a
   match holding a card, CVV or SAD key, or a card number, at any depth, is
-  walked as if nothing matched (the guard, ``holds_card_data``).
+  walked as if nothing matched (the guard, ``holds_card_data``). A match
+  holding a value a label rule labels is walked so too, wherever that rule
+  is listed (``keep_refused``): a label rule wins at any depth inside a keep
+  match, the first match only for the value itself.
 
 Both have:
 
@@ -390,17 +393,31 @@ def holds_card_data(value: Any) -> bool:
     return holds(value, 0)
 
 
+def keep_refused(value: dict, rules: Iterable[Any]) -> bool:
+    """Whether a keep match is walked as if nothing had matched: the guard
+    refuses it (``holds_card_data``), or a label rule among ``rules`` labels
+    something strictly inside it (``label_within``, over its members): a
+    label rule wins at any depth inside a keep match. For the value itself
+    the first match still wins. Only with a label rule among ``rules``."""
+    if holds_card_data(value):
+        return True
+    return bool(_split(rules).label) and any(
+        label_within(member, rules, 1) is not None for member in value.values()
+    )
+
+
 def ruling(value: Any, rules: Iterable[Any]) -> str | _Keep | None:
     """What the first of ``rules`` a mapping matches makes of it: its label,
-    ``KEEP``, or None -- nothing matched, or a keep rule did and the guard
-    refused it (``holds_card_data``), so it is walked as if nothing had: no
-    rule listed after it is asked."""
+    ``KEEP``, or None -- nothing matched, or a keep rule did and it is
+    refused (``keep_refused``: the guard, or a label rule matching inside
+    it), so it is walked as if nothing had: no rule listed after it is
+    asked."""
     found = _first_match(value, rules)
     if found is None:
         return None
     rule, keep = found
     if keep:
-        return None if holds_card_data(value) else KEEP
+        return None if keep_refused(value, rules) else KEEP
     return f"[{make_label(rule.field_type)}]"
 
 
@@ -476,17 +493,15 @@ def text_label(text: str, rules: Iterable[Any]) -> str | None:
 
 def label_within(value: Any, rules: Iterable[Any], depth: int = 0) -> str | None:
     """The label of a value a rule matches anywhere in ``value`` -- a
-    mapping, a list, or JSON text, however deep -- or None. A kept mapping is
-    not descended into: what a keep rule ships holds no label."""
+    mapping, a list, or JSON text, however deep -- or None. A keep match is
+    looked into like any other mapping: one holding a label match is not kept
+    (``keep_refused``), and one that is kept holds none."""
     if depth > _MAX_DEPTH:
         return None
     if isinstance(value, dict):
         found = _first_match(value, rules)
-        if found is not None:
-            if not found[1]:
-                return f"[{make_label(found[0].field_type)}]"
-            if not holds_card_data(value):
-                return None
+        if found is not None and not found[1]:
+            return f"[{make_label(found[0].field_type)}]"
         items = value.values()
     elif isinstance(value, (list, tuple)):
         items = value
