@@ -32,7 +32,7 @@ import json
 import re
 from bisect import bisect_left
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from functools import lru_cache
 from heapq import merge
 from itertools import accumulate, pairwise
@@ -60,6 +60,7 @@ from ecsctx.masking.value_rules import (
     label_rules,
     rule_of,
     ruling,
+    text_ruling,
 )
 
 # ---------------------------------------------------------------------------
@@ -1319,6 +1320,45 @@ def stash_kept(text: str, rules: tuple | None = None) -> KeptStash | None:
         copied = end
     parts.append(text[copied:])
     return KeptStash("".join(parts), originals)
+
+
+def is_kept(value: Any, *, key: str | None = None) -> bool:
+    """Whether masking ships ``value`` as sent: a mapping, or JSON text, that
+    a keep rule in force matches first (``ECSCTX_MASK_VALUE_RULES``, asked in
+    their order), that the guard lets through -- no card, CVV or SAD key and
+    no card number in it, at any depth -- and, given the ``key`` it sits
+    under, not under a CVV or SAD key. False with no keep rule configured,
+    for a label rule's match, and for anything else. Never raises.
+
+    For a service's own masking pass after ecsctx's, which must leave such a
+    value as ecsctx did: ask before masking a field."""
+    if not isinstance(value, (str, Mapping)):
+        return False
+    rules = value_rules_in_force()
+    if not keep_rules(rules):
+        return False
+    if key is not None and classify_key(str(key), ALL_PACKS) in _FLOOR_TYPES:
+        return False
+    try:
+        if isinstance(value, str):
+            return text_ruling(value, rules) is KEEP
+        return ruling(value if isinstance(value, dict) else dict(value), rules) is KEEP
+    except Exception:  # noqa: BLE001 -- a label rule's error: not kept, and a log path never raises
+        return False
+
+
+def mask_outside_kept(text: str, mask: Callable[[str], str]) -> str:
+    """``mask(text)`` with each value ecsctx keeps in ``text`` set aside: a
+    placeholder in a label's shape, ``[KEPT-<letters>-MASKED]``, stands for
+    it while ``mask`` reads the rest, and is put back as the value was
+    written. One ``mask`` destroys is not put back: the value goes with it.
+
+    For a service's own text masking after ecsctx's, which would otherwise
+    read into what ecsctx ships as sent."""
+    stash = stash_kept(text)
+    if stash is None:
+        return mask(text)
+    return stash.restore(mask(stash.text))
 
 
 def _mask_pem(match: re.Match) -> str:

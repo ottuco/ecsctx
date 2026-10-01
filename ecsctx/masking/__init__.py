@@ -13,7 +13,8 @@ for choosing packs (configure_masking_packs, ECSCTX_MASKING_PACKS), a
 service's own safe key names (configure_masking_safe_keys,
 ECSCTX_MASK_SAFE_KEYS), its value rules (configure_masking_value_rules,
 ECSCTX_MASK_VALUE_RULES; ecsctx.masking.value_rules: ValueRule labels a
-shape, KeepRule ships it as sent) and skip paths, and
+shape, KeepRule ships it as sent -- is_kept and mask_outside_kept let a
+service's own pass after ecsctx's leave a kept value alone) and skip paths, and
 ecsctx.masking.exemptions for the configure_masking() path-exemption API.
 """
 
@@ -33,7 +34,14 @@ from ecsctx.masking.exemptions import (
 )
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.install import install_maskers, uninstall_maskers
-from ecsctx.masking.patterns import ALL_PACKS, PACK_NAMES, mask_card_value, mask_secret
+from ecsctx.masking.patterns import (
+    ALL_PACKS,
+    PACK_NAMES,
+    is_kept,
+    mask_card_value,
+    mask_outside_kept,
+    mask_secret,
+)
 from ecsctx.masking.tokens import mask_by_field_type, safe_tokenize
 from ecsctx.masking.value_rules import KeepRule, ValueRule
 
@@ -48,6 +56,8 @@ __all__ = [
     "get_masking_value_rules",
     "ValueRule",
     "KeepRule",
+    "is_kept",
+    "mask_outside_kept",
     "MaskPIIFilter",
     "install_maskers",
     "uninstall_maskers",

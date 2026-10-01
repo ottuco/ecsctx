@@ -36,6 +36,8 @@ from ecsctx.masking import (
     ValueRule,
     configure_masking_value_rules,
     get_masking_value_rules,
+    is_kept,
+    mask_outside_kept,
     patterns,
 )
 from ecsctx.masking.config import configure_masking_packs, configure_masking_safe_keys
@@ -573,3 +575,66 @@ class TestBodies:
         url = "https://pg.example/pay?card_number=" + json.dumps(SEALED).replace(" ", "") + "&password=s3cret"
         assert "s3cret" not in redact_url(url)
         assert "s3cret-Hunter2" not in redact_body(f"{json.dumps(SEALED)} {PASSWORD}")
+
+
+def _shout(text: str) -> str:
+    """A service's own pass: every word `secret` masked."""
+    return text.replace("secret", "[OWN-MASKED]")
+
+
+class TestHelpers:
+    @pytest.mark.usefixtures("keep")
+    def test_is_kept_for_a_mapping_and_for_json_text(self):
+        assert is_kept(SEALED)
+        assert is_kept(json.dumps(SEALED))
+        assert is_kept(f"  {json.dumps(SEALED, indent=2)}")
+        assert is_kept(SEALED, key="token")
+
+    def test_is_kept_is_false_with_nothing_configured(self):
+        assert not is_kept(SEALED)
+        assert not is_kept(json.dumps(SEALED))
+
+    def test_is_kept_is_false_for_a_label_match(self):
+        configure_masking_value_rules([LABEL_RULE, KEEP_RULE])
+        assert not is_kept(SEALED)
+
+    @pytest.mark.usefixtures("keep")
+    @pytest.mark.parametrize("key", ["cvv", "securityCode", "pin", "cryptogram"])
+    def test_is_kept_is_false_under_a_cvv_or_sad_key(self, key):
+        assert not is_kept(SEALED, key=key)
+        assert not is_kept(json.dumps(SEALED), key=key)
+
+    @pytest.mark.usefixtures("keep")
+    def test_is_kept_is_false_when_the_guard_refuses_it(self):
+        assert not is_kept({**SEALED, "cvv": "123"})
+        assert not is_kept(json.dumps({**SEALED, "note": "4111111111111111"}))
+
+    @pytest.mark.usefixtures("keep")
+    @pytest.mark.parametrize("value", [NOT_SEALED, "not json", 42, None, ["sealed-box"], json.dumps([SEALED])])
+    def test_is_kept_is_false_for_anything_else(self, value):
+        assert not is_kept(value)
+
+    def test_is_kept_never_raises(self):
+        def broken(_value):
+            raise RuntimeError("rule failed")
+
+        configure_masking_value_rules([KeepRule(broken), ValueRule("sad", broken)])
+        assert not is_kept(SEALED)
+        assert not is_kept(json.dumps(SEALED))
+
+    @pytest.mark.usefixtures("keep")
+    def test_mask_outside_kept_masks_only_outside(self):
+        sealed = {**SEALED, "note": "secret"}
+        text = f"secret {json.dumps(sealed)} and secret"
+        assert mask_outside_kept(text, _shout) == f"[OWN-MASKED] {json.dumps(sealed)} and [OWN-MASKED]"
+
+    @pytest.mark.usefixtures("keep")
+    def test_mask_outside_kept_does_not_restore_a_destroyed_placeholder(self):
+        masked = mask_outside_kept(f"secret {json.dumps(SEALED)}", lambda text: "[OWN-MASKED] everything")
+        assert masked == "[OWN-MASKED] everything"
+        masked = mask_outside_kept(f"a {json.dumps(SEALED)}", lambda text: text.replace("[KEPT-", "[GONE-"))
+        assert BOX not in masked
+
+    def test_mask_outside_kept_with_nothing_configured_masks_it_all(self):
+        sealed = {**SEALED, "note": "secret"}
+        assert "secret" not in mask_outside_kept(f"secret {json.dumps(sealed)}", _shout)
