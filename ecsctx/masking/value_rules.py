@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar, NamedTuple
@@ -274,6 +275,10 @@ def parses_as_written(text: str) -> bool:
 _MAX_DEPTH = 64
 # What the guard refuses to keep: a key the key rules read as one of these.
 _CARD_DATA_TYPES = frozenset({"card", "cvv", "sad"})
+# Epoch milliseconds, as written until 2286: thirteen digits from a 1. Google
+# Pay's `signedKey` carries one (`keyExpiration`), which `pan_shaped` reads as
+# a card number; the one card number's shape the guard lets through.
+_EPOCH_MILLISECONDS = re.compile(r"1[0-9]{12}")
 
 
 def holds_card_data(value: Any) -> bool:
@@ -287,11 +292,10 @@ def holds_card_data(value: Any) -> bool:
     is a matcher's job.
 
     A leaf is a card number when it is an int ``int_is_pan`` reads as one, or
-    a string ``pan_shaped`` reads as one whose digits ``int_is_pan`` reads as
-    one too: a payment network's issuer prefix and a Luhn pass. Not merely
-    ``pan_shaped``, which reads a thirteen-digit epoch-millisecond timestamp as
-    a card number -- Google Pay's ``signedKey`` carries one, so no Google Pay
-    token would ever be kept -- and not ``holds_pan_run``, which flags hex ids.
+    a string ``pan_shaped`` reads as one -- whatever its prefix, Luhn or not --
+    except thirteen bare digits from a 1: epoch milliseconds, Google Pay's
+    ``keyExpiration`` in ``signedKey``, without which no Google Pay token would
+    ever be kept. Not ``holds_pan_run``, which flags hex ids.
     Anything that is no JSON value (an object whose text is not judged here),
     nesting past the depth cap, and a leaf of JSON text that names a key twice
     (``json_as_written``: what ships would not be what was read) count as
@@ -301,7 +305,6 @@ def holds_card_data(value: Any) -> bool:
     from ecsctx.masking.filters import _PAIR_IDENTIFIERS
     from ecsctx.masking.patterns import (
         ALL_PACKS,
-        _digits_only,
         classify_key,
         int_is_pan,
         pan_shaped,
@@ -339,7 +342,7 @@ def holds_card_data(value: Any) -> bool:
         if isinstance(item, float):
             return item.is_integer() and int_is_pan(int(item))
         if isinstance(item, str):
-            if pan_shaped(item) and int_is_pan(int(_digits_only(item))):
+            if pan_shaped(item) and not _EPOCH_MILLISECONDS.fullmatch(item.strip()):
                 return True
             if item.lstrip()[:1] not in ("{", "["):
                 return False

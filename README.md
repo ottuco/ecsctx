@@ -1454,10 +1454,11 @@ Two things no keep rule overrides, not even `KeepRule(lambda value: True)`:
   2 data, `"card 4111…"`) ships with it. Keeping that out is the matcher's
   job, which is why a matcher must be strict about what it matches. A leaf is
   a card number when it is an int `int_is_pan` reads as one, or a string
-  `pan_shaped` reads as one whose digits pass `int_is_pan` too: an issuer's
-  prefix and Luhn. (`pan_shaped` alone reads Google Pay's thirteen-digit
-  `keyExpiration`, epoch milliseconds, as a card number.) A leaf that is no
-  JSON value counts as card data.
+  `pan_shaped` reads as one, whatever its prefix and Luhn or not — except
+  thirteen bare digits from a 1: epoch milliseconds, Google Pay's
+  `keyExpiration`, which `pan_shaped` reads as a card number and every
+  Google Pay token carries. A leaf that is no JSON value counts as card
+  data.
 
 JSON text under a key that would hash it whole — a credential's — and that
 holds a kept value deeper is still hashed whole: a keep never cuts a value out

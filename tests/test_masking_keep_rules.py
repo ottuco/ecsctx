@@ -316,6 +316,25 @@ class TestTheKeyWalk:
         holding = {**SEALED, "fields": [{"name": "customer_note", "value": "gift"}]}
         assert _walk({"payload": holding}) == {"payload": holding}
 
+    @pytest.mark.parametrize(
+        "leaf",
+        [
+            "8171999927660000",
+            "122000000000003",
+            "4111111111111112",
+            "2542323393147",
+            "15423233931470",
+            "1542 3233 9314 7",
+        ],
+        ids=["luhn-8-prefix", "uatp-1-prefix", "not-luhn", "13-digits-from-2", "14-digits-from-1", "13-in-groups"],
+    )
+    def test_every_card_number_shape_but_epoch_milliseconds_blocks_keeping(self, leaf):
+        # Only Google Pay's keyExpiration shape is exempt (review M1): no
+        # issuer prefix or Luhn check lets another digit run through.
+        holding = {**SEALED, "note": leaf}
+        assert not is_kept(holding)
+        _masked_as_a_walk(_walk({"payload": holding})["payload"])
+
     def test_a_timestamp_is_not_a_card_number_to_the_guard(self):
         # Google Pay's signedKey carries keyExpiration, epoch milliseconds:
         # thirteen digits, shaped like a card number but no issuer's.
