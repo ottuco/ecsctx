@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.17.0 (2026-10-01)
+
+### Features
+- feat(contrib)!: Ottu's WALLET_RULES ship wallet tokens as sent; WALLET_SAD_RULES label them as 0.16.0 did (e183276)
+- feat(masking): is_kept and mask_outside_kept, for a service's own pass after ecsctx's (3d236eb)
+- feat(net): redact_body leaves a kept value as it was sent (18173a9)
+- feat(masking): a kept value is set aside before any content rule reads text (264c52a)
+- feat(masking): keep rules, a service's own shapes of value that ship as sent (ECSCTX_MASK_VALUE_RULES) (efaad05)
+
+### Fixes
+- fix(masking): the guard's epoch-milliseconds exemption holds until 2065, not 2033 (c174b71)
+- fix(masking): a keep decision on text parses it once (fae9f38)
+- fix(masking): the guard exempts only epoch milliseconds from a card number's shape (eb9e1de)
+- fix(contrib): Ottu's wallet matchers keep only a token whose every leaf is text (fdf734d)
+- fix(masking): the guard reads a {name, value} pair labelled as card data (53d67ad)
+- fix(masking): rule 2 reads a keep match the guard refuses as one nothing matches (3d4a6f0)
+- fix(masking): a keep decision reads the text as written, so a duplicate key or a repr comment hides no card data (046acfb)
+- fix(masking): configuring value rules forgets the strings known clean (aa5daf8)
+
+### Other
+- Merge pull request #71 from ottuco/feat/keep-rules (b1d1e55)
+- docs(masking): a refused keep match asks no later rule; nothing but card data is read in a kept value (a403054)
+- perf(masking): text whose hints select some rules asks the same tuple each time (21774f4)
+- docs(masking): keep rules (c77385a)
+
+
 ## v0.16.0 (2026-10-01)
 
 ### Features
