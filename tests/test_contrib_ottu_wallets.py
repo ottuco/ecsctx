@@ -21,6 +21,7 @@ pack and with every pack.
 import html
 import json
 import logging
+import time
 
 import pytest
 
@@ -154,6 +155,14 @@ NOT_TOKEN_TEXT = {
     "apple-transaction-id-pan-in-hex": {
         **APPLE_PAY,
         "header": {**APPLE_PAY["header"], "transactionId": "4111111111111111ab"},
+    },
+    # A hex id inside base64 is base64's text, read (review r2, 1 and 4);
+    # digits beside a card number are read as the pci rules read them (3).
+    "apple-data-hex-id-holding-a-pan": {**APPLE_PAY, "data": "AA/4111111111111111deadbeef/AA"},
+    "apple-data-epoch-run": {**APPLE_PAY, "data": "QUJD1790318444473QUJD"},
+    "apple-transaction-id-twenty-digits": {
+        **APPLE_PAY,
+        "header": {**APPLE_PAY["header"], "transactionId": "41111111111111110000"},
     },
 }
 # What the device says about the card: the network's name and the last four.
@@ -345,6 +354,23 @@ class TestTheRules:
     def test_the_matchers_are_strict(self, value):
         assert not is_kept(value)
 
+    @pytest.mark.parametrize("path", ["key-walk", "text", "body"])
+    def test_a_crafted_400_kb_token_is_read_in_linear_time(self, path, packs):
+        # Hex ids inside a base64 slot, each holding a Luhn-valid run: 400 KB
+        # of them cost 6.5 s while a run inside a hex token was skipped by
+        # rescanning the tokens for each run (review r2, 1).
+        token = {**APPLE_PAY, "data": "AA" + "/4111111111111111deadbeef" * 16_000}
+        assert len(token["data"]) > 400_000
+        started = time.perf_counter()
+        assert not is_kept(token)
+        if path == "key-walk":
+            assert patterns.kept_spans(json.dumps({"x": token}), WALLET_RULES) == []
+        elif path == "text":
+            assert patterns.kept_spans(f"token {json.dumps(token)} end", WALLET_RULES) == []
+        else:
+            assert patterns.kept_spans(KPAY_BODY.format(json.dumps(token)), WALLET_RULES) == []
+        assert time.perf_counter() - started < 1.0
+
     @pytest.mark.parametrize("name", NOT_A_DISPLAY_NAME.values(), ids=NOT_A_DISPLAY_NAME.keys())
     def test_a_display_name_is_a_network_and_the_last_four(self, name):
         token = {**PK_PAYMENT_TOKEN, "paymentMethod": {**PK_PAYMENT_TOKEN["paymentMethod"], "displayName": name}}
@@ -376,9 +402,6 @@ class TestTheRules:
             {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "Amex", "network": "AmEx", "type": "credit"}},
             {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "Apple Pay", "network": "Visa", "type": "debit"}},
             {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "V" * 35 + " 1234"}},
-            # Thirteen digits from a 1 or a 2 read as epoch milliseconds,
-            # wherever they stand.
-            {**APPLE_PAY, "data": "QUJD1790318444473QUJD"},
             # A 64-hex id holding a Luhn-valid run of digits, as about one in
             # two hundred does: an id, not a card number (fix round 2).
             {**APPLE_PAY, "header": {**APPLE_PAY["header"], "transactionId": "a" * 10 + "4111111111111111" + "b" * 38}},
@@ -386,7 +409,7 @@ class TestTheRules:
         ],
         ids=[
             "apple-application-data", "pk-display-name", "google-signature-plus-and-slash", "pk-display-name-amex",
-            "pk-display-name-connects-fixture", "pk-display-name-forty-characters", "apple-data-epoch-run",
+            "pk-display-name-connects-fixture", "pk-display-name-forty-characters",
             "apple-transaction-id-with-a-luhn-run", "pk-transaction-identifier-with-a-luhn-run",
         ],
     )

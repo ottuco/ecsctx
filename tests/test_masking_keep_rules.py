@@ -328,11 +328,26 @@ class TestTheKeyWalk:
             {"ref": "4111111111111111abcdef"},
             {"ref": "zz" + DIGEST_WITH_A_RUN},
             {"ref": DIGEST_WITH_A_RUN + "z"},
+            # Only a leaf that is a whole hex id is not read (review r2, 1 and
+            # 4): one inside base64, or in prose, is.
+            {"box": "AA/4111111111111111deadbeef/AA"},
+            {"note": "session aaaa4111111111111111bbbb ended"},
+            # A run read as the pci rules read one (review r2, 3): a card
+            # beside another digit group, more digits than a card, no Luhn.
+            {"note": "1234 4111111111111111"},
+            {"note": "4111111111111111 123"},
+            {"note": "4111111111111111 12/25"},
+            {"ref": "41111111111111110000"},
+            {"ref": "order 4111111111111112 retried"},
+            # Epoch milliseconds are only a whole leaf's.
+            {"box": "QUJD1790318444473QUJD"},
         ],
         ids=[
             "cvv", "cardNumber", "a-pan-leaf", "an-int-pan", "a-nested-json-cvv", "a-pin-in-a-list",
             "a-pan-in-prose", "a-pan-in-base64", "a-pan-in-hex", "a-grouped-pan-in-prose", "track-2",
             "a-pan-in-text-that-is-no-json", "hex-shorter-than-an-id", "hex-glued-to-letters", "hex-glued-to-a-letter-after",
+            "a-hex-id-in-base64", "a-24-hex-id-in-prose", "a-group-before-a-card", "a-cvv-after-a-card",
+            "an-expiry-after-a-card", "twenty-digits", "a-run-failing-luhn", "epoch-milliseconds-in-a-longer-leaf",
         ],
     )
     def test_the_guard_a_match_holding_card_data_is_walked(self, extra):
@@ -345,24 +360,24 @@ class TestTheKeyWalk:
         "extra",
         [
             {"note": "cvv=123"},
-            {"box": "QUJD1790318444473QUJD"},
-            {"ref": "order 4111111111111112 retried"},
-            {"ref": "41111111111111111111"},
+            {"note": "order 12345678901 shipped"},
+            {"expiration": "1790318444473"},
             {"note": json.dumps({"keyExpiration": "1790318444473"})},
-            # A whole hex id of 24 characters or more: a digest, an ObjectId
-            # -- read as Connect's own card scan reads one (fix round 2).
+            # A leaf that is a whole hex id of 24 characters or more: a
+            # digest, an ObjectId, Apple Pay's transactionId (fix rounds 2, 3).
             {"digest": DIGEST_WITH_A_RUN},
             {"digest": DIGEST_WITH_A_RUN.upper()},
-            {"note": "session aaaa4111111111111111bbbb ended"},
+            {"digest": "aaaa4111111111111111bbbb"},
         ],
         ids=[
-            "a-cvv-in-a-string", "epoch-milliseconds", "a-run-failing-luhn", "twenty-digits", "json-text-epoch",
-            "a-64-hex-digest", "an-uppercase-digest", "a-24-hex-id-in-prose",
+            "a-cvv-in-a-string", "eleven-digits", "epoch-milliseconds", "json-text-epoch",
+            "a-64-hex-digest", "an-uppercase-digest", "a-24-hex-id",
         ],
     )
     def test_what_the_guard_does_not_read_in_a_text_leaf(self, extra):
         # A CVV or other short value inside a longer string is the matcher's
-        # to keep out; a run that is no card number is no card number.
+        # to keep out; fewer digits than a card number, epoch milliseconds
+        # and a whole hex id hold none.
         holding = {**SEALED, **extra}
         assert is_kept(holding)
         assert _walk({"payload": holding}) == {"payload": holding}

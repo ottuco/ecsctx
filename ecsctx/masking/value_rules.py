@@ -356,9 +356,9 @@ def holds_card_data(value: Any) -> bool:
     a string ``pan_shaped`` reads as one -- whatever its prefix, Luhn or not --
     except thirteen bare digits from a 1 or a 2: epoch milliseconds, Google Pay's
     ``keyExpiration`` in ``signedKey``, without which no Google Pay token would
-    ever be kept. A text leaf that is no JSON text holds one when
-    ``holds_card_run`` finds a run of 13 to 19 digits passing Luhn in it,
-    epoch milliseconds again excepted, and a run inside a whole hex id of 24
+    ever be kept. Any other text leaf that is no JSON text holds one when
+    ``holds_card_run`` finds a run of 12 digits or more in it, read as the pci
+    rules read a value -- except a leaf that is a whole hex id of 24
     characters or more (JSON text is read by its own leaves).
     Not ``holds_pan_run``, which flags hex ids.
     Anything that is no JSON value (an object whose text is not judged here),
@@ -394,19 +394,22 @@ def holds_card_data(value: Any) -> bool:
         if isinstance(item, float):
             return item.is_integer() and int_is_pan(int(item))
         if isinstance(item, str):
-            if pan_shaped(item) and not _EPOCH_MILLISECONDS.fullmatch(item.strip()):
+            if _EPOCH_MILLISECONDS.fullmatch(item.strip()):
+                return False  # Google Pay's `keyExpiration`, a whole leaf
+            if pan_shaped(item):
                 return True
-            if item.lstrip()[:1] not in ("{", "["):
-                return holds_card_run(item)
-            try:
-                parsed = json_as_written(item)
-            except (DuplicateKey, RecursionError):
-                return True
-            except ValueError:
-                return holds_card_run(item)
-            # Its own leaves are read: `keyExpiration` in Google Pay's
-            # `signedKey` is a whole leaf there.
-            return holds(parsed, depth + 1)
+            if item.lstrip()[:1] in ("{", "["):
+                try:
+                    parsed = json_as_written(item)
+                except (DuplicateKey, RecursionError):
+                    return True
+                except ValueError:
+                    pass
+                else:
+                    # Its own leaves are read: `keyExpiration` in Google
+                    # Pay's `signedKey` is a whole leaf there.
+                    return holds(parsed, depth + 1)
+            return holds_card_run(item)
         return True
 
     return holds(value, 0)

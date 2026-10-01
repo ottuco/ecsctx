@@ -55,7 +55,6 @@ from ecsctx.masking.tokens import (
     mask_by_field_type,
 )
 from ecsctx.masking.value_rules import (
-    _EPOCH_MILLISECONDS,
     KEEP,
     DuplicateKey,
     _first_match,
@@ -810,51 +809,39 @@ def pan_shaped(text: str) -> bool:
 _DIGIT_RUN = re.compile(rf"\+?\d(?:{_CARD_SEP}?\d)*")
 
 
-# A card number anywhere in a value, as the guard reads one: 13 to 19 digits
-# joined by single separators at most, as the card rule joins them, with no
-# digit next to either end.
-_CARD_RUN_IN_TEXT = re.compile(rf"(?<!\d)(?<!\d{_CARD_SEP})\d(?:{_CARD_SEP}?\d){{12,18}}(?!{_CARD_SEP}?\d)")
 # ASCII text with each digit marked 0 and each separator the card rule reads
-# 2: text with neither thirteen 0s in a row nor a 2 -- base64 and hex, a
+# 2: text with neither twelve 0s in a row nor a 2 -- base64 and hex, a
 # wallet's ciphertext -- holds no run, found in one bytes translate where the
 # regex costs thirty times as much.
 _DIGIT_MARKS = bytes(
     0 if chr(code) in "0123456789" else 2 if code < 128 and re.fullmatch(_CARD_SEP, chr(code)) else code or 1
     for code in range(256)
 )
-
-
-# An id a run inside which is never a card number: a token of 24 or more hex
-# characters -- an ObjectId, a 32-hex gateway id, a 64-hex digest, Apple
-# Pay's `transactionId` -- whole, nothing alphanumeric touching it. Connect's
-# own card scan reads one so: read like other text, about one 64-hex id in two
-# hundred holds a 13-19 digit run that passes Luhn.
-_HEX_ID = re.compile(r"(?<![0-9A-Za-z])[0-9A-Fa-f]{24,}(?![0-9A-Za-z])")
+_RUN_MARKS = b"\0" * _MIN_PAN_DIGITS
+# A leaf that is a hex id of 24 characters or more -- a 64-hex digest, Apple
+# Pay's `transactionId`, an ObjectId -- holds no card number: read like other
+# text, about one random 64-hex id in two hundred holds a 13-19 digit run
+# that passes Luhn. Only a whole leaf: hex inside base64 or prose is read.
+_HEX_ID = re.compile(r"[0-9A-Fa-f]{24,}")
 
 
 def holds_card_run(text: str) -> bool:
-    """Whether ``text`` holds, anywhere in it, a run that is a card number:
-    13 to 19 digits that pass Luhn -- `card 4111…`, `4111…+cvv+123`, short
-    hex holding one (`4111…ab`) -- except thirteen bare digits from a 1 or a
-    2, epoch milliseconds, and a run inside a whole hex id of 24 characters
-    or more (``_HEX_ID``). For the guard (``value_rules.holds_card_data``),
-    which reads every text leaf of a keep match with it. Stricter than
-    ``holds_pan_run`` about what a card number is (Luhn, 13 digits up), so
-    ciphertext is rarely refused."""
+    """Whether ``text``, a text leaf of a keep match, holds a run of digits
+    long enough to be a card number, read as the pci rules read a value
+    (``holds_pan_run``: 12 digits or more, joined by single separators at
+    most -- `card 4111…`, `1234 4111…`, `4111… 123`, `4111…+cvv+123` in
+    base64, `4111…ab` in hex) -- except a leaf that is a whole hex id of 24
+    characters or more (``_HEX_ID``). For the guard
+    (``value_rules.holds_card_data``), which excepts a leaf that is epoch
+    milliseconds itself. One pass, linear in the leaf: ASCII text with no
+    such run of digits and no separator is told by one bytes translate."""
+    if _HEX_ID.fullmatch(text):
+        return False
     if text.isascii():
         marked = text.encode("ascii").translate(_DIGIT_MARKS)
-        if b"\0" * 13 not in marked and b"\2" not in marked:
+        if _RUN_MARKS not in marked and b"\2" not in marked:
             return False
-    ids = None
-    for m in _CARD_RUN_IN_TEXT.finditer(text):
-        run = m.group()
-        if _EPOCH_MILLISECONDS.fullmatch(run) or not _luhn_valid(re.sub(r"\D", "", run)):
-            continue
-        if ids is None:
-            ids = [found.span() for found in _HEX_ID.finditer(text)]
-        if not any(start <= m.start() and m.end() <= end for start, end in ids):
-            return True
-    return False
+    return holds_pan_run(text)
 
 
 def holds_pan_run(text: str, *, phone: bool = False) -> bool:
