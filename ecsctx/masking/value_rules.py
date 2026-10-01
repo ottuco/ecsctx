@@ -404,8 +404,28 @@ def text_ruling(text: str, rules: Iterable[Any]) -> str | _Keep | None:
     asked = applicable(text, rules)
     if not asked:
         return None
-    found = ruling(_json_in(text), asked)
-    return None if found is KEEP and not parses_as_written(text) else found
+    if not _split(asked).keep:
+        return ruling(_json_in(text), asked)
+    value, as_written = _json_as_read(text)
+    found = ruling(value, asked)
+    return None if found is KEEP and not as_written else found
+
+
+def _json_as_read(text: str) -> tuple[Any, bool]:
+    """``text`` parsed -- None where it is no JSON text -- and whether the
+    parse is all the text writes: parsed once, strictly, and again as
+    json.loads reads it only where a key is written twice."""
+    first = text[:1]
+    if first.isspace():
+        first = text.lstrip()[:1]
+    if first not in ("{", "["):
+        return None, True
+    try:
+        return json_as_written(text), True
+    except DuplicateKey:
+        return _json_in(text), False
+    except (ValueError, RecursionError):
+        return None, True
 
 
 def label_of(value: Any, rules: Iterable[Any]) -> str | None:

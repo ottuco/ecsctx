@@ -1251,6 +1251,27 @@ def _written_as_parsed(m: re.Match) -> bool:
         return False
 
 
+def _object_as_read(m: re.Match) -> tuple[Any, bool]:
+    """``_object_value`` and ``_written_as_parsed`` at once, for a keep
+    decision: JSON parsed strictly first, and as json.loads reads it only
+    where a key is written twice."""
+    written = m.group(0)
+    try:
+        if m.group("plain") is None:
+            written = json.loads(f'"{written}"')
+        try:
+            return json_as_written(written), True
+        except DuplicateKey:
+            return json.loads(written), False
+        except ValueError:
+            if m.group("plain") is None:
+                return None, True
+        value = ast.literal_eval(written)
+        return value, repr(value) == written
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return None, True
+
+
 def _object_ruling(m: re.Match, rules: tuple) -> Any:
     """``ruling`` of the object a match wrote; a label rule's error reads as a
     label -- not kept, not looked into -- so finding kept spans never raises,
@@ -1258,10 +1279,11 @@ def _object_ruling(m: re.Match, rules: tuple) -> Any:
     otherwise than it parses (``_written_as_parsed``) is read as one nothing
     matches."""
     try:
-        found = ruling(_object_value(m), rules)
+        value, as_written = _object_as_read(m)
+        found = ruling(value, rules)
     except Exception:  # noqa: BLE001 -- a service's matcher; rule 2 reports it where it runs
         return ""
-    return None if found is KEEP and not _written_as_parsed(m) else found
+    return None if found is KEEP and not as_written else found
 
 
 def kept_spans(text: str, rules: tuple) -> list[tuple[int, int]]:
