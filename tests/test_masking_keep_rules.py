@@ -368,6 +368,13 @@ class TestTheKeyWalk:
         configure_masking_value_rules([KEEP_RULE, LABEL_RULE])
         assert _walk({"x": SEALED, "y": json.dumps(SEALED)}) == {"x": SEALED, "y": json.dumps(SEALED)}
 
+    def test_a_keep_match_the_guard_refuses_asks_no_rule_listed_after_it(self, packs):
+        configure_masking_value_rules([KEEP_RULE, LABEL_RULE])
+        holding = {**SEALED, "cvv": "123"}
+        masked = _walk({"x": holding})["x"]
+        _masked_as_a_walk(masked)
+        assert LABEL not in _text(f"got {json.dumps(holding)} back", packs)
+
     def test_a_keep_rule_that_raises_keeps_nothing_and_raises_nothing(self):
         def broken(_value):
             raise RuntimeError("rule failed")

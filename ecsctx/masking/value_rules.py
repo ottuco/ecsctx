@@ -386,7 +386,8 @@ def holds_card_data(value: Any) -> bool:
 def ruling(value: Any, rules: Iterable[Any]) -> str | _Keep | None:
     """What the first of ``rules`` a mapping matches makes of it: its label,
     ``KEEP``, or None -- nothing matched, or a keep rule did and the guard
-    refused it (``holds_card_data``), so it is walked as if nothing had."""
+    refused it (``holds_card_data``), so it is walked as if nothing had: no
+    rule listed after it is asked."""
     found = _first_match(value, rules)
     if found is None:
         return None

@@ -1425,7 +1425,9 @@ asked where label rules are: every mapping the key walk meets, every string
 that is JSON text, every JSON object in free text or in a body `redact_body`
 masks. They are asked in list order and **the first match wins**: a label
 rule listed first labels a value a keep rule would have kept, and an object a
-label rule matches is not looked into for one to keep. A kept value is left
+label rule matches is not looked into for one to keep. A keep match the guard
+refuses (below) is walked as if nothing had matched: no rule listed after it
+is asked, a label rule for the same shape included. A kept value is left
 as sent under any key and not descended into — a credential's key, a card's,
 or a PII container's above it does not stop it (`token`, `paymentToken`,
 `password`, `card.devicePayment`, `customer`): what the rule names is the
@@ -1459,6 +1461,9 @@ Two things no keep rule overrides, not even `KeepRule(lambda value: True)`:
   `keyExpiration`, which `pan_shaped` reads as a card number and every
   Google Pay token carries. A leaf that is no JSON value counts as card
   data.
+
+Nothing else in a kept value is read: PII or a credential inside it, under a
+key of its own or written in a string, ships with it.
 
 JSON text under a key that would hash it whole — a credential's — and that
 holds a kept value deeper is still hashed whole: a keep never cuts a value out
