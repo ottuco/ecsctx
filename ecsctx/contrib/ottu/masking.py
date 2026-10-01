@@ -35,9 +35,11 @@ What stays masked:
   Pay ``paymentData`` or ``PKPaymentToken``, a Google Pay payment method
   token, no key besides the ones they write, and every leaf text in its
   alphabet (base64, hex or digits; short text for what ``paymentMethod``
-  says about the card) -- so anything else is walked as before: a
-  ``PKPaymentToken`` with a key of its own keeps only its ``paymentData``,
-  and a token with ``"data": "cvv=123"`` is masked.
+  says about the card, its display name the network's and the last four)
+  -- so anything else is walked as before: a ``PKPaymentToken`` with a key
+  of its own keeps only its ``paymentData``, and a token with
+  ``"data": "cvv=123"`` is masked. A CVV written in a slot's own alphabet
+  (``cvv+123`` inside base64) cannot be told from ciphertext, and ships.
 - Card data. ecsctx keeps nothing under a CVV or SAD key, and nothing that
   holds a card, CVV or SAD key or a card number (the floor and the guard).
 
@@ -166,9 +168,13 @@ _HEADER_ALPHABETS = {
     "transactionId": _HEX,
     "applicationData": _HEX,
 }
-# PKPaymentToken's `paymentMethod` is what the device says about the card,
-# free text ("Visa 0492"): text, and short.
+# PKPaymentToken's `paymentMethod` is what the device says about the card:
+# its network and type, short text, and a display name that is the network's
+# name and, after a space, the card's last four ("Visa 0492", "Amex") -- no
+# other digit, so neither a card number nor a CVV can ride in it.
 _PAYMENT_METHOD_TEXT_LIMIT = 64
+_DISPLAY_NAME = re.compile(r"\D*(?: [0-9]{4})?")
+_DISPLAY_NAME_LIMIT = 40
 
 
 def _written_in(field: Any, alphabet: re.Pattern) -> bool:
@@ -199,10 +205,15 @@ def _is_apple_pay_payment_data(value: Any) -> bool:
     )
 
 
+def _is_display_name(name: Any) -> bool:
+    return isinstance(name, str) and len(name) <= _DISPLAY_NAME_LIMIT and _DISPLAY_NAME.fullmatch(name) is not None
+
+
 def _is_pk_payment_token(value: Any) -> bool:
     """Apple Pay's PKPaymentToken: its `paymentData`, what the device says
-    about the card -- its display name, network and type, each short text --
-    and the transaction's id in hex."""
+    about the card -- its network and type, each short text, and its display
+    name, the network's and the last four -- and the transaction's id in
+    hex."""
     payment_data = value.get("paymentData")
     if not (isinstance(payment_data, dict) and _is_apple_pay_payment_data(payment_data)):
         return False
@@ -212,6 +223,7 @@ def _is_pk_payment_token(value: Any) -> bool:
     return (
         isinstance(method, dict)
         and method.keys() <= _PAYMENT_METHOD_KEYS
+        and ("displayName" not in method or _is_display_name(method["displayName"]))
         and all(isinstance(field, str) and len(field) <= _PAYMENT_METHOD_TEXT_LIMIT for field in method.values())
     )
 

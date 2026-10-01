@@ -149,6 +149,15 @@ NOT_TOKEN_TEXT = {
         "header": {**APPLE_PAY["header"], "transactionId": "4111111111111111ab"},
     },
 }
+# What the device says about the card: the network's name and the last four.
+NOT_A_DISPLAY_NAME = {
+    "a-card-number": "Visa 4111111111111111",
+    "a-cvv": "cvv 123",
+    "a-cvv-after-the-last-four": "Visa 1234 cvv 123",
+    "five-digits": "Visa 12345",
+    "the-last-four-first": "1234 Visa",
+    "too-long": "V" * 36 + " 1234",
+}
 
 PACKS = [["default"], sorted(ALL_PACKS)]
 
@@ -305,6 +314,14 @@ class TestTheRules:
     def test_the_matchers_are_strict(self, value):
         assert not is_kept(value)
 
+    @pytest.mark.parametrize("name", NOT_A_DISPLAY_NAME.values(), ids=NOT_A_DISPLAY_NAME.keys())
+    def test_a_display_name_is_a_network_and_the_last_four(self, name):
+        token = {**PK_PAYMENT_TOKEN, "paymentMethod": {**PK_PAYMENT_TOKEN["paymentMethod"], "displayName": name}}
+        assert not is_kept(token)
+        assert not is_kept(json.dumps(token))
+        # Its payment data is still kept, on its own.
+        assert _walk({"token": token})["token"]["paymentData"] == APPLE_PAY
+
     @pytest.mark.parametrize("token", NOT_TOKEN_TEXT.values(), ids=NOT_TOKEN_TEXT.keys())
     def test_a_token_with_text_no_wallet_writes_is_masked_as_without_the_rules(self, token, packs):
         def every_path():
@@ -325,12 +342,16 @@ class TestTheRules:
             {**APPLE_PAY, "header": {**APPLE_PAY["header"], "applicationData": "0a1B" * 16}},
             {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "MasterCard 0492", "network": "MasterCard"}},
             {**GOOGLE_PAY, "signature": "MEQCIGZh+2Utc2/n"},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "Amex", "network": "AmEx", "type": "credit"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "Apple Pay", "network": "Visa", "type": "debit"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "V" * 35 + " 1234"}},
             # Thirteen digits from a 1 or a 2 read as epoch milliseconds,
             # wherever they stand.
             {**APPLE_PAY, "data": "QUJD1790318444473QUJD"},
         ],
         ids=[
-            "apple-application-data", "pk-display-name", "google-signature-plus-and-slash", "apple-data-epoch-run",
+            "apple-application-data", "pk-display-name", "google-signature-plus-and-slash", "pk-display-name-amex",
+            "pk-display-name-connects-fixture", "pk-display-name-forty-characters", "apple-data-epoch-run",
         ],
     )
     def test_a_documented_token_is_still_kept(self, token):

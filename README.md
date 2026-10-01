@@ -1556,15 +1556,21 @@ signature or ciphertext (`data`, `signature`, the header's
 `signatures`, and the fields of its `signedMessage` and `signedKey`, each
 JSON text of its own fields and nothing else), hex for an id or a hash
 (`transactionId`, `applicationData`, `transactionIdentifier`), digits for
-`keyExpiration`, and short text (64 characters at most) for what
-`paymentMethod` says about the card. A token holding anything else in a
-slot — `"data": "cvv=123"`, a spaced card number as its `signature` — is
-not kept, and is masked as before: the guard reads keys, pairs and whole
-leaves, so text riding in a kept slot would ship. They are found under
-`paymentData`, TAP's `token_data`, MPGS's `paymentToken` (a JSON string),
-Google Pay's `tokenizationData.token`, KPay's `<udf9>`, or in a message. A
-`PKPaymentToken` with a key of its own keeps only its `paymentData`. Saved-card tokens stay masked: no wallet shape
-matches one. Samsung Pay's token, a JWE, is not matched yet. An Ottu service
+`keyExpiration`, and for what `paymentMethod` says about the card short
+text: its `network` and `type` at most 64 characters, its `displayName` at
+most 40, the network's name and, after a space, the card's last four
+(`Visa 0492`, `Amex`) with no other digit. A token holding anything else in a
+slot — `"data": "cvv=123"`, a spaced card number as its `signature`,
+`"displayName": "cvv 123"` — is not kept, and is masked as before; nor is
+one with a card number in a slot's own alphabet (`"4111…+cvv+123"` in
+base64), which the guard reads. What neither can tell from ciphertext ships
+with a kept token: a CVV or other short value written in a slot's own
+alphabet (`cvv+123` inside base64). They are found under `paymentData`,
+TAP's `token_data`, MPGS's `paymentToken` (a JSON string), Google Pay's
+`tokenizationData.token`, KPay's `<udf9>`, or in a message. A
+`PKPaymentToken` with a key of its own keeps only its `paymentData`.
+Saved-card tokens stay masked: no wallet shape matches one. Samsung Pay's
+token, a JWE, is not matched yet. An Ottu service
 lists them in `ECSCTX_MASK_VALUE_RULES` next to its `ECSCTX_MASK_SAFE_KEYS`
 (above), or sets
 `ECSCTX_MASK_VALUE_RULES=ecsctx.contrib.ottu.masking.WALLET_RULES`.
