@@ -341,6 +341,8 @@ class TestTheKeyWalk:
             {"ref": "order 4111111111111112 retried"},
             # Epoch milliseconds are only a whole leaf's.
             {"box": "QUJD1790318444473QUJD"},
+            # A hex id holds a hex letter: 24 digits or more are read.
+            {"digest": "411111111111111112345678"},
         ],
         ids=[
             "cvv", "cardNumber", "a-pan-leaf", "an-int-pan", "a-nested-json-cvv", "a-pin-in-a-list",
@@ -348,6 +350,7 @@ class TestTheKeyWalk:
             "a-pan-in-text-that-is-no-json", "hex-shorter-than-an-id", "hex-glued-to-letters", "hex-glued-to-a-letter-after",
             "a-hex-id-in-base64", "a-24-hex-id-in-prose", "a-group-before-a-card", "a-cvv-after-a-card",
             "an-expiry-after-a-card", "twenty-digits", "a-run-failing-luhn", "epoch-milliseconds-in-a-longer-leaf",
+            "digits-only-in-a-hex-slot",
         ],
     )
     def test_the_guard_a_match_holding_card_data_is_walked(self, extra):

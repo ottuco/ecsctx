@@ -1481,9 +1481,10 @@ Two things no keep rule overrides, not even `KeepRule(lambda value: True)`:
   a leaf that is a whole hex id of 24 characters or more — a 64-hex digest
   such as Apple Pay's `transactionId`, an ObjectId — about one random 64-hex
   id in two hundred holds a 13-19 digit run that passes Luhn, and read like
-  other text it cost 1.1% of Apple Pay tokens. Only a whole leaf: a hex id
-  inside base64 or prose (`"AA/4111…deadbeef/AA"`), or epoch milliseconds
-  inside a longer string, is read. A leaf that is no JSON value counts as
+  other text it cost 1.1% of Apple Pay tokens. Only a whole leaf holding a
+  hex letter: a hex id inside base64 or prose (`"AA/4111…deadbeef/AA"`),
+  digits alone however many, and epoch milliseconds inside a longer string
+  are read. A leaf that is no JSON value counts as
   card data. What the guard cannot tell from a token's own text ships with
   it: a CVV or other short value written inside a longer string
   (`"note": "cvv=123"`, or `cvv+123` inside base64, which reads as

@@ -821,8 +821,9 @@ _RUN_MARKS = b"\0" * _MIN_PAN_DIGITS
 # A leaf that is a hex id of 24 characters or more -- a 64-hex digest, Apple
 # Pay's `transactionId`, an ObjectId -- holds no card number: read like other
 # text, about one random 64-hex id in two hundred holds a 13-19 digit run
-# that passes Luhn. Only a whole leaf: hex inside base64 or prose is read.
-_HEX_ID = re.compile(r"[0-9A-Fa-f]{24,}")
+# that passes Luhn. Only a whole leaf, holding a hex letter: hex inside
+# base64 or prose is read, and so are digits alone, which no hex id is.
+_HEX_ID = re.compile(r"(?=[0-9]*[A-Fa-f])[0-9A-Fa-f]{24,}")
 
 
 def holds_card_run(text: str) -> bool:
