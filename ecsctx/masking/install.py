@@ -8,11 +8,12 @@ message and each argument, which is what protects whatever reads the record
 besides the formatter: Sentry's logging integration, Handler.handleError,
 handlers that never call format(). Those readers render the record
 themselves: a template masking leaves as it is keeps its arguments, each
-masked on its own, and nothing masks the line they make. A value split
-between template and argument (`cvv=%s` with `123`) reaches them as
-`cvv=123`; only the formatter's own pass (mask_sensitive_data) masks the
-formatted line whole. Call it before dictConfig() so the handlers dictConfig
-builds carry the filter from the start.
+masked on its own, when the line they render holds nothing more to mask. A
+value split between template and argument (`cvv=%s` with `123`) makes a line
+that does, so that record is rendered and masked whole, its arguments `()`:
+they read `cvv=[CVV-MASKED]`, as the formatter's own pass
+(mask_sensitive_data) writes it. Call it before dictConfig() so the handlers
+dictConfig builds carry the filter from the start.
 
 install_maskers_on_handlers() sweeps any handler that already exists as a
 live object right now (third-party handlers, hand-built ones, or a logging

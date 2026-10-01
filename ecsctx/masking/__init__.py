@@ -11,15 +11,18 @@ MaskPIIFilter is the single engine every masking path calls into:
 See ecsctx.masking.patterns for the rules and packs, ecsctx.masking.config
 for choosing packs (configure_masking_packs, ECSCTX_MASKING_PACKS), a
 service's own safe key names (configure_masking_safe_keys,
-ECSCTX_MASK_SAFE_KEYS) and skip paths, and ecsctx.masking.exemptions for the configure_masking()
-path-exemption API.
+ECSCTX_MASK_SAFE_KEYS), its value rules (configure_masking_value_rules,
+ECSCTX_MASK_VALUE_RULES; ecsctx.masking.value_rules) and skip paths, and
+ecsctx.masking.exemptions for the configure_masking() path-exemption API.
 """
 
 from ecsctx.masking.config import (
     configure_masking_packs,
     configure_masking_safe_keys,
+    configure_masking_value_rules,
     get_masking_packs,
     get_masking_safe_keys,
+    get_masking_value_rules,
     key_field_type,
 )
 from ecsctx.masking.exemptions import (
@@ -31,6 +34,7 @@ from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.install import install_maskers, uninstall_maskers
 from ecsctx.masking.patterns import ALL_PACKS, PACK_NAMES, mask_card_value, mask_secret
 from ecsctx.masking.tokens import mask_by_field_type, safe_tokenize
+from ecsctx.masking.value_rules import ValueRule
 
 __all__ = [
     "ALL_PACKS",
@@ -39,6 +43,9 @@ __all__ = [
     "get_masking_packs",
     "configure_masking_safe_keys",
     "get_masking_safe_keys",
+    "configure_masking_value_rules",
+    "get_masking_value_rules",
+    "ValueRule",
     "MaskPIIFilter",
     "install_maskers",
     "uninstall_maskers",

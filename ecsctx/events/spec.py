@@ -72,9 +72,11 @@ class EventSpec:
     # A `Reason` subclass, normalised to its members; a tuple of strings still
     # works for a set nobody passes as an object.
     reasons: _ReasonSet = ()
-    # Field names this event is expected to carry. Declaration only — the
-    # runtime validator (#159491) is what enforces them. Declared here so
-    # EventSpec is not reopened for that ticket.
+    # Field names this event is expected to carry. Declaration only: nothing
+    # enforces them. The contract validator (`event_contract`, #159491) checks
+    # an event's action, its outcome, the level it is logged at and `labels`,
+    # not these fields; they are rendered into the catalogue's reference page
+    # ("Carries") for the developer and the reviewer.
     required: tuple[str, ...] = ()
     optional: tuple[str, ...] = ()
     # Connect's LogEvent carried only `level`, described as "the level of the

@@ -82,6 +82,8 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
 
 **Key takeaway**: Your app writes JSON to stdout. Vector picks it up, ships it to Elasticsearch. The field structure of that JSON determines whether it's searchable in Kibana or silently dropped due to mapping conflicts. That's why ECS compliance matters.
 
+> **At Ottu** the source and the destination differ; the JSON is the same. Services write their JSON lines to log files (a rotating file handler) that Vector tails, and ship to daily `logs-YYYY.MM.DD` indices; a PCI service (Ottu PG) ships to `logs-pci-<env>`. The docker-and-data-stream setup here is the generic one.
+
 ---
 
 ## 3. Architecture: Request Flow
@@ -101,12 +103,12 @@ Framework-agnostic core with Django, Celery, and RQ integrations.
                       ↓
 6. Your middleware/views bind domain context (merchant_id, session_id, etc.)
                       ↓
-7. View executes, calls logger.info("event_name", field=value)
+7. View executes, calls logger.info("payment created", field=value)
                       ↓
 8. Processor chain:
    contextvars_injector → namespace_ecs_fields → mask_sensitive_data → ecs_validator
                       ↓
-9. ECS-formatted JSON → stdout → Vector → Elasticsearch
+9. ECS-formatted JSON → stdout (at Ottu, a log file) → Vector → Elasticsearch
 ```
 
 ### Processor Chain (Execution Order)
@@ -334,7 +336,7 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 def my_view(request):
-    logger.info("payment_processed", amount=100, currency="KWD")
+    logger.info("payment processed", amount=100, currency="KWD")
     # Output includes: trace.id, span.id, user.id, client.ip, service.name, etc.
 ```
 
@@ -407,7 +409,7 @@ async def inject_logging_context(request: Request):
 
 @app.post("/payments", dependencies=[Depends(inject_logging_context)])
 async def create_payment():
-    logger.info("payment_created")
+    logger.info("payment created")
 ```
 
 ---
@@ -545,7 +547,7 @@ class WebhookView(APIView):
                 }
             }
         )
-        log.info("webhook_received")  # Has: merchant_id + session_id + app-specific IDs
+        log.info("webhook received")  # Has: merchant_id + session_id + app-specific IDs
 
 # Layer 3: Task — additional info discovered during processing
 @app.task
@@ -553,7 +555,7 @@ def process_webhook(self, enterprise_id, store_id):
     # Context from view is auto-propagated (Celery hooks)
     merchant = Merchant.objects.filter(...).first()
     bind_logging_context(extra={"merchant_id": merchant.name})  # NEW info
-    log.info("task_started")  # Has everything from view + merchant_id
+    log.info("task started")  # Has everything from view + merchant_id
 ```
 
 ### Two Binding Mechanisms
@@ -566,8 +568,8 @@ bind_logging_context(session_id="abc123", extra={"merchant_id": "acme"})
 
 # 2. Context manager — auto-restores previous context on exit (scoped)
 with logging_context(session_id="abc123"):
-    log.info("scoped_event")   # has session_id
-log.info("outer_event")        # session_id gone
+    log.info("scoped event")   # has session_id
+log.info("outer event")        # session_id gone
 ```
 
 ### The `extra` Parameter
@@ -599,12 +601,12 @@ bind_logging_context(extra={"myapp": {"store_id": "s1"}})
 
 ```python
 # WRONG — first log has no context
-log.info("webhook_received")
+log.info("webhook received")
 bind_logging_context(session_id=session_id)
 
 # CORRECT — bind first, then log
 bind_logging_context(session_id=session_id)
-log.info("webhook_received")
+log.info("webhook received")
 ```
 
 ### Don't Re-state Context in Log Calls
@@ -615,10 +617,10 @@ If a field is already bound, don't pass it again:
 bind_logging_context(extra={"merchant_id": "acme"})
 
 # WRONG — merchant_id already in context, this is redundant noise
-log.info("payment_created", merchant_id="acme")
+log.info("payment created", merchant_id="acme")
 
 # CORRECT — it's already there
-log.info("payment_created")
+log.info("payment created")
 ```
 
 ---
@@ -652,7 +654,7 @@ See the [Core Rules](#4-core-rules-field-placement-reference) table for the comp
 
 ```python
 # Use ** unpacking when the namespace key is a variable
-log.info("event_started", **{
+log.info("event started", **{
     settings.SHOPIFY_APP_NAME: {
         "shop": shop_domain,
         "reference": reference,
@@ -699,12 +701,12 @@ def process_webhook(self, enterprise_id, store_id):
 
     merchant = Merchant.objects.filter(...).first()
     if not merchant:
-        log.info("merchant_not_found")  # App namespace IDs come from context
+        log.info("merchant not found")  # App namespace IDs come from context
         self.retry(countdown=30)
 
     # ✅ Bind merchant_id AFTER lookup — this is NEW info the view didn't have
     bind_logging_context(extra={"merchant_id": merchant.name})
-    log.info("task_started")
+    log.info("task started")
 ```
 
 ### Beat-Dispatched Tasks: Start from ZERO
@@ -716,7 +718,7 @@ Celery Beat has no `LoggingContext` to propagate. **You MUST bind everything at 
 def process_payment_inquiry(self, merchant_id, session_id):
     # ✅ Beat task — MUST bind everything, nothing is propagated
     bind_logging_context(session_id=session_id, extra={"merchant_id": merchant_id})
-    log.info("inquiry_started")
+    log.info("inquiry started")
 ```
 
 ### Quick Reference
@@ -740,7 +742,7 @@ from ecsctx.contrib.rq import with_log_context
 
 @with_log_context
 def my_background_task(user_id, amount):
-    logger.info("processing_payment")  # Automatically has request context
+    logger.info("processing payment")  # Automatically has request context
 ```
 
 ### Manual Context Capture (Custom Enqueue)
@@ -827,17 +829,22 @@ strings already known clean are not scanned twice. A record that would not
 format once masked — a %-style template masking itself changes (in
 `password=%s` the credential rule reads the placeholder as the credential), a
 lazy translation or an exception as the message, a number masking turned into
-text under `%d`, arguments that never fit — is rendered from the masked
-arguments and masked whole, or is `[MASKING-FAILED: …]`: no line is dropped,
-and no argument reaches stderr. The one exception is a dict or list message
-with arguments, which logging cannot format at all: as in stdlib, the line is
-dropped and `handleError` prints the arguments, masked. A template masking
-leaves as it is, and that formats, keeps its arguments.
+text under `%d` (every conversion CPython's `%` reads, `%.f` included), arguments
+that never fit — is rendered from the masked arguments and masked whole, or is
+`[MASKING-FAILED: …]`: no line is dropped, and no argument reaches stderr. So
+is a record whose line masks differently from its masked arguments: a value
+split between the template and an argument (`logger.info("cvv=%s", "123")`)
+renders `cvv=[CVV-MASKED]`, for the formatter and for everything that reads the
+record. The one exception is a dict or list message with arguments, which
+logging cannot format at all: as in stdlib, the line is dropped and
+`handleError` prints the arguments, masked. A record whose template masking
+leaves as it is, and whose masked arguments render a line with nothing more to
+mask, keeps its arguments.
 
 **Log processor path** (automatic via `mask_sensitive_data`):
 - When PII is configured (`PII_PROVIDER=file|vault`): detected values become deterministic **HMAC-SHA-256** tokens (`ptok:v1:...`), for fraud correlation. Same input always produces the same token. Where no token can be made (PII not configured, or tokenization failing) the value becomes its type's label, `[EMAIL-MASKED]`; CVV is never tokenized and carries nothing, so it keeps a bracketed label (`[CVV-MASKED]`); a card number is never tokenized either, but its truncation IS carried, so it is bare (`411111******1111`) — under a card key, and with the `pci` pack under any key, including a name or email field. Expiry is not masked at all. A null stays null, and an empty value stays empty.
 - When PII is not configured: detected values become the bare label (`[EMAIL-MASKED]`) — raw PII never appears in logs.
-- Cardholder data is never tokenized: PANs are truncated to `411111******1111` whatever key they sit under — including, with the `pci` pack (the filter's own or the process's), a name or email field, because a keyed hash beside a truncation of the same PAN is the correlation PCI DSS FAQ 1117 warns about. With `pci`, a value that a PII, secret or id key would tokenize becomes its label instead when it holds a run of 12 or more digits among other text: a PAN typed beside a name, and also a long reference number or hex id, since the check fails closed. A value that is a canonical UUID (8-4-4-4-12 hex digits with a hex letter) holds none and keeps its token. In a phone field, a number written after `+` with at most 15 digits (E.164) is the phone number and keeps its token. CVV is always `[CVV-MASKED]`. **Expiry is not masked**: it is Cardholder Data rather than Sensitive Authentication Data, so PCI permits storing it, and masking it only cost the ability to read an expired-card decline. The rule to remember: **brackets mean nothing survived**.
+- Cardholder data is never tokenized: PANs are truncated to `411111******1111` whatever key they sit under — including, with the `pci` pack (the filter's own or the process's), a name or email field, because a keyed hash beside a truncation of the same PAN is the correlation PCI DSS FAQ 1117 warns about. With `pci`, a value that a PII, secret or id key would tokenize becomes its label instead when it holds a run of 12 or more digits among other text: a PAN typed beside a name, and also a long reference number or hex id, since the check fails closed. A value that is a canonical UUID (8-4-4-4-12 hex digits with a hex letter) holds none and keeps its token. In a phone field, a number written after `+` with at most 15 digits (E.164) is the phone number and keeps its token. An email or phone number found in text is judged the same way: with `pci`, `4111111111111111@example.com` is `[EMAIL-MASKED]` and `+4111111111111111` `[PHONE-MASKED]`, not a keyed hash. CVV is always `[CVV-MASKED]`. **Expiry is not masked**: it is Cardholder Data rather than Sensitive Authentication Data, so PCI permits storing it, and masking it only cost the ability to read an expired-card decline. The rule to remember: **brackets mean nothing survived**.
 
 **Explicit encryption API** (standalone, NOT part of the log processor pipeline):
 - `protect()` / `reveal()` use **AES-256-GCM** for randomized ciphertext (`penc:v1:<kid>:...`) when reversible encryption is needed. Requires `PII_ACCESS=full`.
@@ -856,8 +863,8 @@ receives the CVV a saved-card payment sends, so the keyed CVV rules are
 
 | Pack | Content rules | On by default |
 |------|---------------|---------------|
-| `default` | PEM keys, credentials (`token=…`, `"secret": …`, `Bearer …`), keyed CVV (`cvv=123`, `"securityCode": "123"`, `CVV 123`, `vpc_CardSecurityCode=123`, `paymentCvv=123`), a URL's userinfo, phone numbers, emails, JWTs | always |
-| `pci` | PANs (truncated), bare 3–4 digit CVV groups beside card context | no |
+| `default` | PEM keys, a JSON object a service's [value rule](#value-rules-a-services-own-shapes) matches (its label), credentials (`token=…`, `"secret": …`, `Bearer …`, `API-Key …`, `<password>…</password>`, `password=['a', 'b']`), keyed CVV (`cvv=123`, `"securityCode": "123"`, `CVV 123`, `vpc_CardSecurityCode=123`, `paymentCvv=123`), an XML element named as a card, CVV or SAD key (`<cvv>123</cvv>`, `<pin>1234</pin>`, `<cardNumber>…</cardNumber>` truncated), a URL's userinfo, phone numbers, emails, JWTs | always |
+| `pci` | PANs (truncated), a bare 3–4 digit CVV beside a card number or its truncation (`4111111111111111 123`, `411111******1111\|12/27\|123`) or after a CVV word (`the cvv is 123`) | no |
 | `financial_ids` | IBANs, SSNs, payment/transaction/auth ids (content and key names) | no |
 
 A PCI-scoped service enables them in its logging config:
@@ -874,9 +881,20 @@ with a warning, and the boot check reports it.
 Upgrading from 0.7.x without opting in turns PAN content scanning (and the
 bare-digit CVV rule) **off**.
 
+The bare-digit CVV rule reads only the fields written after a card number or
+its truncation — up to three, joined by whitespace, `|`, `,`, `;` or `:` — and
+masks each that is three or four digits alone: which of `1227` and `123` after
+a card is its CVV no rule can tell, so neither ships. A date (`12/27`), a field
+after an expiry word (`exp 1227`), a month or year of one or two digits, and
+digits that run on into a date, a time or an amount (`2026-09-30`, `10:30`,
+`100.000`) stay. Before 0.15.6 it masked any 3–4 digit group in a line that
+mentioned a card: `card list returned 200 in 350 ms` lost its status and its
+duration, `declined with code 051` its code.
+
 Key names are checked in every service regardless of packs: a key named
-`card`, `pan`, `card_number`, `cvv`, `securityCode`, `expiry`, `exp_month`, …
-masks its value wherever it appears.
+`card`, `pan`, `card_number`, `cvv`, `securityCode`, … masks its value wherever
+it appears, and so does an XML element of that name in text. Expiry keys (`expiry`, `exp_month`, `expiry_year`, …) do not: they
+are safe keys, and read through.
 
 ### PAN truncation (`mask_pan`)
 
@@ -915,7 +933,8 @@ builds itself — is masked as the key it would sit under masks it:
   record that carries it, for a value in a token's exact shape with a card
   number in it (`ptok:v1:` typed before one), and for a card number's
   truncation (`411111******1111`: ten digits of a saved card's gateway
-  token) — each judged as written and as a
+  token), after an auth scheme too (`Bearer 411111******1111`: never a token
+  of the scheme and the truncation) — each judged as written and as a
   URL or form encoding decodes it (`%224111…%22`, `4111+1111+…`). With
   `pci` among the call's packs, and the process's — a `MaskPIIFilter`'s own
   `packs=` while it masks, with the process's — it is `[SECRET-MASKED]` too
@@ -958,17 +977,44 @@ from ecsctx.contrib.net import (
   literal secret (`ecs_url(redact_url(full_url, secrets=[token]))` — masking
   twice masks once).
 - `redact_body(text)` — masks credential values (`access_token`,
-  `client_secret`, …) in JSON and form-encoded bodies. A value is masked as
-  what it decodes to (a JSON escape, a form encoding), and one already masked
-  passes through. A form value runs to the next `&` or whitespace; the
-  quotes and closing brackets at its ends stay as written (`<Auth
-  password="[SECRET-MASKED]"/>`). A value, JSON or form, holding a card-number
-  run is `[SECRET-MASKED]` either way. A form field whose key the key rules
-  call a card, CVV or other SAD is masked by that type, as in a URL
-  (`cvv=[CVV-MASKED]&card_number=411111******1111`). A bare `token` key is
-  masked as the key walk masks it: a saved card's sixteen-digit gateway token
-  is `[SECRET-MASKED]`, and any other value its token (with a keyset, so a
-  gateway's payment or session id still correlates) or label.
+  `client_secret`, …) in JSON, form-encoded and XML bodies. A value is masked
+  as what it decodes to (a JSON escape, a form encoding, XML entities or a
+  CDATA section), and one already masked passes through. A form value runs to
+  the next `&`, whitespace or end tag; the quotes and closing brackets at its
+  ends stay as written (`<Auth password="[SECRET-MASKED]"/>`). A value, JSON,
+  form or XML, holding a card-number run is `[SECRET-MASKED]` either way. A
+  form field whose key the key rules call a card, CVV or other SAD is masked
+  by that type, as in a URL (`cvv=[CVV-MASKED]&card_number=411111******1111`).
+  A bare `token` key is masked as the key walk masks it: a saved card's
+  sixteen-digit gateway token is `[SECRET-MASKED]`, and any other value its
+  token (with a keyset, so a gateway's payment or session id still
+  correlates) or label.
+
+  An XML element is read as a key (KNET's KPay takes XML): its local name,
+  whatever its namespace prefix and attributes, case-insensitively. A card,
+  CVV or SAD name masks its text by that type, as the text rules do
+  (`<cvv>[CVV-MASKED]</cvv>`, `<cardNumber>411111******1111</cardNumber>`),
+  and a card element holding elements — a card object, CyberSource's
+  `<card>` — is read field by field: a CVV or SAD field is its label and
+  any other field's text a card value, so `<accountNumber>` is truncated
+  and an expiry reads through. Then a credential name — one `redact_url`
+  reads as a credential param (`password`, `pwd`, `auth`, `user`, `sign`,
+  `key`, …) or one of the secret keys — masks its text as a credential
+  (`<password>ptok:v1:…</password>`), to its end tag, children and all, a
+  CVV inside it already its label. So `<auth>`, `<user>`, `<signature>` and
+  `<key>` are credentials, as the same names are in a URL's query: one
+  reading of a name across a URL and a body, rather than an exception for
+  one gateway's elements. A name is matched by substring, as a param's is,
+  so `<author>`, `<design>`, `<monkey>`, `<userType>` and `<keyword>` are
+  masked as credentials too: the accepted cost of failing closed. A start tag with no end tag is no element: a
+  route (`/v1/cards/<str:token>/`) has that shape. JSON or XML in an
+  element's text, written with entities, goes through these rules as it
+  decodes and is written back escaped.
+
+  A value a service's [value rule](#value-rules-a-services-own-shapes)
+  matches is its label before anything else reads it, as JSON anywhere in
+  the body — an XML element's text included — or as JSON in a JSON
+  string.
 - `redact_url(url, secrets=[token])` also masks literal values anywhere in
   the URL, longest first — a saved-card token in a path such as
   `/card/<token>/`.
@@ -995,13 +1041,10 @@ it `mask_secret`
 (and so `redact_url`) hashes such a value. Before 0.15.4 they wrote a fixed
 `[REDACTED]`, whatever the keyset.
 
-Accepted residual: with a keyset, the credential text rules followed by
-`redact_body` are not a fixed point where `redact_body` hashes a form value
-the text rules left, right after a scheme word (`Bearer password=[SECRET-MASKED]"x`,
-`Bearer password='`). The scheme word's rule then reads `password=<token>`
-as its own credential and hashes it again: a token of a token, which affects
-correlation only. Skipping `key=<token>` there would let a credential glued
-to a key name through (`Token abc123abc123api_key=…`).
+The credential text rules followed by `redact_body` are a fixed point: after a
+scheme word, a form value `redact_body` masked (`Bearer password=<token>`) is
+no longer read as the scheme's credential and hashed again, while a credential
+glued to a key name (`Token abc123abc123api_key=…`) still is (0.15.6).
 
 Configure per deploy without code changes. Precedence: explicit call >
 Django settings > env vars > defaults (same lazy pattern as the masking
@@ -1063,16 +1106,18 @@ ECSCTX_REDACT_BODY_LOG_CAP=8192
 A key name marks its value when the lowercased key **contains** a keyword, so
 glued and plural names payloads use (`phonenumber`, `cardcvv`, `nameoncard`,
 `tokens`) are caught; the known false positives are listed below as safe keys.
-Card and expiry keys are matched precisely.
+Card keys are matched precisely. Expiry keys are not masked at all: they are
+safe keys (the expiry spellings in the whitelist below).
 
 | Type | Key names | Content rule (pack) | Output |
 |------|-----------|---------------------|--------|
 | **Secrets** | ending in `token`, `secret`, `password`, `passwd`, `passphrase`, `passcode`, `pwd`; `authorization` (also `HTTP_AUTHORIZATION`, `Proxy-Authorization`), `cookie`, `bearer`, `basic`, `digest`, `credential(s)`, an `api`/`access`/`secret`/`private`/`hmac`/`merchant`/… `_key(s)`, `access_code` | credential forms (`default`) | `[SECRET-MASKED…]`; always the label for a PAN-shaped credential (never truncated, never hashed), for a placeholder another masker left (`[REDACTED]`, `***`) and for a token-shaped value with a card number in it; with `pci`, also for a credential or payment id that holds a card-number run anywhere |
-| **Emails / phones** | containing `email`; `phone`, `mobile`, `tel` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]` |
+| **Emails / phones** | containing `email`; `phone`, `mobile`, `tel` | `default` | `[EMAIL-MASKED…]`, `[PHONE-MASKED…]`; with `pci`, the label for one that holds a card-number run (a phone number after `+` up to E.164's 15 digits keeps its token) |
 | **Names / addresses / other PII** | containing `name`, `cardholder`, `payer`, `beneficiary`, `recipient`; `card_details` (the whole key); `address`; `billing`, `shipping`, `customer`, `contact`, `udf` | — | `[NAME-MASKED…]`, … |
-| **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no`, `card_num` (MIGS's `vpc_CardNum`) | 12–19 digit runs (`pci`) | `411111******1111` |
-| **CVV** | containing `cvv`, `cvc`, `security code`, `verification value`, or the words `csc`, `cvd`, `cvn`, `card code` — unless what follows names something *about* one (`cvv_required`, `cvvResult`, `cardSecurityCodeError`) | keyed CVV (`default`), a bare 3–4 digit group beside card context (`pci`) | `[CVV-MASKED]` |
-| **SAD** | track data (`track2`, `trackData`, `raw_track`; not `track_id`), `pin`/`pinBlock`, EMV/chip data, and ending in `cryptogram`, `cavv`, `tavv`, `aav`, `ucaf` | — | `[SAD-MASKED]` |
+| **PANs** | `card`, `pan`, `card_number`, `cardNumber`, `card_no`, `card_num` (MIGS's `vpc_CardNum`) | 12–19 digit runs (`pci`); an XML element so named (`default`) | `411111******1111` |
+| **CVV** | containing `cvv`, `cvc`, `security code`, `verification value`, or the words `csc`, `cvd`, `cvn`, `card code` — unless what follows names something *about* one (`cvv_required`, `cvvResult`, `cardSecurityCodeError`) | keyed CVV and an XML element so named (`default`), a bare 3–4 digit group beside a card number or its truncation, or after a CVV word (`pci`) | `[CVV-MASKED]` |
+| **SAD** | track data (`track2`, `trackData`, `raw_track`; not `track_id`), `pin`/`pinBlock`, EMV/chip data, and ending in `cryptogram`, `cavv`, `tavv`, `aav`, `ucaf` | an XML element so named (`default`) | `[SAD-MASKED]` |
+| **A service's value rules** | none: found by shape under any key, as a mapping or as JSON text ([value rules](#value-rules-a-services-own-shapes)) | the same shapes as JSON in text, or in a JSON string (`default`) | the rule's label, the whole value |
 | **National ids** | `civil_id`, `national_id`, `passport`, `iqama`, `qid`, `cpr`, `nid`, `emirates_id`, `ssn`, `tin`, `tax_id`, `aadhaar`, `id_number` | — | `[SSN-MASKED…]` |
 | **IBAN / SSN / payment ids** | `payment_id`, `transaction_id`, `auth_id` (`financial_ids`) | `financial_ids` | `[IBAN-MASKED…]`, … |
 
@@ -1084,6 +1129,11 @@ type. A **card** container keeps its shape too: the PAN truncates to first six
 and last four, expiry and scheme read through, and the CVV, track data and PIN
 are destroyed — collapsing it threw away the one form PCI DSS 3.5.1 permits us
 to keep.
+
+A value a service's **value rule** matches is that rule's label whole, in
+every pack and under any key, never hashed; it is found by shape, so anything
+else under the same key reads as before. A value encoded into another field
+(hex, base64) has no shape to find, and is left to that field's key.
 
 Since 0.14.0 a **credential, CVV or SAD** key holding a container is walked as
 well, because it cannot be holding the value itself: a leaf with no rule of its
@@ -1102,8 +1152,9 @@ A credential value found in text (`password=…`, `"token": "…"`, `Bearer …`
 runs to its delimiter, as a form value in `redact_body` does: an unquoted one
 to whitespace, `&`, `;`, `,`, a closing bracket or a closing quote (a quote
 followed by a JSON key's `":` or an element's `/>` is structure too); a quoted
-one to its unescaped closing quote, spaces and all. An empty pair of quotes is
-no value: doubled as CSV and SQL escape a quote (`password=""s3cret`), they
+one to its unescaped closing quote, spaces and all. Neither runs into an end
+tag: in `<note>password=abc</note>` the value is `abc`. An empty pair of quotes
+is no value: doubled as CSV and SQL escape a quote (`password=""s3cret`), they
 are structure before it. A value between escaped quotes — JSON in a JSON
 string, `{\"password\": \"correct horse\"}` — runs to its matching escaped
 quote too. A backslash, `@`, `#` or an
@@ -1119,16 +1170,45 @@ value — `Authorization: Bearer abc…` carries the token the header gets under
 key, not one for `Bearer` with the credential beside it. A whole token right after
 the scheme — what masking the credential alone leaves,
 `Authorization: Bearer ptok:v1:…` — is left as it is, not hashed again with its
-scheme. A credential keyword that
-names a CVV or PIN (`cvv_token=123`, `pin_password=1234`) gives that label
-(`[CVV-MASKED]`, `[SAD-MASKED]`), as the key does, never a token.
+scheme. Ottu's `API-Key` scheme word standing alone does the same, without its
+`Authorization:` — `sending API-Key abc123XYZ to core` carries the header's
+token, `mask_secret("API-Key abc123XYZ")` — for any key after it, digits or
+none, however short: the word is the evidence (`Bearer` and the other schemes
+keep their eight characters and a digit, since prose says "Bearer of bad
+news"). A header name ending in the word (`X-API-Key <key>`) is no scheme, and
+its key alone is masked. A credential
+keyword that names a CVV or PIN (`cvv_token=123`, `pin_password=1234`) gives
+that label (`[CVV-MASKED]`, `[SAD-MASKED]`), as the key does, never a token.
+
+A container after a credential keyword — `password=%(pw)s` rendered with a list,
+`password=['a', 'b']`, or a mapping's repr, `{'password': ('a', 'b')}` — is the
+credential's value whole: its token, or the label (a repr's value kept a
+string). Not a JSON key's container, which the key walk masked by its keys
+before writing it, nor one holding only masking's own output.
+
+An XML element named by a credential keyword — `<password>s3cret</password>`,
+`<wsse:Password Type="…">…</wsse:Password>`, `<Authorization>Bearer x</Authorization>`
+— is masked to its end tag, as it decodes, in every pack, for a body that never
+went through `redact_body`; a start tag with no end tag (a route,
+`/v1/cards/<str:token>/`) is no element. So is an element named as a card, CVV
+or SAD key, as `redact_body` masks it: `<cvv>123</cvv>` is
+`<cvv>[CVV-MASKED]</cvv>`, `<pin>1234</pin>` `<pin>[SAD-MASKED]</pin>`, and
+`<cardNumber>` truncated — a test card that fails Luhn too, with or without
+`pci` — and a card object is read field by field. A CVV inside a credential's
+element is its label before the credential is masked, as under a credential
+key. A JSON object a service's value rule matches, written in text or as
+JSON in a JSON string, is the rule's label before any credential rule reads
+it.
 
 A URL's userinfo in text — a DSN in an exception,
 `postgresql://user:password@db:5432/app` — is masked part by part as
 `redact_url` masks it, keeping the scheme, host and port: with a password,
-empty or not (`https://key:@host`); a user alone (`ssh://git@host`) is left to
-the other rules. The email rule never starts inside masking's own output, so a
-token or label in a URL's userinfo keeps the host after it.
+empty or not (`https://key:@host`). A user alone (`ssh://git@host`) is left to
+the other rules, unless it is shaped like a card number or holds a card-number
+run (`https://9923960000004314@host/`, a saved card's gateway token): that is
+`[SECRET-MASKED]`, as `redact_url` gives it. The email rule never starts inside
+masking's own output, so a token or label in a URL's userinfo keeps the host
+after it.
 
 A digit run that touches a letter is never a phone number — it is part of an
 id. The card rule still matches a PAN followed by a letter, because Track 2
@@ -1241,18 +1321,78 @@ from ecsctx.masking import configure_masking_safe_keys
 configure_masking_safe_keys(["pg_name", "cvv_required"])
 ```
 
-Names are matched case-insensitively. A card or expiry key, or a name ending in
-a CVV or credential word (`card_number`, `pan_no`, `expiry_month`, `card_cvv`,
-`db_password`, `oauth_token`, `api_key`, …) names the value itself and cannot be
-listed; a flag or status about one (`cvv_required`, `tokenization_status`) can: `configure_masking_safe_keys` raises, and from the setting or
-env var it is dropped with a warning, stays masked, and fails the Django boot
-check. Ottu services use `ecsctx.contrib.ottu.masking.SAFE_KEYS`:
+Names are matched case-insensitively. A card key, or a name ending in a CVV or
+credential word (`card_number`, `pan_no`, `card_cvv`, `db_password`,
+`oauth_token`, `api_key`, …), names the value itself and cannot be listed:
+`configure_masking_safe_keys` raises, and from the setting or env var it is
+dropped with a warning, stays masked, and fails the Django boot check. A flag
+or status about one (`cvv_required`, `tokenization_status`) can be listed, and
+so can an expiry key, though it is safe already: nothing masks it. Ottu
+services use `ecsctx.contrib.ottu.masking.SAFE_KEYS`, and list its
+`WALLET_RULES` as value rules beside them (below):
 
 ```python
-from ecsctx.contrib.ottu.masking import SAFE_KEYS as OTTU_SAFE_KEYS
+from ecsctx.contrib.ottu.masking import SAFE_KEYS as OTTU_SAFE_KEYS, WALLET_RULES
 
 ECSCTX_MASK_SAFE_KEYS = [*OTTU_SAFE_KEYS]
+ECSCTX_MASK_VALUE_RULES = [*WALLET_RULES]
 ```
+
+### Value rules (a service's own shapes)
+
+Some values are known by their shape rather than by the key they sit under —
+a payment method's encrypted token, say — and which shapes those are is a
+service's to say: ecsctx names none. A service lists its value rules, and the
+engine asks them about every mapping the key walk meets (under any key), every
+string that is JSON text, and every JSON object written in free text or in a
+body `redact_body` masks, JSON in an XML element's text included. A matching
+value becomes the rule's label, in every pack: never hashed, and left as it is
+by a later pass. With none configured, none of this runs.
+
+A rule is any object with a `field_type` (the label it becomes: `"sad"` is
+`[SAD-MASKED]`), `matches(value)` — called with a mapping, JSON text parsed
+once — and, optionally, `hints`: literal strings a matching value's text holds
+at least one of, so text holding none is never parsed to ask. `ValueRule` is
+one:
+
+```python
+from ecsctx.masking import ValueRule
+
+def is_vault_blob(value):
+    return value.get("kind") == "vault-blob" and "payload" in value
+
+VAULT_BLOB = ValueRule("sad", is_vault_blob, hints=("vault-blob",))
+```
+
+```python
+# 1. Django settings.py: rule objects, or dotted paths to a rule or to a collection of them
+ECSCTX_MASK_VALUE_RULES = ["myservice.masking.VAULT_BLOB"]
+
+# 2. Env var, comma-separated dotted paths
+#    ECSCTX_MASK_VALUE_RULES="myservice.masking.VAULT_BLOB"
+
+# 3. Programmatic, at startup (wins over both)
+from ecsctx.masking import configure_masking_value_rules
+configure_masking_value_rules([VAULT_BLOB])
+```
+
+An item that does not import or is not a rule makes
+`configure_masking_value_rules` raise; from the setting or env var it is
+dropped with a warning and fails the Django boot check, and the others still
+apply. A rule that raises leaves the record as `[MASKING-FAILED: …]`, never
+an exception out of the log call.
+
+Ottu's are `ecsctx.contrib.ottu.masking.WALLET_RULES`: an Apple Pay token's
+`paymentData` (`version` `EC_v1` or `RSA_v1`, with the encrypted `data`) and
+a Google Pay payment method token (`protocolVersion` `ECv1`, `ECv2` or
+`ECv2SigningOnly`, with a `signedMessage`) are `[SAD-MASKED]` whole — under
+`paymentData`, TAP's `token_data`, MPGS's `paymentToken` (a JSON string),
+Google Pay's `tokenizationData.token`, KPay's `<udf9>`, or in a message. An
+Ottu service lists them in `ECSCTX_MASK_VALUE_RULES` next to its
+`ECSCTX_MASK_SAFE_KEYS` (above), or sets
+`ECSCTX_MASK_VALUE_RULES=ecsctx.contrib.ottu.masking.WALLET_RULES`. Core
+masks no wallet token of its own accord: without them, one is read as any
+other value is.
 
 ### Path exemptions
 
@@ -1347,7 +1487,7 @@ PII_VAULT_TIMEOUT=10                                 # HTTP timeout for Vault ca
 2. The structure is walked recursively, tracking each value's JSON path. A string that is a JSON object or list (up to 64 KiB, e.g. a callback's raw body) is parsed and walked the same way, then written back
 3. A sensitive-key string value is tokenized (HMAC-SHA-256) — unless its key is whitelisted, listed in the service's [safe keys](#safe-keys-a-services-own-names), or its path is exempted (see [Path exemptions](#path-exemptions))
 4. Every string value is also scanned for email/phone patterns and tokenized (defense in depth, even on exempted paths)
-5. Auth header values are masked (truncated, not encrypted)
+5. Auth header values (`Authorization`, `Proxy-Authorization`, cookies) are masked as credentials (`mask_secret`): the scheme and the credential as one value, its token, or `[SECRET-MASKED]` without a keyset — never truncated, never encrypted
 6. Values are normalized before tokenization (emails lowercased, phones to E.164)
 
 ### Example Output
@@ -1401,15 +1541,15 @@ This is the most frequently broken field. Every `except` block tempts you:
 ```python
 # WRONG — will cause ES mapping conflict
 except Exception as e:
-    log.error("something_failed", error=str(e))
+    log.error("something failed", error=str(e))
 
 # CORRECT — ECS-compliant dict
 except Exception as e:
-    log.error("something_failed", error={"message": str(e)})
+    log.error("something failed", error={"message": str(e)})
 
 # EVEN BETTER — include exception type
 except requests.HTTPError as e:
-    log.error("api_call_failed", error={
+    log.error("api call failed", error={
         "message": str(e),
         "type": type(e).__name__,
     })
@@ -1421,10 +1561,10 @@ Only ECS reserved names need the dict treatment. The `namespace_ecs_fields` proc
 
 ```python
 # "merchant_id" stays at root (allowlisted)
-log.info("payment_started", merchant_id="acme")
+log.info("payment started", merchant_id="acme")
 
 # "disclosure_pk" is not allowlisted — goes into extra.disclosure_pk
-log.info("disclosure_created", disclosure_pk=42)
+log.info("disclosure created", disclosure_pk=42)
 ```
 
 ### Elasticsearch Indexing: `labels` vs `extra`
@@ -1437,7 +1577,7 @@ log.info("disclosure_created", disclosure_pk=42)
 bind_logging_context(labels={"env": "prod", "region": "us-east-1"})
 
 # Good: non-filterable details as bare kwargs (auto-wrapped into extra)
-log.info("payment_processed", amount=100, currency="KWD")
+log.info("payment processed", amount=100, currency="KWD")
 # Output: {..., "extra": {"amount": 100, "currency": "KWD"}}
 ```
 
@@ -1468,17 +1608,24 @@ stdlib logs bypass the entire structlog processor chain (context injection, ECS 
 ### Mistake #2: f-string Log Messages
 
 ```python
-# ❌ WRONG — dynamic data in message, unsearchable, unaggregatable
+# ❌ WRONG — the values rendered into the message: every line is different
 log.info(f"Payment processed for merchant {merchant} amount {amount}")
 
-# ❌ ALSO WRONG — printf-style formatting
-log.error("OAuth token exchange failed: shop=%s response=%r", shop, response)
+# ✅ CORRECT — lowercase prose, a constant template, lazy %s arguments
+log.error("oauth token exchange failed for %s: %s", shop, response.status_code)
 
-# ✅ CORRECT — static event name + structured kwargs
-log.info("payment_processed", merchant=merchant, amount=amount)
+# ✅ ALSO CORRECT — a constant message, the values as structured fields
+log.info("payment processed", merchant=merchant, amount=amount)
 ```
 
-**Why it matters:** In Kibana, you search by `message: "payment_processed"`. With f-strings, every log line has a different message — you can't aggregate, alert, or build dashboards.
+**Why it matters:** The message is what Kibana aggregates and alerts on, and
+what Sentry groups by. A `%s` template stays constant however its arguments
+vary — logging fills them in only when the line is emitted, and masking reads
+them as values — while an f-string makes every line a message of its own. The
+message is lowercase prose a person reads, not an identifier: the event
+itself is named by `ecs_event=` ([section 23](#23-declared-events-ecsctxevents)),
+so a snake_case "event name" in the message is neither. Ottu's services
+(Connect, Ottu PG) gate this style.
 
 ---
 
@@ -1486,10 +1633,10 @@ log.info("payment_processed", merchant=merchant, amount=amount)
 
 ```python
 # ❌ WRONG — flat string breaks ECS error field mapping
-log.exception("invalid_data", error=str(error))
+log.exception("invalid data", error=str(error))
 
 # ✅ CORRECT — ECS-compliant dict
-log.exception("invalid_data", error={"message": str(error)})
+log.exception("invalid data", error={"message": str(error)})
 ```
 
 ---
@@ -1497,13 +1644,13 @@ log.exception("invalid_data", error={"message": str(error)})
 ### Mistake #4: `log.exception(e)` — Exception as Message
 
 ```python
-# ❌ WRONG — exception object as first arg, not a structured event name
+# ❌ WRONG — exception object as first arg, not a constant message
 except Exception as e:
     log.exception(e)
 
-# ✅ CORRECT — static event name, structlog auto-captures exception info
+# ✅ CORRECT — a constant message, structlog auto-captures exception info
 except Exception as e:
-    log.exception("payment_processing_failed")
+    log.exception("payment processing failed")
 ```
 
 ---
@@ -1513,7 +1660,7 @@ except Exception as e:
 ```python
 # ❌ WRONG — first log has no merchant_id or payment context
 def post(self, request, merchant_id, client_payment_id):
-    log.info("acknowledgement_received",
+    log.info("acknowledgement received",
         merchant_id=merchant_id,
         client_payment_id=client_payment_id,
     )
@@ -1525,7 +1672,7 @@ def post(self, request, merchant_id, client_payment_id):
         "merchant_id": merchant_id,
         settings.APP_NAME: {"client_payment_id": client_payment_id},
     })
-    log.info("acknowledgement_received")
+    log.info("acknowledgement received")
 ```
 
 ---
@@ -1535,11 +1682,11 @@ def post(self, request, merchant_id, client_payment_id):
 ```python
 # ❌ WRONG — session_id already in context, passed again as kwarg
 bind_logging_context(session_id=session_id)
-log.info("notification_received", session_id=session_id)  # redundant!
+log.info("notification received", session_id=session_id)  # redundant!
 
 # ✅ CORRECT — it's already in context
 bind_logging_context(session_id=session_id)
-log.info("notification_received")
+log.info("notification received")
 ```
 
 ---
@@ -1577,10 +1724,10 @@ See the [Core Rules](#4-core-rules-field-placement-reference) table for the comp
 
 ```python
 # ❌ WRONG — Sentry alert for missing pg_codes (customer config problem)
-log.error("pg_codes_not_found")
+log.error("pg codes not found for %s", merchant_id)
 
-# ✅ CORRECT — not our fault, not worth waking someone up
-log.info("pg_codes_not_found")
+# ✅ CORRECT — not our fault, not worth waking someone up; still a failure
+log.warning("pg codes not found for %s", merchant_id)
 ```
 
 ---
@@ -1615,21 +1762,26 @@ This isn't just style — it directly affects Sentry alert volume and on-call fa
 Is this a system failure that needs human attention?
 ├── YES → log.error (triggers Sentry alert)
 └── NO
-    ├── Is this a customer config problem? → log.info
-    ├── Will the task retry? → log.info (alert after retries exhausted)
-    ├── Is this expected? (auth fail, 404) → log.info
+    ├── Did something fail, expected or not? (customer config, a retry,
+    │   auth fail, a rejected callback) → log.warning
+    ├── Normal operations? → log.info
     └── Debug/development info? → log.debug
 ```
 
 > **The golden rule: `log.error` = "Wake someone up."** If it's not worth waking someone up, it's not `log.error`.
 
+A failure is never below `warning`: the contract validator (`event_contract`,
+[section 23](#the-log-contract-event_contract-processor)) reports any event
+logged with `outcome=failure` at `debug` or `info` (`failure_below_warning`),
+and the catalogue's expected failures declare `failure_level="warning"`.
+
 | Situation | Level | Reasoning |
 |-----------|-------|-----------|
 | System/infra failure (DB down, API 500) | `log.error` | Needs Sentry alert + on-call |
 | Business logic failure (max retries exceeded) | `log.error` | System failed its job |
-| Customer config error (merchant not found) | `log.info` | Not our fault |
-| Retry-able failure (temporary network blip) | `log.info` | Task will retry |
-| Auth failure (invalid token, bad HMAC) | `log.info` | Expected, handled |
+| Customer config error (merchant not found) | `log.warning` | Not our fault, but a failure |
+| Retry-able failure (temporary network blip) | `log.warning` | Task will retry; `error` once retries are exhausted |
+| Auth failure (invalid token, bad HMAC) | `log.warning` | Expected and handled, but a failure |
 | Normal operations (webhook received) | `log.info` | Operational visibility |
 | Verbose debugging (raw payloads) | `log.debug` | Filtered in production |
 
@@ -1689,14 +1841,14 @@ Check these fields in your JSON output:
 import structlog
 log = structlog.get_logger(__name__)
 
-log.info("test_pii", customer_name="John Doe", email="john@example.com", amount=100)
+log.info("pii masking check", customer_name="John Doe", email="john@example.com", amount=100)
 ```
 
 Expected stdout:
 
 ```json
 {
-  "message": "test_pii",
+  "message": "pii masking check",
   "customer_name": "ptok:v1:...",
   "email": "ptok:v1:...",
   "amount": 100
@@ -1709,7 +1861,7 @@ If `customer_name` shows `"John Doe"` in plain text, check that `mask_sensitive_
 
 ```python
 # In a view, dispatch a task and check worker stdout
-log.info("dispatching_task")
+log.info("dispatching task")
 my_task.apply_async(args=[...])
 
 # In the Celery worker output, the task log should have:
@@ -1737,8 +1889,8 @@ docker compose logs vector
 ### Step 6: Verify in Kibana
 
 1. Go to Kibana → Discover
-2. Select the data stream: `logs-{PROJECT_NAME}-{ENVIRONMENT}`
-3. Search: `message: "test_pii"`
+2. Select the data stream: `logs-{PROJECT_NAME}-{ENVIRONMENT}` (at Ottu, `logs-*`, or `logs-pci-<env>` for a PCI service)
+3. Search: `message: "pii masking check"`
 4. Verify fields are nested correctly (`trace.id`, not flat `trace_id`)
 5. Verify PII is tokenized (`ptok:v1:...`, not plain text)
 
@@ -1858,7 +2010,7 @@ services:
 
 ### Data Stream Naming
 
-Your logs land in Elasticsearch under:
+With the template above, your logs land in Elasticsearch under:
 
 ```
 logs-{PROJECT_NAME}-{ENVIRONMENT}
@@ -1868,6 +2020,10 @@ Examples:
 - `logs-keyloop-production`
 - `logs-event-backend-staging`
 - `logs-checkout-dev`
+
+Ottu's services do not use this layout: they ship to daily `logs-YYYY.MM.DD`
+indices, and a PCI service (Ottu PG) to `logs-pci-<env>`, from log files Vector
+tails.
 
 If you use a `common-logs` ingest pipeline, it can enforce ECS field types so malformed fields (e.g., flat `error` string) get flagged at ingest time.
 
@@ -2042,7 +2198,7 @@ class LoggingContext:
 {
   "@timestamp": "2025-01-13T10:30:00.000Z",
   "ecs.version": "1.12.0",
-  "message": "payment_processed",
+  "message": "payment processed",
   "log.level": "info",
   "log.logger": "core.payment.views",
   "trace": {
@@ -2262,7 +2418,7 @@ There is one way to log an event: your own logger, with the event's payload.
 
 ```python
 logger.info(
-    "Gateway replied in %s ms", elapsed_ms,
+    "gateway replied in %s ms", elapsed_ms,
     ecs_event=PG_RESPONSE_RECEIVED.ecs(outcome=Outcome.SUCCESS, duration_ns=elapsed_ns),
     session_id=sid,
     payment={"pg_code": "mpgs"},

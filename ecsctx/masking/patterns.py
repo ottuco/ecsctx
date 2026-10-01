@@ -3,7 +3,7 @@
 Ported from ottu_pg's MaskPIIFilter (utils/log/filters.py), merged with
 ecsctx's own PII key-name list. Two independent detection strategies:
 
-1. Content-based (RULES): 18 ordered regexes in three packs — `default`
+1. Content-based (RULES): 24 ordered rules in three packs — `default`
    always on, `pci` and `financial_ids` opt-in (ecsctx.masking.config) — each
    behind a literal pre-check, applied to every string the filter reaches.
    Rule order is load-bearing — see the comments on each rule and the
@@ -25,14 +25,18 @@ nothing survived, and a truncation carries the BIN and the last four).
 
 from __future__ import annotations
 
+import ast
 import contextlib
+import html
 import json
 import re
+from bisect import bisect_left
 from collections import deque
 from collections.abc import Callable, Iterator
 from functools import lru_cache
 from heapq import merge
 from itertools import accumulate, pairwise
+from operator import methodcaller
 from typing import Any, NamedTuple
 from urllib.parse import unquote
 
@@ -43,9 +47,11 @@ from ecsctx.masking.tokens import (
     _TOKEN_SHAPE,
     _TOKEN_START,
     _TRUNCATED_PAN,
+    already_masked,
     make_label,
     mask_by_field_type,
 )
+from ecsctx.masking.value_rules import hinted, label_of
 
 # ---------------------------------------------------------------------------
 # Shared keyword/value fragments
@@ -130,7 +136,7 @@ SAFE_KEYS = frozenset({
 })
 
 # Authorization / Authorisation (+ _header). Apart from the other keywords:
-# its value is a scheme and a credential, one value (rule 3).
+# its value is a scheme and a credential, one value (rule 7).
 _AUTH_KEYWORD = r"authori[sz]ation(?:[_-]?header)?"
 # The HTTP authentication schemes an Authorization header's credential
 # follows (RFC 9110 11.4), and the one Ottu's API names `Api-Key`.
@@ -203,13 +209,17 @@ _ESCAPED = r"\\[^\"']"
 # ends it, so it would cut the label (`[SECRET-MASKED]]`), and a label that
 # redact_body wrote after a short value made it long enough to mask again.
 _NOT_A_LABEL = r"(?!(?-i:\[[A-Z0-9-]+-MASKED[\]:]))"
+# ...nor into an end tag: in `<note>password=abc</note>` the element's text,
+# and so the value, ends there, as a form value in redact_body does. Read on,
+# the value took the tag with it, and the next pass hashed its token again.
+_NOT_AN_END_TAG = r"(?!</)"
 # Quotes, escaped or not, with more of the value after them: `abc\"def` is
 # one value. A quote closes the string the value sits in where nothing of the
 # value follows it (`{"note": "password=abc"}`), or where what follows is the
 # structure redact_body keeps at a value's end: a JSON key's `":`, or an XML
 # element's `/>` (`<Auth apikey=\"…\"/>` in a JSON string).
-_INNER_QUOTES = rf"(?:\\?[\"'])+(?!:|/>)(?={_NOT_A_LABEL}(?:{_PLAIN}|{_ESCAPED}))"
-_VALUE_UNIT = rf"(?:{_NOT_A_LABEL}(?:{_PLAIN}|{_ESCAPED}|{_INNER_QUOTES}))"
+_INNER_QUOTES = rf"(?:\\?[\"'])+(?!:|/>)(?={_NOT_A_LABEL}{_NOT_AN_END_TAG}(?:{_PLAIN}|{_ESCAPED}))"
+_VALUE_UNIT = rf"(?:{_NOT_A_LABEL}{_NOT_AN_END_TAG}(?:{_PLAIN}|{_ESCAPED}|{_INNER_QUOTES}))"
 # A value's first character: never a quote, which is the structure around a
 # value, nor an opening bracket: `{` and `[` open a container (JSON text the
 # key walk re-serialised), `[` also a label masking already wrote.
@@ -234,6 +244,14 @@ def _quoted_body(quote: str) -> str:
     """A quoted value's characters, up to the unescaped closing quote the named
     group ``quote`` opened: escape-aware, so `ab\"cd` is one value."""
     return rf"(?:(?!(?P={quote}))[^\\]|\\[\s\S])"
+
+
+def _quoted_value_body(quote: str) -> str:
+    """...for a value after `key=`: never into an end tag, as an unquoted one
+    and redact_body's form value are not. Read across one, the value that
+    redact_body left before a tag (`token="<token>></token>"`) was hashed
+    again."""
+    return rf"(?:(?!(?P={quote})|</)[^\\]|\\[\s\S])"
 
 
 # A value that is already a PII token (ptok:v1:…), which a key rule or an
@@ -309,6 +327,7 @@ def _digits_only(text: str) -> str:
 # tokenize. Stated directly rather than via mask_by_field_type('', 'cvv'),
 # which made these rules depend on how an empty value is rendered.
 _CVV_LABEL = f"[{make_label('cvv')}]"
+_SECRET_LABEL = f"[{make_label('secret')}]"
 
 
 
@@ -343,7 +362,7 @@ _DASH_CHARS = "-" + _UNICODE_DASHES
 _DIGIT_VALUE = bytes.maketrans(b"0123456789", bytes(range(10)))
 _DOUBLED_VALUE = bytes.maketrans(b"0123456789", bytes((0, 2, 4, 6, 8, 1, 3, 5, 7, 9)))
 # An IBAN's country code and two check digits, at the start of a word, as the
-# first two digits of a run. Case-sensitive, as rule 11 is.
+# first two digits of a run. Case-sensitive, as rule 16 is.
 _IBAN_HEAD = re.compile(rf"(?<![^\W_])(?:{_IBAN_PREFIX})\d\d(?!\d)")
 # ...or with groups of four after them, and part of one, ending right before a
 # run: the bank code has letters in it ("GB33 BUKB 2020 ...", "IT60 X054 ...").
@@ -1045,6 +1064,110 @@ def _mask_userinfo(userinfo: str) -> str:
     return f"{_mask_url_part(user)}{separator}{_mask_url_part(password)}"
 
 
+# ---------------------------------------------------------------------------
+# Value rules in text
+# ---------------------------------------------------------------------------
+# A JSON object written in text -- JSON, a Python repr, or JSON in a JSON
+# string -- is asked of the service's value rules (value_rules), and one a
+# rule matches is that rule's label, never a token. ecsctx names no shape of
+# its own: nothing configured, nothing runs.
+
+
+def value_rules_in_force() -> tuple:
+    """The value rules masking asks: the service's (config's
+    ``ECSCTX_MASK_VALUE_RULES``). Imported here: config imports this module
+    as it loads."""
+    from ecsctx.masking.config import get_masking_value_rules
+
+    return get_masking_value_rules()
+
+
+def _json_object(string: str, space: str, character: str) -> str:
+    """A JSON object as text: members whose value is a string, a scalar, or
+    an object or list holding strings, anything but a bracket, and one more
+    level of either -- as deep as an object a rule is asked about goes; a
+    deeper one is read from inside. Every alternative starts on a character
+    of its own and no loop takes a closing bracket, so a failed match never
+    backtracks into another reading."""
+    flat = rf"(?:{string}|{character})*"
+    nested = rf"(?:{string}|{character}|\{{{flat}\}}|\[{flat}\])*"
+    value = rf"(?:{string}|[-+.\w]+|\{{{nested}\}}|\[{nested}\])"
+    member = rf"{string}{space}:{space}{value}"
+    return rf"\{{{space}{member}(?:{space},{space}{member})*{space}\}}"
+
+
+# As written: JSON, or a Python repr's quotes. Escaped: JSON in a JSON string
+# (a field whose value is itself JSON), its quotes `\"`, a pretty-printed
+# one's line breaks `\n`. Compiled once, as rule 2.
+_OBJECT_TEXT = (
+    "(?P<plain>"
+    + _json_object(
+        r"(?:\"(?:[^\"\\]|\\[\s\S])*\"|'(?:[^'\\]|\\[\s\S])*')",
+        r"\s*",
+        r"[^{}\[\]\"']",
+    )
+    + ")|(?P<escaped>"
+    + _json_object(
+        rf'\\"{_ESCAPED_QUOTED_UNIT}*\\"',
+        r"(?:\s|\\[nrt])*",
+        r'(?!\\")[^{}\[\]"]',
+    )
+    + ")"
+)
+
+
+def _object_value(m: re.Match) -> Any:
+    """The object a match wrote, parsed: JSON, a Python repr, or JSON in a
+    JSON string as it decodes. None where it does not parse."""
+    written = m.group(0)
+    if m.group("plain") is None:
+        try:
+            return json.loads(json.loads(f'"{written}"'))
+        except (ValueError, RecursionError):
+            return None
+    try:
+        return json.loads(written)
+    except (ValueError, RecursionError):
+        pass
+    try:
+        return ast.literal_eval(written)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return None
+
+
+def _mask_object(m: re.Match, rules: tuple) -> str:
+    """The label where an object a rule matches stood: a JSON string where it
+    was a JSON value (after `:`, `,` or `[`), escaped where that JSON is
+    itself in a string; bare anywhere else -- in prose, an element's text, a
+    string of its own. An object no rule matches is read member by member,
+    so one inside it is still found."""
+    written = m.group(0)
+    label = label_of(_object_value(m), rules)
+    if label is None:
+        inner = mask_objects(written[1:-1], rules)
+        return written if inner == written[1:-1] else f"{{{inner}}}"
+    text, position = m.string, m.start() - 1
+    while position >= 0 and text[position].isspace():
+        position -= 1
+    if position < 0 or text[position] not in ":,[":
+        return label
+    quote = '"' if m.group("plain") is not None else '\\"'
+    return f"{quote}{label}{quote}"
+
+
+def _value_object(m: re.Match) -> str:
+    rules = value_rules_in_force()
+    return _mask_object(m, rules) if rules else m.group(0)
+
+
+def mask_objects(text: str, rules: tuple) -> str:
+    """Each JSON object written in ``text`` that one of ``rules`` matches, as
+    its label: rule 2 alone, for ``contrib.net.redact_body``."""
+    if not rules or "{" not in text or not hinted(text, rules):
+        return text
+    return _OBJECT_RULE.pattern.sub(lambda m: _mask_object(m, rules), text)
+
+
 def _mask_pem(match: re.Match) -> str:
     """Token computed over the base64 body only — strip the BEGIN/END lines
     and all whitespace first, so the same key re-wrapped at a different line
@@ -1140,9 +1263,291 @@ def _cred_kv(m: re.Match) -> str:
     return f"{prefix}{_mask_credential(val, keyword)}"
 
 
+# A container after a credential word, as a %-style argument renders one
+# (`password=['a', 'b']`, `{'password': ('a', 'b')}`): a list, dict, tuple or
+# set, its strings read whole so a bracket in one ends nothing, nested three
+# deep; or, opened and never closed (a line cut short), the rest of the line.
+_CONTAINER_STRING = r"\"(?:[^\"\\]|\\[\s\S])*\"|'(?:[^'\\]|\\[\s\S])*'"
+
+
+def _container(depth: int) -> str:
+    inner = rf"(?:{_CONTAINER_STRING}|[^\[\]{{}}()\"']" + (f"|{_container(depth - 1)}" if depth else "") + ")*"
+    return rf"(?:\[{inner}\]|\{{{inner}\}}|\({inner}\))"
+
+
+_CONTAINER = rf"(?:{_container(2)}|[\[{{(][^\n]*)"
+
+
+def _only_masks(value: Any) -> bool:
+    """Whether every value in a parsed container is masking's own output --
+    a token, a label, a truncation -- or no value at all (None, a flag)."""
+    if value is None or isinstance(value, bool):
+        return True
+    if isinstance(value, str):
+        return already_masked(value)
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return all(_only_masks(item) for item in value)
+    if isinstance(value, dict):
+        return all(_only_masks(item) for item in value.values())
+    return False
+
+
+def _masked_already(text: str) -> bool:
+    """Whether a container's text holds only masking's own output, as the key
+    walk writes a credential's container, a record's field included."""
+    for parse in (ast.literal_eval, json.loads):
+        try:
+            return _only_masks(parse(text))
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            continue
+    return False
+
+
+def _cred_container(m: re.Match) -> str:
+    value = m.group("value")
+    if _masked_already(value):
+        return m.group(0)
+    # A repr's key is quoted: its value stays a string.
+    quote = m.group("quote")
+    return f"{m.group('prefix')}{quote}{_mask_credential(value, m.group('key'))}{quote}"
+
+
+# Masking's own output in a value: a whole token, a label, a truncation.
+_MASKS_IN_A_VALUE = re.compile(rf"(?-i:{_CARDLESS_TOKEN}|\[[A-Z0-9-]+-MASKED\]|{_TRUNCATED_PAN})")
+_DIGIT = re.compile(r"\d")
+# A form field whose value masking wrote, as redact_body leaves one after a
+# scheme word (`API-Key password=<token>`).
+_MASKED_FIELD = re.compile(rf"[\w.\-\[\]%]+[=:](?-i:{_CARDLESS_TOKEN}|\[[A-Z0-9-]+-MASKED\])")
+
+
+def _api_key_scheme(m: re.Match) -> str:
+    """`API-Key <key>` without its `Authorization:` -- Ottu PG's header,
+    written into text: the scheme and the key are one value, as after
+    Authorization, and carry the token the header carries. A form field
+    masking wrote there (`API-Key password=<token>`) is left, never hashed
+    again with the scheme."""
+    if _MASKED_FIELD.fullmatch(m.group("value")):
+        return m.group(0)
+    return mask_secret(m.group(0))
+
+
 def _cred_space(m: re.Match) -> str:
-    kw, val = m.group(1), m.group(2)
+    kw, val = m.group("keyword"), m.group("value")
+    if _DIGIT.search(_MASKS_IN_A_VALUE.sub("", val)) is None:
+        # Its only digits are masking's own: `password=<token>`, which
+        # redact_body wrote after the scheme word. The digit is what makes
+        # this rule read a credential, and hashing it again was a token of a
+        # token. A credential glued to a key name keeps its own digits
+        # (`Token abc123abc123api_key=<token>`), and is hashed as before.
+        return m.group(0)
     return f"{kw} {_mask_credential(val, kw)}"
+
+
+# An element's text given as a CDATA section, whose content is the value.
+_CDATA = re.compile(r"\s*<!\[CDATA\[(?P<content>[\s\S]*?)\]\]>\s*")
+# An Authorization element's text that masking already wrote, or another
+# masker did: a scheme before a whole token, a label or a placeholder. As in
+# rule 7, the scheme is not hashed again with it.
+_SCHEME_BEFORE_A_MASK = re.compile(
+    rf"\s*{_AUTH_SCHEME}[ \t]+(?:(?-i:{_CARDLESS_TOKEN})|\[[^\[\]]*\]|\*+)\s*", re.IGNORECASE
+)
+_AUTH_NAME = re.compile(_AUTH_KEYWORD, re.IGNORECASE)
+
+
+def _element_text(raw: str) -> str:
+    """An XML element's text as it decodes: a CDATA section's content, or the
+    text with its entities resolved -- the value a key would carry, so it
+    gets the token the same value gets under a key."""
+    if (cdata := _CDATA.fullmatch(raw)) is not None:
+        return cdata.group("content")
+    return html.unescape(raw) if "&" in raw else raw
+
+
+# A start tag's attributes: a `>` inside a quoted value is the value's, as
+# XML allows it there (`<password hint="a>b">`); read to the first `>`, the
+# rest of the value went into the element's text, and its token. Each piece
+# starts with a character no other can (no backtracking to speak of), and a
+# quoted value never crosses a `<`.
+_ATTRIBUTES = r"(?:[^<>\"']|\"[^\"<]*\"|'[^'<]*')*"
+# An XML element's start tag: its qualified name, the local name after any
+# namespace prefix, and its attributes. Not an empty-element tag
+# (`<password/>`), which holds no text. A quote nothing closes before the
+# next tag leaves the first `>` to end it, as before: never no start tag,
+# which would leave the element's text in clear.
+_XML_START = re.compile(
+    rf"<(?P<tag>(?:[A-Za-z_][\w.-]*:)?(?P<local>[A-Za-z_][\w.-]*))"
+    rf"(?:(?:\s{_ATTRIBUTES})?(?<!/)>|(?:\s[^<>]*)?(?<!/)>)"
+)
+# ...and an end tag, with its qualified name.
+_XML_END = re.compile(r"</(?P<tag>(?:[A-Za-z_][\w.-]*:)?[A-Za-z_][\w.-]*)\s*>")
+_match_start = methodcaller("start")
+
+
+def _tag_key(tag: str) -> str:
+    """A tag's name as an end tag is paired with a start tag: ignoring case,
+    as the rules read a name."""
+    return tag.translate(_ASCII_FOLDS).casefold()
+
+
+def _end_tags(text: str) -> dict[str, list[re.Match]]:
+    """The end tags in ``text``, in order, by name (`_tag_key`)."""
+    found: dict[str, list[re.Match]] = {}
+    for end in _XML_END.finditer(text):
+        found.setdefault(_tag_key(end.group("tag")), []).append(end)
+    return found
+
+
+def _closing(ends: dict[str, list[re.Match]], start: re.Match) -> re.Match | None:
+    """The end tag that closes the element ``start`` opens -- the first of its
+    name after it -- in ``ends`` (`_end_tags`), or None."""
+    found = ends.get(_tag_key(start.group("tag")))
+    if not found:
+        return None
+    at = bisect_left(found, start.end(), key=_match_start)
+    return found[at] if at < len(found) else None
+
+
+def _mask_elements(text: str, kind: Callable[[str], str | None], mask: Callable[[str, str], str]) -> str:
+    """``text`` with each element's text masked as ``mask(text, kind)`` masks
+    it, where ``kind`` gives the element's local name a kind (None: not one
+    to mask). An element runs to the first end tag of its name after its
+    start tag, children and all, and is read whole: none inside it is looked
+    for. No end tag, no element: a route in a message
+    (`DELETE /v1/cards/<str:token>/`) is a start tag's shape.
+
+    The text's end tags are found once, when the first element of a kind
+    needs one: looked for again from each start tag, a text holding many
+    that nothing closes took quadratic time -- 160 KB of `<password>`,
+    twelve seconds.
+    """
+    parts, copied, after, ends = [], 0, 0, None
+    for start in _XML_START.finditer(text):
+        if start.start() < after:
+            continue
+        if (found := kind(start.group("local"))) is None:
+            continue
+        if ends is None:
+            ends = _end_tags(text)
+        if (closing := _closing(ends, start)) is None:
+            continue
+        after = closing.end()
+        raw = text[start.end() : closing.start()]
+        masked = mask(raw, found)
+        if masked != raw:
+            parts += [text[copied : start.end()], masked]
+            copied = closing.start()
+    if not parts:
+        return text
+    parts.append(text[copied:])
+    return "".join(parts)
+
+
+_CRED_NAME = re.compile(_CRED_KEYWORD, re.IGNORECASE)
+
+
+def _credential_name(local: str) -> str | None:
+    return local if _CRED_NAME.fullmatch(local) else None
+
+
+def _mask_credential_element(raw: str, keyword: str) -> str:
+    value = _element_text(raw)
+    if _AUTH_NAME.fullmatch(keyword) and _SCHEME_BEFORE_A_MASK.fullmatch(value):
+        return raw
+    masked = _mask_credential(value, keyword)
+    return raw if masked == value else masked
+
+
+def _cred_elements(m: re.Match) -> str:
+    return _mask_elements(m.group(0), _credential_name, _mask_credential_element)
+
+
+# What a key names that is masked by its type, whatever the value looks like:
+# a CVV and the rest of Sensitive Authentication Data as their labels, never a
+# token, and a card number truncated. Classified as the key walk classifies a
+# key, every pack on: MIGS's `vpc_CardSecurityCode`, a form's `card_number`,
+# `pin`. A query param, a form field and an XML element are read so
+# (contrib.net, rule 3).
+_CARD_TYPES = frozenset({"cvv", "sad", "card"})
+# ...and those whose element is its label whole, children and all.
+_LABEL_TYPES = frozenset({"cvv", "sad"})
+
+
+def _card_field_type(key: str) -> str | None:
+    field_type = classify_key(key, ALL_PACKS)
+    return field_type if field_type in _CARD_TYPES else None
+
+
+def _label_field_type(key: str) -> str | None:
+    field_type = classify_key(key, ALL_PACKS)
+    return field_type if field_type in _LABEL_TYPES else None
+
+
+def _mask_card_field(value: str, field_type: str) -> str:
+    return mask_card_value(value) if field_type == "card" else mask_by_field_type(value, field_type)
+
+
+def mask_card_elements(text: str) -> str:
+    """``text`` with each XML element whose local name the key rules call a
+    card, a CVV or other SAD masked as that key's value is, in every pack --
+    rule 3, and redact_body's first pass over a body's elements:
+
+    - a CVV's or SAD's text, children and all, is its label;
+    - a card's text is a card value (`mask_card_value`): a card number
+      truncated, what a card key refuses `[CARD-MASKED]`, anything else
+      shown. A card element holding elements -- a card object, CyberSource's
+      `<card>` -- is read as the key walk reads one: a CVV or SAD element in
+      it is its label, and every other element's text a card value, so a
+      card number under `<accountNumber>` is truncated as under
+      `<cardNumber>`, and an expiry reads through.
+
+    A text is masked as it decodes (a CDATA section's content, entities
+    resolved), and masking's own output passes through.
+    """
+    return _mask_elements(text, _card_field_type, _mask_card_element)
+
+
+def _mask_card_element(raw: str, field_type: str) -> str:
+    if field_type != "card":
+        value = _element_text(raw)
+        masked = mask_by_field_type(value, field_type)
+        return raw if masked == value else masked
+    if "<" not in raw:
+        return _card_run(raw)
+    raw = _mask_elements(raw, _label_field_type, _mask_card_element)
+    # Each CDATA section's content, and each run of text between the markup,
+    # a card value. A section is found by `find`, not a lazy regex, which
+    # read on to the end of the text from each opening nothing closes.
+    parts, at = [], 0
+    while (opening := raw.find("<![CDATA[", at)) != -1:
+        if (closing := raw.find("]]>", opening + 9)) == -1:
+            break
+        parts.append(_TEXT_RUN.sub(_card_text, raw[at:opening]))
+        content = raw[opening + 9 : closing]
+        masked = mask_card_value(content)
+        parts.append(raw[opening : closing + 3] if masked == content else masked)
+        at = closing + 3
+    parts.append(_TEXT_RUN.sub(_card_text, raw[at:]))
+    return "".join(parts)
+
+
+# Markup -- a quoted attribute's `>` its own -- or a run of text between it.
+_TEXT_RUN = re.compile(rf"<{_ATTRIBUTES}>|<[^<>]*>|(?P<text>[^<]+)")
+
+
+def _card_text(m: re.Match) -> str:
+    return m.group(0) if m.group("text") is None else _card_run(m.group(0))
+
+
+def _card_run(text: str) -> str:
+    """A run of a card element's text, masked as a card value as it
+    decodes."""
+    value = html.unescape(text) if "&" in text else text
+    masked = mask_card_value(value)
+    return text if masked == value else masked
+
+
+def _card_elements(m: re.Match) -> str:
+    return mask_card_elements(m.group(0))
 
 
 def _cvv_quoted(m: re.Match) -> str:
@@ -1159,8 +1564,21 @@ def _cvv_space(m: re.Match) -> str:
     return f"{m.group(1)} {_CVV_LABEL}"
 
 
-def _standalone_cvv(_m: re.Match) -> str:
-    return _CVV_LABEL
+def _cvv_beside_card(m: re.Match) -> str:
+    """Each field of the card's that is three or four digits alone, as the
+    label: which of `1227` and `123` after a card is its CVV no rule can
+    tell, so neither ships. A date (`12/27`), a field its word names as the
+    expiry (`exp 1227`) and a month or year of one or two digits stay."""
+    return m.group("card") + _CARD_FIELD.sub(_cvv_field, m.group("fields"))
+
+
+def _cvv_field(field: re.Match) -> str:
+    value = field.group("field")
+    return field.group("separator") + (_CVV_LABEL if _BARE_CVV.fullmatch(value) else value)
+
+
+def _cvv_after_word(m: re.Match) -> str:
+    return f"{m.group('lead')}{_CVV_LABEL}"
 
 
 def _payid_quoted(m: re.Match) -> str:
@@ -1187,7 +1605,16 @@ def _phone(m: re.Match) -> str:
 
 
 def _userinfo(m: re.Match) -> str:
-    return f"{m.group(1)}{_mask_userinfo(m.group(2))}@"
+    scheme, userinfo = m.group("scheme"), m.group("userinfo")
+    if m.group("user") is not None:
+        # A user alone is an account (`ssh://git@host`) -- unless it is shaped
+        # like a card number or holds a card-number run: a saved card's
+        # gateway token, as redact_url reads it, and never its hash.
+        user = unquote(userinfo)
+        if not (pan_shaped(user) or holds_pan_run(user)):
+            return m.group(0)
+        return f"{scheme}{_SECRET_LABEL}@"
+    return f"{scheme}{_mask_userinfo(userinfo)}@"
 
 
 # How far before an email's local part a URL's scheme can end when what is
@@ -1252,9 +1679,6 @@ class Rule(NamedTuple):
     # Replaces pattern.sub for rules whose matches can only start at a few
     # positions it can find cheaply; same output as pattern.sub.
     scan: Callable[[re.Pattern, Callable, str], str] | None = None
-    # Unlike `gate`, this one DOES change the result: it says whether the rule
-    # applies to this text at all. Only the standalone-CVV rule has one.
-    precondition: Callable[[str, str], bool] | None = None
     # True for a rule that may only run over prose -- a human message, a
     # serialised body -- and never over a whole scalar field value. A field
     # value has a key to be judged by; applying a keyless shape rule to it
@@ -1290,6 +1714,22 @@ def _has_pem(_text: str, lowered: str) -> bool:
 
 def _has_credential(_text: str, lowered: str) -> bool:
     return any(word in lowered for word in _CRED_LITERALS)
+
+
+def _has_value_object(text: str, _lowered: str) -> bool:
+    return "{" in text and bool(rules := value_rules_in_force()) and hinted(text, rules)
+
+
+def _has_credential_container(text: str, lowered: str) -> bool:
+    return ("[" in text or "{" in text or "(" in text) and _has_credential(text, lowered)
+
+
+def _has_credential_element(text: str, lowered: str) -> bool:
+    return "<" in text and _has_credential(text, lowered)
+
+
+def _has_end_tag(text: str, _lowered: str) -> bool:
+    return "</" in text
 
 
 def _has_cvv_keyword(_text: str, lowered: str) -> bool:
@@ -1329,41 +1769,42 @@ def _has_ssn_shape(text: str, _lowered: str) -> bool:
     return _SSN_SHAPE.search(text) is not None
 
 
-def _has_three_digits(text: str, _lowered: str) -> bool:
-    return _THREE_DIGITS.search(text) is not None
+def _has_card_and_digits(text: str, _lowered: str) -> bool:
+    # A truncation's stars, or a card number's digits, and three digits.
+    return _THREE_DIGITS.search(text) is not None and ("*" in text or _CARD_SHAPE.search(text) is not None)
 
 
-# Rules 16 and 17 have already run by the time rule 18 does, so a PAN in the
-# text is now a bare truncation rather than a digit run. _TRUNCATED_PAN_RE
-# below is what recognises it; these words cover a "card"/"pan" key name
-# serialised into the text, and the prose cases.
-# "cvv", "cvc" and "security" too: text that says "cvv" anywhere is card
-# context even when the keyword rules cannot reach the digits ("the cvv is
-# 123" -- rule 9 needs them adjacent).
-_CARD_CONTEXT = ("card", "pan", "cardholder", "credit", "cvv", "cvc", "security")
-_TRUNCATED_PAN_RE = re.compile(_TRUNCATED_PAN)
-
-
-def _text_has_card_context(text: str, lowered: str) -> bool:
-    """Whether this text holds anything a CVV could belong to.
-
-    A 3-4 digit group with no card anywhere near it is a status code, a count
-    or an amount, and a CVV is worth nothing without its PAN. Rules 16 and 17
-    have already run, so a PAN is a bare truncation by now -- the star run is
-    what recognises it, as the words cover a card-named key in the text.
-    """
-    if any(word in lowered for word in _CARD_CONTEXT):
-        return True
-    # A PAN the card rule has already truncated: rule 16 runs first, so by now
-    # the digit run _CARD_SHAPE looks for is gone and the truncation is the
-    # only card context left in the text. Without this, a CVV sitting beside a
-    # masked PAN stops being masked -- which is a leak, not a formatting bug.
-    return _CARD_SHAPE.search(text) is not None or _TRUNCATED_PAN_RE.search(text) is not None
+# A bare CVV's card: a card number the card rule truncated -- its first six,
+# stars and last four, or stars and the last four -- or a run of 12-19 digits
+# it left as it is (one glued to a word). The card rule runs first, so a PAN
+# in the text is its truncation by the time the bare CVV rules look.
+_CVV_CARD = r"(?:(?<![\d*])(?:\d{6})?\*{4,}\d{4}|(?<!\d)\d{12,19})(?!\d)"
+# What joins the fields of a card written out: whitespace, or `|`, `,`, `;`
+# or `:` with any whitespace around it.
+_CVV_SEPARATOR = r"(?:\s*[|,;:]\s*|\s+)"
+# A field of a card written out, after the card number: the CVV, the expiry
+# -- a month, a year, or both joined by `/` or `-`, perhaps after its word
+# (`exp 12/27`) -- or the label masking wrote for one. Never the start of a
+# longer number, a date, a time or an amount (`2026-09-30`, `10:30`,
+# `100.000`): what follows those ends the card's fields before them. A comma
+# does not: it separates the fields of a CSV row (`4111…,12,27,123`).
+_CVV_FIELD = (
+    r"(?:(?:(?:exp(?:iry|ires|iration)?(?:\s*date)?|valid(?:\s*thru)?)\s*[:=]?\s*)?\d{1,4}(?:[/-]\d{1,4})?"
+    r"|\[CVV-MASKED\])(?![\w*/-]|[.:]\d)"
+)
+_CARD_FIELD = re.compile(rf"(?P<separator>{_CVV_SEPARATOR})(?P<field>{_CVV_FIELD})", re.IGNORECASE)
+# A field that may be the CVV: three or four digits, nothing else.
+_BARE_CVV = re.compile(r"\d{3,4}")
+# The CVV after its word: three or four digits, as a field is.
+_CVV_DIGITS = r"\d{3,4}(?![\w*/-]|[.:]\d)"
+# Between a CVV word and its digits: a sign, or a word or two a sentence puts
+# there (`the cvv is 123`, `security code was 1234`, `cvv number 123`).
+_CVV_LINK = r"(?=[\s:=#-])(?:\s+(?:is|was|of|number|value|code)){0,2}\s*[:=#-]?\s*"
 
 
 # Every credential match contains one of these words, and starts inside the
 # run of [\w-] characters holding it, or on the quote right before that run
-# (rule 2's quoted key). So the credential rules only need trying at those
+# (rule 5's quoted key). So the credential rules only need trying at those
 # positions, not at every position of a long body — re.sub tries every one,
 # and at ~16 µs per rule per gateway body that was most of the masking cost.
 # The words are found with str.find on the lowercased text: a case-insensitive
@@ -1401,10 +1842,10 @@ def _cvv_word_starts(lowered: str) -> list[int]:
 
 
 # A credential match starts at most this far before its credential word: the
-# bounded key prefix (128), its separator, and rule 2's opening quote.
+# bounded key prefix (128), its separator, and rule 5's opening quote.
 _CRED_REACH = 130
 # ...and a CVV match before its CVV word: the bounded key prefix (64) and its
-# separator, or a camelCase word (64), `card_`, and rule 4's opening quote.
+# separator, or a camelCase word (64), `card_`, and rule 9's opening quote.
 _CVV_REACH = 72
 
 
@@ -1461,12 +1902,12 @@ _sub_near_credential_words = _near_words(_credential_word_starts, _CRED_REACH)
 _sub_near_cvv_words = _near_words(_cvv_word_starts, _CVV_REACH)
 
 
-def _rule(pack, regex, repl, gate, scan=None, prose_only=False, precondition=None):
-    return (pack, regex, repl, gate, scan, prose_only, precondition)
+def _rule(pack, regex, repl, gate, scan=None, prose_only=False):
+    return (pack, regex, repl, gate, scan, prose_only)
 
 
 # ---------------------------------------------------------------------------
-# The 18 content rules, in execution order. DO NOT REORDER — several rules
+# The 24 content rules, in execution order. DO NOT REORDER — several rules
 # only behave correctly because a more specific rule ran first:
 #   1. Credential/CVV/payment-id keyword rules before all shape rules —
 #      otherwise a numeric secret in the card-digit range gets masked as a
@@ -1478,14 +1919,26 @@ def _rule(pack, regex, repl, gate, scan=None, prose_only=False, precondition=Non
 #   4. Phone before the card rule — same reason.
 #   5. Email before card/CVV/SSN — a numeric-heavy address must mask as one
 #      email rather than fragment.
-#   6. SSN before standalone-CVV — a space-separated SSN's outer groups are
-#      each individually CVV-standalone-shaped.
-#   7. Standalone-CVV last — it is the loosest rule in the file (any bare
-#      3-4 digit group); widening its boundary set beyond whitespace/string-
-#      boundary over-masks.
+#   6. SSN before the bare CVV rules — a space-separated SSN's outer groups
+#      are each CVV-shaped.
+#   7. The bare CVV rules last — the card a CVV sits beside is the
+#      truncation the card rule wrote.
 #   8. URL userinfo before phone and email — a password is a credential,
 #      not a phone number, and `user:pw@host.tld` keeps its host rather than
 #      masking as an email.
+#   9. The XML credential element before the other credential rules — they
+#      would mask a `password=`, `"token": …` or `Bearer x` inside its text
+#      first, and the element's value, holding their token, was hashed again.
+#  10. The value rule before every credential rule, the XML one included —
+#      a value a rule matches under `"token": …` or in `<password>` was
+#      hashed whole.
+#  11. The `API-Key` scheme before the `key=value` credential rule — that
+#      would mask a `password=` inside its value first, which it never does
+#      after `Authorization:`, and the two forms would carry different tokens.
+#  12. The XML card, CVV and SAD element before the XML credential element —
+#      a `<cvv>` inside `<password>` was part of the text the credential's
+#      token hashed, where the key walk gives a CVV under a credential key
+#      its label.
 # ---------------------------------------------------------------------------
 
 _RULE_TABLE = (
@@ -1496,7 +1949,49 @@ _RULE_TABLE = (
         _mask_pem,
         _has_pem,
     ),
-    # 2. Credential — quoted key ("token": "abc123"), the value to its
+    # 2. Value rules — a JSON object in text, or in a JSON string, that a
+    # value rule in force matches (`value_rules`, ECSCTX_MASK_VALUE_RULES):
+    # the rule's label, never a token, in every pack. Nothing configured,
+    # nothing runs; text holding none of the rules' hints is never parsed.
+    # Before the credential rules, which would hash one under `"token": …`
+    # first.
+    _rule(
+        "default",
+        _OBJECT_TEXT,
+        _value_object,
+        _has_value_object,
+    ),
+    # 3. Card, CVV and SAD — an XML element named as the key walk names one
+    # (<cvv>123</cvv>, <ns2:CardSecurityCode>…</ns2:CardSecurityCode>,
+    # <pin>, <cardNumber>), whatever namespace prefix and attributes it has,
+    # its text masked as that key's value is (`mask_card_elements`): a CVV's
+    # or SAD's its label, children and all; a card's a card value, and a card
+    # object's field by field. In every pack, as the key walk reads a key: a
+    # test card that fails Luhn under <cardNumber> is truncated without
+    # `pci`. No end tag, no element, as for rule 4, and the same walk.
+    _rule(
+        "default",
+        r"<[\s\S]*",
+        _card_elements,
+        _has_end_tag,
+    ),
+    # 4. Credential — an XML element (<password>s3cret</password>,
+    # <wsse:Password Type="PasswordText">…</wsse:Password>), for a body that
+    # never went through redact_body: its local name a credential keyword, as
+    # rules 5 and 7 read a key, whatever namespace prefix and attributes it
+    # has. The value runs to the end tag, children and all, and is masked as
+    # it decodes (`_element_text`). No end tag, no element: a route in a
+    # message (`DELETE /v1/cards/<str:token>/`) is a start tag's shape. The
+    # walk is the rule (`_mask_elements`): the pattern hands it the text from
+    # the first `<`, since a regex pairing each start tag with its end tag
+    # looked for one from every start tag, in quadratic time.
+    _rule(
+        "default",
+        r"<[\s\S]*",
+        _cred_elements,
+        _has_credential_element,
+    ),
+    # 5. Credential — quoted key ("token": "abc123"), the value to its
     # unescaped closing quote.
     _rule(
         "default",
@@ -1506,7 +2001,21 @@ _RULE_TABLE = (
         _has_credential,
         _sub_near_credential_words,
     ),
-    # 3. Credential — ":" / "=" (secret_key=abc123). A value that opens with a
+    # 6. Credential — Ottu's `API-Key` scheme word standing alone (not the end
+    # of a header name, `X-API-Key`), without its `Authorization:`: the
+    # scheme and the value are one value, as after Authorization (rule 7), and
+    # carry the header's token. Any value to its delimiter -- the word is the
+    # evidence, and a key may have no digit (1 in 1,550 of Ottu PG's Fernet
+    # keys). Before rule 7, which would mask a `password=` inside the value
+    # first, as it never does after `Authorization:`.
+    _rule(
+        "default",
+        rf"(?<![\w-])api-key[ \t]+(?!{_WHOLE_TOKEN})(?P<value>{_UNQUOTED_VALUE})",
+        _api_key_scheme,
+        _has_credential,
+        _sub_near_credential_words,
+    ),
+    # 7. Credential — ":" / "=" (secret_key=abc123). A value that opens with a
     # quote a closing one matches runs to it (`quote`); any other, to its
     # delimiter. An empty quoted value is none: quotes doubled as CSV and SQL
     # escape one (`password=""s3cret`) are structure before the value. The
@@ -1521,16 +2030,31 @@ _RULE_TABLE = (
     _rule(
         "default",
         rf"\b(?P<prefix>(?P<key>(?P<auth>{_AUTH_KEYWORD})|{_OTHER_CRED_KEYWORD})(?:\\?[\"']|\s)*[:=]\s*"
-        rf"(?:(?P<quote>(?<!\\)[\"'])(?={_quoted_body('quote')}+(?P=quote))"
+        rf"(?:(?P<quote>(?<!\\)[\"'])(?={_quoted_value_body('quote')}+(?P=quote))"
         rf"|(?P<escaped>\\\")(?={_ESCAPED_QUOTED_UNIT}+\\\")|(?:\\?[\"'])+)?)"
-        rf"(?P<value>(?(quote){_quoted_body('quote')}+|(?(escaped){_ESCAPED_QUOTED_UNIT}+|(?!{_WHOLE_TOKEN})"
+        rf"(?P<value>(?(quote){_quoted_value_body('quote')}+|(?(escaped){_ESCAPED_QUOTED_UNIT}+|(?!{_WHOLE_TOKEN})"
         rf"(?(auth)(?:{_AUTH_SCHEME}[ \t]+(?={_VALUE_START})(?!{_WHOLE_TOKEN}))?(?!{_AUTH_SCHEME}[ \t]+\S))"
         rf"{_UNQUOTED_VALUE})))",
         _cred_kv,
         _has_credential,
         _sub_near_credential_words,
     ),
-    # 4. CVV — quoted key ("cvv": "123"). The keyed CVV rules (4, 5, 9) are
+    # 8. Credential — a container after the key (`password=['a', 'b']`), as a
+    # %-style argument renders one: rule 7 never starts a value at an opening
+    # bracket, so `password=%(pw)s` with a list shipped it whole (#160054).
+    # The whole container is the value, and a repr's quoted key keeps it a
+    # string. Not a JSON key's: the key walk masked that container by its keys
+    # before writing it (the saved card under `token` shows its own number,
+    # brand and expiry); nor a container holding only masking's own output,
+    # which a record's field renders.
+    _rule(
+        "default",
+        rf"\b(?P<prefix>(?P<key>{_CRED_KEYWORD})(?P<quote>'?)\s*[:=]\s*){_NOT_A_LABEL}(?P<value>{_CONTAINER})",
+        _cred_container,
+        _has_credential_container,
+        _sub_near_credential_words,
+    ),
+    # 9. CVV — quoted key ("cvv": "123"). The keyed CVV rules (9, 10, 14) are
     # `default`: a CVV must not ship from any service, and a default-pack one
     # (Connect) receives the CVV a saved-card payment sends. A value that
     # starts as a CVV runs to its end, as a credential's does: none of it is
@@ -1542,7 +2066,7 @@ _RULE_TABLE = (
         _has_cvv_keyword,
         _sub_near_cvv_words,
     ),
-    # 5. CVV — ":" / "=" (cvv=123).
+    # 10. CVV — ":" / "=" (cvv=123).
     _rule(
         "default",
         rf"\b({_CVV_KEYWORD}(?:\\?[\"']|\s)*[:=](?:\\?[\"']|\s)*)\d{{3}}{_VALUE_UNIT}*",
@@ -1550,32 +2074,32 @@ _RULE_TABLE = (
         _has_cvv_keyword,
         _sub_near_cvv_words,
     ),
-    # 6. Payment/transaction/auth id — quoted key ("payment_id": "abc12345").
+    # 11. Payment/transaction/auth id — quoted key ("payment_id": "abc12345").
     _rule(
         "financial_ids",
         rf"([\"'])({_PAYMENT_ID_KEYWORD})\1(\s*:\s*)\1([A-Za-z0-9_\-]+)\1",
         _payid_quoted,
         _has_id,
     ),
-    # 7. Payment/transaction/auth id (payment_id: abc12345).
+    # 12. Payment/transaction/auth id (payment_id: abc12345).
     _rule(
         "financial_ids",
         rf"\b({_PAYMENT_ID_KEYWORD}\s*[:=]\s*)([A-Za-z0-9_\-]{{8,}})\b",
         _payid_kv,
         _has_id,
     ),
-    # 8. Credential — bare space (Bearer abc12345). A value of eight or more
+    # 13. Credential — bare space (Bearer abc12345). A value of eight or more
     # characters with a digit among them, "ptok:" counted too (Bearer
-    # ptok:hunter2), to its delimiter.
+    # ptok:hunter2), to its delimiter: prose says "Bearer of bad news".
     _rule(
         "default",
-        rf"\b({_CRED_KEYWORD})\s+(?!{_WHOLE_TOKEN})(?=(?:(?!\d){_VALUE_UNIT})*\d)"
-        rf"({_VALUE_START}{_VALUE_UNIT}{{7,}})",
+        rf"\b(?P<keyword>{_CRED_KEYWORD})\s+(?!{_WHOLE_TOKEN})(?=(?:(?!\d){_VALUE_UNIT})*\d)"
+        rf"(?P<value>{_VALUE_START}{_VALUE_UNIT}{{7,}})",
         _cred_space,
         _has_credential,
         _sub_near_credential_words,
     ),
-    # 9. CVV — bare space (CVV 123).
+    # 14. CVV — bare space (CVV 123).
     _rule(
         "default",
         rf"\b({_CVV_KEYWORD})\s+\d{{3}}{_VALUE_UNIT}*",
@@ -1583,7 +2107,7 @@ _RULE_TABLE = (
         _has_cvv_keyword,
         _sub_near_cvv_words,
     ),
-    # 10. Payment/transaction/auth id — bare space (payment_id abc12345).
+    # 15. Payment/transaction/auth id — bare space (payment_id abc12345).
     _rule(
         "financial_ids",
         
@@ -1591,27 +2115,31 @@ _RULE_TABLE = (
         _payid_space,
         _has_id,
     ),
-    # 11. IBAN (GB33BUKB20201555555555).
+    # 16. IBAN (GB33BUKB20201555555555).
     _rule(
         "financial_ids",
         rf"(?-i:\b(?:{_IBAN_PREFIX})\d{{2}}[A-Z0-9]{{11,30}}\b)",
         _iban,
         _has_iban_shape,
     ),
-    # 12. URL userinfo (postgresql://user:password@host), each part masked as
+    # 17. URL userinfo (postgresql://user:password@host), each part masked as
     # redact_url masks it, the scheme, host and port kept: a DSN in exception
-    # text. Only with a password, empty or not (`https://key:@host`), or a
-    # token alone, as masking left a user: `ssh://git@host` names an account.
-    # Bounded: a scheme is at most 32 characters and starts no longer run of
-    # scheme characters, so a long run is read once.
+    # text. With a password, empty or not (`https://key:@host`), or a token
+    # alone, as masking left a user. A user alone (`user`) names an account
+    # (`ssh://git@host`) and is left to the other rules -- unless it is shaped
+    # like a card number or holds a card-number run, which is the label, as
+    # redact_url gives it (#160054). Bounded: a scheme is at most 32
+    # characters and starts no longer run of scheme characters, so a long run
+    # is read once.
     _rule(
         "default",
-        rf"(?<![A-Za-z0-9+.\-])([A-Za-z][A-Za-z0-9+.\-]{{0,31}}://)"
-        rf"((?-i:{_TOKEN})(?::{_USERINFO_PART}*)?|[^\s/?#:\"'<>]*:{_USERINFO_PART}*)@",
+        rf"(?<![A-Za-z0-9+.\-])(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]{{0,31}}://)"
+        rf"(?P<userinfo>(?-i:{_TOKEN})(?::{_USERINFO_PART}*)?|[^\s/?#:\"'<>]*:{_USERINFO_PART}*"
+        rf"|(?P<user>[^\s/?#:\"'<>@]+))@",
         _userinfo,
         _has_userinfo,
     ),
-    # 13. Phone — international E.164-style or a bare local number. Union of
+    # 18. Phone — international E.164-style or a bare local number. Union of
     # ecsctx's and the ported filter's patterns: dash/space/dot all count as
     # separators, since real phone numbers appear with all three and neither
     # source pattern alone caught every real case.
@@ -1625,7 +2153,7 @@ _RULE_TABLE = (
         _phone,
         _has_phone_shape,
     ),
-    # 14. Email (user@example.com).
+    # 19. Email (user@example.com).
     _rule(
         "default",
         # Bounded by RFC 5321's limits (64-char local part, 255-char domain):
@@ -1635,14 +2163,14 @@ _RULE_TABLE = (
         _email,
         _has_at,
     ),
-    # 15. JWT (eyJhbGciOi....).
+    # 20. JWT (eyJhbGciOi....).
     _rule(
         "default",
         r"\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{3,}\.[A-Za-z0-9_\-]{3,}",
         _jwt,
         _has_jwt_prefix,
     ),
-    # 16. Card number — truncated, bare (411111******1111; last 4
+    # 21. Card number — truncated, bare (411111******1111; last 4
     # only below 15 digits, see _truncate_pan); the middle never survives,
     # starred or not. A whole run of digit groups is read at once, and Luhn
     # decides between its readings: _CardRun.
@@ -1655,36 +2183,50 @@ _RULE_TABLE = (
         _mask_card_run,
         _has_card_shape,
     ),
-    # 17. SSN (123-45-6789).
+    # 22. SSN (123-45-6789).
     _rule(
         "financial_ids",
         r"(?=\d)" + _CARD_LEAD_GUARD + r"\d{3}[-\s]?\d{2}[-\s]?\d{4}\b",
         _ssn,
         _has_ssn_shape,
     ),
-    # 18. CVV standalone — bare 3-4 digit group, no keyword (call 123 now).
-    # The loosest rule in the file, and now doubly fenced. It never sees a
-    # whole scalar field value (prose_only): there, "000" is a PSP response
-    # code, not a CVV, and the key says which. In prose it fires only when the
-    # same text carries card context, because a 3-4 digit group with no card
-    # anywhere near it is a status, a count or an amount -- and a CVV is worth
-    # nothing without the PAN it belongs to. A keyword-anchored CVV is already
-    # rules 4, 5 and 9's job, whatever else the text holds.
+    # 23. CVV beside a card — a bare 3-4 digit group among the fields written
+    # after a card number or its truncation, up to three of them:
+    # `4111111111111111 123`, `411111******1111|12/27|123`. A CVV is worth
+    # nothing without its card and is written beside it; any other 3-4 digit
+    # group in a line that mentions a card is a status, a duration, a count,
+    # an amount or a decline code (#160054: `card list returned 200 in 350
+    # ms`). It never sees a whole scalar field value (prose_only): there,
+    # "000" is a PSP response code, and the key says what it is.
     _rule(
         "pci",
-        r"(?:^|(?<=\s))\d{3,4}(?=\s|$)",
-        _standalone_cvv,
-        _has_three_digits,
+        rf"(?P<card>{_CVV_CARD})(?P<fields>(?:{_CVV_SEPARATOR}{_CVV_FIELD}){{1,3}})",
+        _cvv_beside_card,
+        _has_card_and_digits,
         prose_only=True,
-        precondition=_text_has_card_context,
+    ),
+    # 24. CVV after its word — a bare 3-4 digit group after a CVV word, a
+    # sign or a word or two between them (`the cvv is 123`), which the keyed
+    # rules 9, 10 and 14 do not read. Tried near the CVV words, as they are.
+    _rule(
+        "pci",
+        rf"\b(?P<lead>{_CVV_KEYWORD}{_CVV_LINK}){_CVV_DIGITS}",
+        _cvv_after_word,
+        _has_cvv_keyword,
+        _sub_near_cvv_words,
+        prose_only=True,
     ),
 )
 
 
 RULES: tuple[Rule, ...] = tuple(
-    Rule(f"{index}:{repl.__name__}", pack, re.compile(regex, re.IGNORECASE), repl, gate, scan, pre, prose)
-    for index, (pack, regex, repl, gate, scan, prose, pre) in enumerate(_RULE_TABLE, start=1)
+    Rule(f"{index}:{repl.__name__}", pack, re.compile(regex, re.IGNORECASE), repl, gate, scan, prose)
+    for index, (pack, regex, repl, gate, scan, prose) in enumerate(_RULE_TABLE, start=1)
 )
+
+
+# The value rule, for mask_objects.
+_OBJECT_RULE = next(rule for rule in RULES if rule.repl is _value_object)
 
 
 # Just the card rule, for mask_card_value: the value already has a card key
@@ -1695,14 +2237,36 @@ _CARD_RULE_ONLY: tuple[Rule, ...] = tuple(
 )
 
 
-@lru_cache(maxsize=64)
+def _by_identity(cache: dict, rules: tuple, build: Callable[[tuple], Any]) -> Any:
+    """What ``build`` makes of ``rules``, cached on the tuple's identity.
+
+    Never on its hash: a tuple of rules hashes every rule, and a compiled
+    pattern hashes its whole program, on every call -- 30 µs a string for
+    the default pack once a large rule was in it, which lru_cache paid on
+    each lookup. Keeping ``rules`` in the entry keeps its id from being
+    reused; a cache past its bound is emptied, not evicted, as _clean is.
+    """
+    entry = cache.get(id(rules))
+    if entry is None or entry[0] is not rules:
+        if len(cache) >= _BY_IDENTITY_LIMIT:
+            cache.clear()
+        entry = cache[id(rules)] = (rules, build(rules))
+    return entry[1]
+
+
+# More distinct rule sets than a process makes: rules_for() holds one per
+# combination of packs, and scalar_rules() one per set.
+_BY_IDENTITY_LIMIT = 64
+_scalar: dict[int, tuple[tuple, tuple]] = {}
+
+
 def scalar_rules(rules: tuple[Rule, ...]) -> tuple[Rule, ...]:
     """``rules`` minus the ones that may only run over prose.
 
-    Cached on the rule tuple so the result is a stable object: mask_by_patterns
-    keys its known-clean set on tuple identity.
+    Cached on the rule tuple's identity so the result is a stable object:
+    mask_by_patterns keys its known-clean set on tuple identity.
     """
-    return tuple(rule for rule in rules if not rule.prose_only)
+    return _by_identity(_scalar, rules, lambda rules: tuple(rule for rule in rules if not rule.prose_only))
 
 
 @lru_cache(maxsize=16)
@@ -1754,8 +2318,8 @@ _MAX_PASSES = 4
 def _mask_once(text: str, rules: tuple[Rule, ...]) -> str:
     lowered = _folded_lower(text)
     if lowered is None:
-        # No case-folded text to judge a precondition by, so every rule runs:
-        # masking more than necessary is the safe direction to fail in.
+        # No case-folded text to gate by, so every rule runs: masking more
+        # than necessary is the safe direction to fail in.
         for rule in rules:
             text = rule.pattern.sub(rule.repl, text)
         return text
@@ -1793,9 +2357,11 @@ def mask_by_patterns(text: str, rules: tuple[Rule, ...]) -> str:
     return text
 
 
-@lru_cache(maxsize=16)
+_gates: dict[int, tuple[tuple, tuple]] = {}
+
+
 def _distinct_gates(rules: tuple[Rule, ...]) -> tuple:
-    return tuple(dict.fromkeys(rule.gate for rule in rules))
+    return _by_identity(_gates, rules, lambda rules: tuple(dict.fromkeys(rule.gate for rule in rules)))
 
 
 def _passing_gates(text: str, lowered: str, gates: tuple) -> set:
@@ -1817,12 +2383,6 @@ def _mask_gated(text: str, lowered: str, rules: tuple[Rule, ...]) -> str:
         if verdict is None:
             verdict = verdicts[rule.gate] = rule.gate(text, lowered)
         if not verdict:
-            continue
-        # Re-asked on every version of the text, like a gate: masking a PAN
-        # replaces it with a bare truncation, which still reads as card context
-        # rather than removing it, so a later pass can only become more
-        # permissive — never less.
-        if rule.precondition is not None and not rule.precondition(text, lowered):
             continue
         if rule.scan is not None:
             masked = rule.scan(rule.pattern, rule.repl, text)
@@ -1928,7 +2488,7 @@ _TRACK_TAILS = frozenset({
     "", "1", "2", "3", "one", "two", "three", "data", "equivalent", "equivalentdata", "image", "raw", "stripe",
 })
 
-# A wallet's payment cryptogram and a 3DS authentication value: one-time values
+# A tokenized card's payment cryptogram and a 3DS authentication value: one-time values
 # that authenticate a transaction, which nothing reads in a log. Matched at the
 # END of the key, so a verdict about one (`cavvResponseCode`) is not one.
 _SAD_KEY_ENDING = re.compile(r"(?:cryptogram|cavv|tavv|aav|ucaf(?:authenticationdata)?)(?:value|data)?$")

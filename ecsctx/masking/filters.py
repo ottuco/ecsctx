@@ -33,8 +33,11 @@ from ecsctx.masking.exemptions import (
 )
 from ecsctx.masking.fields_rules import get_field_rule
 from ecsctx.masking.patterns import (
+    _CRED_LITERALS,
+    _CVV_LITERALS,
     _KEY_SEPARATORS,
     _MIN_PAN_DIGITS,
+    _PAYMENT_ID_KEYWORD,
     _SAFE_KEYS_JOINED,
     ALL_PACKS,
     SAFE_KEYS,
@@ -50,8 +53,10 @@ from ecsctx.masking.patterns import (
     pan_shaped,
     rules_for,
     scalar_rules,
+    value_rules_in_force,
 )
 from ecsctx.masking.tokens import make_label, mask_by_field_type
+from ecsctx.masking.value_rules import label_of, label_within, text_label
 
 _IS_MASKED_ = "_IS_MASKED_"
 
@@ -133,6 +138,19 @@ class _Pass(NamedTuple):
     rules: tuple
     exempt: tuple
     safe: frozenset[str]  # the service's own safe keys (ECSCTX_MASK_SAFE_KEYS)
+    # The value rules in force (ECSCTX_MASK_VALUE_RULES), looked up the first
+    # time a mapping or JSON text asks, at most once a call: `[None]` until
+    # then. None looks them up at every ask.
+    values: list | None = None
+
+
+def _value_rules(ctx: _Pass) -> tuple:
+    cell = ctx.values
+    if cell is None:
+        return value_rules_in_force()
+    if cell[0] is None:
+        cell[0] = value_rules_in_force()
+    return cell[0]
 
 
 # Walked though not exemptable: a card object, and a credential, CVV or SAD key
@@ -265,11 +283,53 @@ _MAX_DEPTH = 64
 # What a record becomes when masking itself fails: never the unmasked text.
 MASKING_FAILED = "[MASKING-FAILED: {}]"
 
-# A printf-style conversion, as the % operator reads one.
+# A printf-style conversion, as CPython's % operator reads one: `%%`, a
+# literal percent that takes no argument, or a mapping key -- to the
+# parenthesis that balances its first, as CPython counts them -- then any
+# flags, a width (`*` or digits), a precision (`.` then `*` or digits, none
+# at all included: `%.f` is `%.0f`), one length modifier, which is ignored,
+# and the conversion. A `%` after anything but the first `%` is no
+# conversion: CPython refuses it.
 _CONVERSION = re.compile(
-    r"%(?:\((?P<key>[^)]*)\))?(?P<flags>[#0\- +]*)(?P<width>\*|\d+)?(?:\.(?P<precision>\*|\d+))?[hlL]?"
-    r"(?P<type>[diouxXeEfFgGcrsa%])"
+    r"%(?:%|(?:\((?P<key>(?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\))?(?P<flags>[#0\- +]*)(?P<width>\*|\d+)?"
+    r"(?:\.(?P<precision>\*|\d*))?[hlL]?(?P<type>[diouxXeEfFgGcrsa]))"
 )
+
+
+# A word a content rule keys a value on, before a placeholder -- a
+# credential's or an auth scheme's, a CVV's, a card's, a payment id's -- as
+# the rules' pre-checks spell them.
+_JOINING_WORD = re.compile(
+    "|".join((*map(re.escape, _CRED_LITERALS), *map(re.escape, _CVV_LITERALS), "card", r"\bpan\b", _PAYMENT_ID_KEYWORD)),
+    re.IGNORECASE,
+)
+# How far before a placeholder its key word may stand: `the cvv is %s`.
+_JOINING_REACH = 64
+# A placeholder between plain words: no text before it, or a whole word of
+# letters and a space; and no text after it, or sentence punctuation, then a
+# space and a whole word of letters.
+_PLAIN_BEFORE = re.compile(r"(?:\A|(?<![\w%])[A-Za-z]+\s+)\Z")
+_PLAIN_AFTER = re.compile(r"\A(?:[.!?)]*\Z|[.,;!?)]*\s+[A-Za-z]+(?=[\s.,;!?)]|\Z))")
+
+
+@lru_cache(maxsize=1024)
+def _may_join(template: str) -> bool:
+    """Whether rendering ``template`` can put what a content rule reads
+    across a placeholder, which neither the template nor an argument holds on
+    its own: `cvv=%s` with `123`, `card %s %s` with a card number and its CVV.
+    Not where each placeholder stands between plain words, no key word within
+    reach before it (`user %s paid %s KWD`). Cached: a service logs a fixed
+    set of templates."""
+    placeholders = [found for found in _CONVERSION.finditer(template) if found["type"] is not None]
+    for index, found in enumerate(placeholders):
+        start = placeholders[index - 1].end() if index else 0
+        end = placeholders[index + 1].start() if index + 1 < len(placeholders) else len(template)
+        before, after = template[start : found.start()], template[found.end() : end]
+        if (index and not before) or not _PLAIN_BEFORE.search(before) or not _PLAIN_AFTER.match(after):
+            return True
+        if _JOINING_WORD.search(template, max(0, found.start() - _JOINING_REACH), found.start()):
+            return True
+    return False
 
 
 def _template_of(msg: Any) -> str | None:
@@ -286,12 +346,12 @@ def _template_of(msg: Any) -> str | None:
     return str(msg)
 
 
-def _renders(template: str, args: Any) -> bool:
+def _render(template: str, args: Any) -> str | None:
+    """``template % args``, as getMessage() renders it; None where it raises."""
     try:
-        template % args
+        return template % args
     except (TypeError, ValueError, KeyError):
-        return False
-    return True
+        return None
 
 
 def _became_text(original: Any, masked: Any) -> bool:
@@ -320,7 +380,7 @@ def _as_masked_text(template: str, originals: Any, masked: Any) -> str:
         return template
     parts, copied, index = [], 0, 0
     for found in _CONVERSION.finditer(template):
-        if found["type"] == "%":
+        if found["type"] is None:  # `%%` takes no argument
             continue
         # A `*` width or precision takes an argument of its own first.
         index += (found["width"] == "*") + (found["precision"] == "*")
@@ -437,6 +497,25 @@ def _mask_pii_leaf(text: str, field_type: str, ctx: _Pass) -> str:
     return mask_by_field_type(text, field_type)
 
 
+# What JSON text can start with: nearly every string starts with something
+# else, and no value rule is asked about it.
+_JSON_STARTS = frozenset("{[ \t\r\n")
+
+
+def _value_label(value: Any, ctx: _Pass) -> str | None:
+    """The label of a value a value rule in force matches, as a mapping or as
+    JSON text (value_rules): under any key, a credential's or a card's
+    included, never hashed, never shown."""
+    kind = type(value)
+    if kind is dict:
+        rules = _value_rules(ctx)
+        return label_of(value, rules) if rules else None
+    if kind is str and value[:1] in _JSON_STARTS:
+        rules = _value_rules(ctx)
+        return text_label(value, rules) if rules else None
+    return None
+
+
 def _mask_card_list_element(value: Any) -> Any:
     """A bare value in a list under a card key -- `card=(pan, month, cvv)`.
 
@@ -494,7 +573,7 @@ class MaskPIIFilter(logging.Filter):
         packs in force (config.call_packs), so the card check
         mask_by_field_type makes follows them as well as the process's."""
         packs = self._packs_in_force()
-        return _Pass(packs, rules_for(packs), _get_exempt_patterns(), get_masking_safe_keys())
+        return _Pass(packs, rules_for(packs), _get_exempt_patterns(), get_masking_safe_keys(), [None])
 
     def _mask_string(self, text: str, ctx: _Pass | None = None, *, scalar: bool = False) -> str:
         # No already_masked() early-exit here: that helper is a whole-string
@@ -540,6 +619,11 @@ class MaskPIIFilter(logging.Filter):
         for key, value in data.items():
             if path == () and key in self._skip_keys:
                 result[key] = self._mask_skipped(key, value, ctx)
+                continue
+            if (label := _value_label(value, ctx)) is not None:
+                # Under any key, a credential's or a card's included: never
+                # hashed, never shown.
+                result[key] = label
                 continue
             if isinstance(value, bool):
                 # One bit: never PII, SAD or a credential, whatever its key or
@@ -623,6 +707,15 @@ class MaskPIIFilter(logging.Filter):
                 # Never below a card, credential, CVV or SAD container: a broad
                 # exempt prefix must not expose `…token.name_on_card`.
                 result[key] = self._mask_value(value, child_path, ctx)
+            elif (
+                isinstance(value, str)
+                and value[:1] in _JSON_STARTS
+                and (rules := _value_rules(ctx))
+                and (label := label_within(value, rules)) is not None
+            ):
+                # JSON text holding a value a rule matches deeper, under a key
+                # that would hash it whole or show it: the label.
+                result[key] = label
             elif field_type == "card" and not isinstance(value, _CONTAINERS):
                 result[key] = mask_card_value(value)
             elif (field_rule.exemptable or field_type in _WALKED_TYPES) and isinstance(
@@ -704,9 +797,16 @@ class MaskPIIFilter(logging.Filter):
         if verbatim_digits and _is_reference_number(value):
             return value
         # The two exact types nearly every value is, first: this runs for
-        # every value of every record.
+        # every value of every record. Each is a value rule's label before
+        # anything else reads it (`_value_label`, spelled out here).
         kind = type(value)
         if kind is str:
+            if (
+                value[:1] in _JSON_STARTS
+                and (rules := _value_rules(ctx))
+                and (label := text_label(value, rules)) is not None
+            ):
+                return label
             if inherited == "card":
                 return _mask_card_list_element(value)
             if inherited is not None:
@@ -717,6 +817,8 @@ class MaskPIIFilter(logging.Filter):
             # is a field value, and its key has already had its say.
             return self._mask_string(value, ctx, scalar=path != ())
         if kind is dict:
+            if (rules := _value_rules(ctx)) and (label := label_of(value, rules)) is not None:
+                return label
             return self._mask_dict(value, path, ctx, inherited)
         if isinstance(value, dict):
             return self._mask_dict(value, path, ctx, inherited)
@@ -842,17 +944,30 @@ class MaskPIIFilter(logging.Filter):
                     msg = self._mask_value(record.msg, (), ctx)
                     args = self._mask_args(record.args, ctx)
                     template = _template_of(record.msg)
-                    if record.args and template is not None and (msg != template or not _renders(msg, args)):
+                    if (
+                        record.args
+                        and template is not None
+                        and (
+                            msg != template
+                            or (rendered := _render(msg, args)) is None
+                            or (_may_join(template) and self._mask_value(rendered, (), ctx) != rendered)
+                        )
+                    ):
                         # getMessage() would raise on what masking left, so the
                         # handler dropped the line and printed the arguments to
                         # stderr: the template held something to mask (in
                         # `password=%s` the rule reads the placeholder as the
                         # credential), a number masking turned into text meets
-                        # a `%d`, or the arguments never fit. So the record is
+                        # a `%d`, or the arguments never fit. Or it renders a
+                        # value split between the template and an argument
+                        # (`cvv=%s` with `123`), which neither holds on its own:
+                        # what a handler that never calls format() printed,
+                        # and Sentry and handleError read. So the record is
                         # rendered from the masked arguments (a dict's keys
                         # still mask it) and masked whole, or is the marker. A
-                        # template masking leaves as it is, and that renders,
-                        # keeps its arguments, and Sentry's grouping by it.
+                        # record whose masked arguments render to text masking
+                        # leaves as it is keeps its template and arguments,
+                        # and Sentry's grouping by them.
                         # Rendered, the record keeps no arguments for a later
                         # handler to mask with more packs, so they are masked
                         # with every pack: a default handler ahead of a pci one
