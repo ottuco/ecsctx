@@ -64,6 +64,7 @@ from ecsctx.masking.value_rules import (
     json_as_written,
     keep_rules,
     label_rules,
+    pair_labelled,
     ruling,
     text_ruling,
 )
@@ -1206,12 +1207,12 @@ def mask_objects(text: str, rules: tuple) -> str:
 # Authentication Data.
 _FLOOR_TYPES = frozenset({"cvv", "sad"})
 # The key right before an object in text, as the floor reads it: a quoted key
-# and its colon (JSON, a repr, JSON in a JSON string, its quotes escaped), a
-# key and `=` or `:`, or an XML start tag -- then any space and the opening
-# quote of a string the object is the JSON text of.
+# and its colon (JSON, a repr, JSON in a JSON string, its quotes escaped) or
+# `=` or `=>`, a key and `:`, `=` or `=>`, or an XML start tag -- then any
+# space and the opening quote of a string the object is the JSON text of.
 _KEY_BEFORE = re.compile(
-    r"(?:(?P<quote>\\?[\"'])(?P<quoted>[^\"'\\]{1,128})(?P=quote)\s*:"
-    r"|(?<![\w.-])(?P<bare>[\w.-]{1,128})\s*[:=]"
+    r"(?:(?P<quote>\\?[\"'])(?P<quoted>[^\"'\\]{1,128})(?P=quote)\s*(?::|=>?)"
+    r"|(?<![\w.-])(?P<bare>[\w.-]{1,128})\s*(?::|=>?)"
     r"|<(?:[A-Za-z_][\w.-]*:)?(?P<tag>[A-Za-z_][\w.-]*)(?:\s[^<>]*)?(?<!/)>)"
     r"\s*(?:\\?[\"'])?\s*\Z"
 )
@@ -1273,25 +1274,43 @@ def _object_as_read(m: re.Match) -> tuple[Any, bool]:
         return None, True
 
 
-def _object_ruling(m: re.Match, rules: tuple) -> Any:
-    """``ruling`` of the object a match wrote; a label rule's error reads as a
-    label -- not kept, not looked into -- so finding kept spans never raises,
-    and the text is masked as without a keep rule. A keep match written
-    otherwise than it parses (``_written_as_parsed``) is read as one nothing
-    matches."""
+def _object_ruling(m: re.Match, rules: tuple) -> tuple[Any, bool]:
+    """``ruling`` of the object a match wrote, and whether nothing inside it
+    may be kept when nothing matched it (``_floors``). A label rule's error
+    reads as a label -- not kept, not looked into -- so finding kept spans
+    never raises, and the text is masked as without a keep rule. A keep
+    match written otherwise than it parses (``_written_as_parsed``) is read
+    as one nothing matches."""
     try:
         value, as_written = _object_as_read(m)
         found = ruling(value, rules)
     except Exception:  # noqa: BLE001 -- a service's matcher; rule 2 reports it where it runs
-        return ""
-    return None if found is KEEP and not as_written else found
+        return "", True
+    if found is KEEP:
+        return (KEEP, False) if as_written else (None, True)
+    return found, found is None and (not as_written or _floors(value))
+
+
+def _floors(value: Any) -> bool:
+    """Whether nothing in an object, as parsed, may be kept: one with a CVV
+    or SAD key at its top level, whatever stands between that key and a
+    value (`{"cvv": [{…}]}`), or a `{name, value}` pair labelled as one, as
+    the key walk keeps nothing in such a container or as such a pair's
+    value. Fails closed: a value under a sibling key is not kept either, nor
+    anything in an object that does not parse."""
+    if not isinstance(value, dict):
+        return True
+    return pair_labelled(value, _FLOOR_TYPES) or any(
+        classify_key(str(key), ALL_PACKS) in _FLOOR_TYPES for key in value
+    )
 
 
 def kept_spans(text: str, rules: tuple) -> list[tuple[int, int]]:
     """Where ``text`` writes a value a keep rule among ``rules`` matches first
     and may keep: each JSON object (rule 2's reading), top down. An object a
     label rule matches first is no span and is not looked into, nor is one
-    right after a CVV or SAD key; one nothing matches is read member by
+    right after a CVV or SAD key, nor one holding a CVV or SAD key or
+    labelled as one (``_floors``); one nothing matches is read member by
     member; a keep match the guard refuses (``holds_card_data``) is read as
     one nothing matches. In order, none inside another."""
     spans: list[tuple[int, int]] = []
@@ -1304,10 +1323,10 @@ def _find_kept(text: str, start: int, end: int, rules: tuple, spans: list[tuple[
         asked = applicable(m.group(0), rules)
         if not asked or _floored_before(text, m.start()):
             continue
-        found = _object_ruling(m, asked)
+        found, floored = _object_ruling(m, asked)
         if found is KEEP:
             spans.append(m.span())
-        elif found is None:
+        elif found is None and not floored:
             _find_kept(text, m.start() + 1, m.end() - 1, rules, spans)
 
 

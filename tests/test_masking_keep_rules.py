@@ -407,6 +407,32 @@ def _kept_in(masked: str, kept: str) -> None:
     assert "s3cret-Hunter2" not in masked
 
 
+# CVV and SAD containers in text that are not the key right before the
+# object (review M2). The last four fail closed: an object holding a CVV key,
+# or one whose keys or parse cannot be trusted, is not looked into at all.
+FLOORED = {
+    "a-list-between": '{"cvv": [ PLAIN ]}',
+    "a-pair-labelled-cvv": '{"name": "cvv", "value": PLAIN}',
+    "a-pair-labelled-pin-as-json-text": '{"Name": "PIN", "Value": "ESCAPED"}',
+    "quoted-key-equals": '"cvv" = PLAIN',
+    "quoted-key-arrow": "'cvv' => PLAIN",
+    "bare-key-arrow": "securityCode => PLAIN",
+    "a-sibling-of-a-cvv-key": '{"cvv": "123", "token": PLAIN}',
+    "a-pair-whose-name-is-written-twice": '{"name": "cvv", "name": "note", "value": PLAIN}',
+    "an-object-that-does-not-parse": '{"cvv": undefined, "token": PLAIN}',
+}
+# The same keys beside the kept value, not around it.
+BESIDE = {
+    "a-cvv-list-beside": '{"payment": {"cvv": ["123"]}, "token": PLAIN}',
+    "a-cvv-pair-beside": '[{"name": "cvv", "value": "123"}, PLAIN]',
+    "a-cvv-key-before": '"cvv" = "123", "token" => PLAIN',
+}
+
+
+def _written(template: str) -> str:
+    return template.replace("ESCAPED", json.dumps(json.dumps(SEALED))[1:-1]).replace("PLAIN", json.dumps(SEALED))
+
+
 @pytest.mark.usefixtures("keep")
 class TestText:
     def test_a_message_ships_it_as_sent_and_masks_the_rest(self, packs):
@@ -456,6 +482,19 @@ class TestText:
             sealed = repr(SEALED)
         text = template.format(sealed)
         assert _text(text, packs) != text
+
+    @pytest.mark.parametrize("template", FLOORED.values(), ids=FLOORED.keys())
+    def test_nothing_in_a_cvv_container_is_kept_whatever_stands_between(self, template, packs):
+        # Not only right after a CVV key: the key walk keeps nothing in any
+        # of these (review M2).
+        text = _written(template)
+        masked = _text(text, packs)
+        assert masked == _unconfigured(lambda: _text(text, packs))
+        assert SEALED["api_key"] not in masked
+
+    @pytest.mark.parametrize("template", BESIDE.values(), ids=BESIDE.keys())
+    def test_a_value_beside_a_cvv_container_is_still_kept(self, template, packs):
+        assert json.dumps(SEALED) in _text(_written(template), packs)
 
     def test_an_outer_label_match_wins(self, packs):
         configure_masking_value_rules([KEEP_RULE, OUTER_RULE])
@@ -686,6 +725,16 @@ class TestBodies:
     def test_nothing_under_a_cvv_key_is_kept(self):
         assert SEALED["api_key"] not in redact_body(KPAY.format(json.dumps({"cvv": SEALED})))
         assert BOX not in redact_body(f"<cvv>{json.dumps(SEALED)}</cvv>")
+
+    @pytest.mark.parametrize("template", FLOORED.values(), ids=FLOORED.keys())
+    def test_nothing_in_a_cvv_container_is_kept_whatever_stands_between(self, template):
+        body = _written(template)
+        assert patterns.kept_spans(body, KEEP_RULES) == []
+        assert redact_body(body) == _unconfigured(lambda: redact_body(body))
+
+    @pytest.mark.parametrize("template", BESIDE.values(), ids=BESIDE.keys())
+    def test_a_value_beside_a_cvv_container_is_still_kept(self, template):
+        assert json.dumps(SEALED) in redact_body(_written(template))
 
     def test_an_element_naming_a_placeholder_gets_no_copy_of_a_kept_value(self):
         # Its entity-encoded text decodes to a placeholder's name, which the

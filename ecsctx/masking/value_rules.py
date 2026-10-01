@@ -306,6 +306,27 @@ _CARD_DATA_TYPES = frozenset({"card", "cvv", "sad"})
 _EPOCH_MILLISECONDS = re.compile(r"[12][0-9]{12}")
 
 
+def pair_labelled(pair: Mapping, types: frozenset[str]) -> bool:
+    """Whether a ``{name, value}`` pair's identifier reads as one of ``types``
+    (every pack on), as the key walk reads a pair (``filters._pair``), which
+    masks its ``value`` as that type."""
+    keys = {str(key).lower(): key for key in pair}
+    if "value" not in keys:
+        return False
+    # Imported here, past the check nearly every mapping fails: patterns and
+    # filters import this module as they load.
+    from ecsctx.masking.filters import _PAIR_IDENTIFIERS
+    from ecsctx.masking.patterns import ALL_PACKS, classify_key
+
+    # Uncached, as the key walk classifies free text: an identifier may be a
+    # sentence, and must not evict a key name.
+    return any(
+        isinstance(label := pair[keys[identifier]], str) and classify_key.__wrapped__(label, ALL_PACKS) in types
+        for identifier in _PAIR_IDENTIFIERS
+        if identifier in keys
+    )
+
+
 def holds_card_data(value: Any) -> bool:
     """Whether ``value`` holds, at any depth -- JSON text inside it included --
     a key the key rules read as a card, a CVV or other SAD (every pack on), a
@@ -326,8 +347,7 @@ def holds_card_data(value: Any) -> bool:
     (``json_as_written``: what ships would not be what was read) count as
     holding card data: such a match is walked, not shipped.
     """
-    # Imported here: patterns and filters import this module as they load.
-    from ecsctx.masking.filters import _PAIR_IDENTIFIERS
+    # Imported here: patterns imports this module as it loads.
     from ecsctx.masking.patterns import (
         ALL_PACKS,
         classify_key,
@@ -335,24 +355,11 @@ def holds_card_data(value: Any) -> bool:
         pan_shaped,
     )
 
-    def labels_card_data(pair: Mapping) -> bool:
-        keys = {str(key).lower(): key for key in pair}
-        if "value" not in keys:
-            return False
-        # Uncached, as the key walk classifies free text: an identifier may be
-        # a sentence, and must not evict a key name.
-        return any(
-            isinstance(label := pair[keys[identifier]], str)
-            and classify_key.__wrapped__(label, ALL_PACKS) in _CARD_DATA_TYPES
-            for identifier in _PAIR_IDENTIFIERS
-            if identifier in keys
-        )
-
     def holds(item: Any, depth: int) -> bool:
         if depth > _MAX_DEPTH:
             return True
         if isinstance(item, Mapping):
-            if labels_card_data(item):
+            if pair_labelled(item, _CARD_DATA_TYPES):
                 return True
             return any(
                 classify_key(str(key), ALL_PACKS) in _CARD_DATA_TYPES or holds(member, depth + 1)
