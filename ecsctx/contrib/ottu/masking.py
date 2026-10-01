@@ -150,13 +150,21 @@ _GOOGLE_PAY_KEYS = frozenset({"signature", "intermediateSigningKey", "protocolVe
 _SIGNING_KEY_KEYS = frozenset({"signedKey", "signatures"})
 
 
+def _text_or_absent(value: Any, key: str) -> bool:
+    """A wallet's field is text where it is written: every leaf a wallet
+    writes is a string, so a container or a number in a slot is no wallet's,
+    and nothing can ride in it -- a `{name, value}` pair among them."""
+    return key not in value or isinstance(value[key], str)
+
+
 def _is_apple_pay_payment_data(value: Any) -> bool:
     """Apple Pay's `paymentData`: an EC_v1 or RSA_v1 `version`, the
-    encrypted `data` as text, and a `header` of text fields."""
+    encrypted `data` and its `signature` as text, and a `header` of text
+    fields."""
     version = value.get("version")
     if not (isinstance(version, str) and version in _APPLE_PAY_VERSIONS and isinstance(value.get("data"), str)):
         return False
-    if not value.keys() <= _PAYMENT_DATA_KEYS:
+    if not (value.keys() <= _PAYMENT_DATA_KEYS and _text_or_absent(value, "signature")):
         return False
     header = value.get("header", {})
     return (
@@ -169,27 +177,41 @@ def _is_apple_pay_payment_data(value: Any) -> bool:
 def _is_pk_payment_token(value: Any) -> bool:
     """Apple Pay's PKPaymentToken: its `paymentData`, and what the device says
     about the card -- its display name, network and type -- and the
-    transaction's id."""
+    transaction's id, each as text."""
     payment_data = value.get("paymentData")
     if not (isinstance(payment_data, dict) and _is_apple_pay_payment_data(payment_data)):
         return False
-    if not value.keys() <= _PK_PAYMENT_TOKEN_KEYS:
+    if not (value.keys() <= _PK_PAYMENT_TOKEN_KEYS and _text_or_absent(value, "transactionIdentifier")):
         return False
     method = value.get("paymentMethod", {})
-    return isinstance(method, dict) and method.keys() <= _PAYMENT_METHOD_KEYS
+    return (
+        isinstance(method, dict)
+        and method.keys() <= _PAYMENT_METHOD_KEYS
+        and all(isinstance(field, str) for field in method.values())
+    )
 
 
 def _is_google_pay_payment_token(value: Any) -> bool:
     """Google Pay's payment method token: its `protocolVersion`, the
-    `signedMessage`, its signature, and the intermediate signing key ECv2
-    signs with."""
+    `signedMessage` and its `signature` as text, and the intermediate signing
+    key ECv2 signs with: a `signedKey` as text and its `signatures`, a list
+    of text."""
     protocol = value.get("protocolVersion")
-    if not (isinstance(protocol, str) and protocol in _GOOGLE_PAY_VERSIONS and "signedMessage" in value):
+    if not (isinstance(protocol, str) and protocol in _GOOGLE_PAY_VERSIONS):
         return False
-    if not value.keys() <= _GOOGLE_PAY_KEYS:
+    if not isinstance(value.get("signedMessage"), str):
+        return False
+    if not (value.keys() <= _GOOGLE_PAY_KEYS and _text_or_absent(value, "signature")):
         return False
     signing_key = value.get("intermediateSigningKey", {})
-    return isinstance(signing_key, dict) and signing_key.keys() <= _SIGNING_KEY_KEYS
+    if not (isinstance(signing_key, dict) and signing_key.keys() <= _SIGNING_KEY_KEYS):
+        return False
+    signatures = signing_key.get("signatures", [])
+    return (
+        _text_or_absent(signing_key, "signedKey")
+        and isinstance(signatures, list)
+        and all(isinstance(signature, str) for signature in signatures)
+    )
 
 
 APPLE_PAY_TOKEN_KEEP_RULE = KeepRule(_is_pk_payment_token, hints=("EC_v1", "RSA_v1"))

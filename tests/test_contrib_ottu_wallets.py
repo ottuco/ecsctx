@@ -207,12 +207,29 @@ class TestTheRules:
             {**GOOGLE_PAY, "intermediateSigningKey": {**GOOGLE_PAY["intermediateSigningKey"], "x": 1}},
             {key: value for key, value in GOOGLE_PAY.items() if key != "signedMessage"},
             NOT_A_WALLET,
+            # Every leaf a wallet writes is text (review I2): a pair-labelled
+            # CVV rode in a slot whose type nothing checked.
+            {**APPLE_PAY, "signature": [{"name": "cvv", "value": "123"}]},
+            {**APPLE_PAY, "signature": ["c2ln"]},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": {"name": "securityCode", "value": "123"}}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {**PK_PAYMENT_TOKEN["paymentMethod"], "network": ["Visa"]}},
+            {**PK_PAYMENT_TOKEN, "transactionIdentifier": 7134},
+            {"protocolVersion": "ECv2", "signedMessage": {"name": "cvv", "value": "123"}, "signature": "x"},
+            {**GOOGLE_PAY, "signedMessage": {"encryptedMessage": "ZW5j"}},
+            {**GOOGLE_PAY, "signature": 1},
+            {**GOOGLE_PAY, "intermediateSigningKey": {"signedKey": {"keyValue": "a2V5"}, "signatures": ["c2ln"]}},
+            {**GOOGLE_PAY, "intermediateSigningKey": {"signedKey": "{}", "signatures": "c2ln"}},
+            {**GOOGLE_PAY, "intermediateSigningKey": {"signedKey": "{}", "signatures": [{"x": "c2ln"}]}},
         ],
         ids=[
             "apple-extra-key", "apple-version", "apple-data-not-text", "apple-header-extra-key",
             "apple-header-not-text", "apple-header-not-a-mapping", "apple-no-data", "pk-extra-key",
             "pk-payment-method-extra-key", "pk-no-wallet", "google-extra-key", "google-version",
             "google-signing-key-extra-key", "google-no-signed-message", "not-a-wallet",
+            "apple-signature-pair", "apple-signature-list", "pk-display-name-pair", "pk-network-list",
+            "pk-transaction-identifier-number", "google-signed-message-pair", "google-signed-message-mapping",
+            "google-signature-number", "google-signed-key-mapping", "google-signatures-text",
+            "google-signatures-mappings",
         ],
     )
     def test_the_matchers_are_strict(self, value):
