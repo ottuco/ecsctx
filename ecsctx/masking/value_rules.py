@@ -221,24 +221,47 @@ def rule_of(value: Any, rules: Iterable[Any]) -> Any:
     return None if found is None else found[0]
 
 
+def _could_match(rule: Any, text: str) -> bool:
+    hints = getattr(rule, "hints", ())
+    return not hints or any(hint in text for hint in hints)
+
+
+# The tuple of each selection a text's hints make of a rule tuple, so every
+# text making it asks the same tuple, and what `_split` caches on its identity
+# is found again: a tuple per text would fill `_splits` until it is emptied,
+# the configured rules' entry with it. Bounded, and emptied, as `_splits` is.
+_selections: dict[tuple[int, int], tuple[tuple, tuple]] = {}
+
+
 def applicable(text: str, rules: Iterable[Any]) -> tuple:
     """The rules a value written in ``text`` could match, in their order: one
     without hints, or one of whose hints ``text`` holds. ``rules`` itself when
-    every one could, so what is cached on its identity is found again."""
-    asked = tuple(
-        rule for rule in rules if not (hints := getattr(rule, "hints", ())) or any(hint in text for hint in hints)
-    )
-    return rules if isinstance(rules, tuple) and len(asked) == len(rules) else asked
+    every one could, and for a tuple the same tuple wherever the same ones
+    could, so what is cached on its identity is found again."""
+    if not isinstance(rules, tuple):
+        return tuple(rule for rule in rules if _could_match(rule, text))
+    selected = 0
+    for index, rule in enumerate(rules):
+        if _could_match(rule, text):
+            selected |= 1 << index
+    if selected == (1 << len(rules)) - 1:
+        return rules
+    if not selected:
+        return ()
+    entry = _selections.get((id(rules), selected))
+    if entry is None or entry[0] is not rules:
+        if len(_selections) >= _SPLITS_LIMIT:
+            _selections.clear()
+        # Keeping `rules` in the entry keeps its id from being reused.
+        asked = tuple(rule for index, rule in enumerate(rules) if selected >> index & 1)
+        entry = _selections[(id(rules), selected)] = (rules, asked)
+    return entry[1]
 
 
 def hinted(text: str, rules: tuple) -> bool:
     """Whether a rule could match something in ``text``: one without hints,
     or one of whose hints ``text`` holds."""
-    for rule in rules:
-        hints = getattr(rule, "hints", ())
-        if not hints or any(hint in text for hint in hints):
-            return True
-    return False
+    return any(_could_match(rule, text) for rule in rules)
 
 
 class DuplicateKey(ValueError):

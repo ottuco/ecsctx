@@ -39,6 +39,7 @@ from ecsctx.masking import (
     is_kept,
     mask_outside_kept,
     patterns,
+    value_rules,
 )
 from ecsctx.masking.config import configure_masking_packs, configure_masking_safe_keys
 from ecsctx.masking.filters import MaskPIIFilter
@@ -534,6 +535,22 @@ class TestCost:
         encoded = text.replace('"', "&quot;")
         redact_body(f"{text} <udf9>{encoded}</udf9>")
         assert ASKED == []
+
+    def test_texts_whose_hints_select_some_rules_split_them_once(self, monkeypatch, packs):
+        # A text holding one rule's hints asks a selection of the rules: the
+        # same tuple for every such text, so its split is cached once and the
+        # configured rules' split is not emptied out of the cache with it.
+        configure_masking_value_rules([KEEP_RULE, OTHER_RULE])
+        calls: list = []
+        split_of = value_rules._split_of
+        monkeypatch.setattr(value_rules, "_splits", {})
+        monkeypatch.setattr(value_rules, "_split_of", lambda rules: calls.append(rules) or split_of(rules))
+        for n in range(100):
+            text = f"got {json.dumps({**SEALED, 'n': n})} back"
+            _text(text, packs)
+            _walk({"x": json.dumps({**SEALED, "n": n})})
+            redact_body(KPAY.format(json.dumps({**SEALED, "n": n}).replace('"', "&quot;")))
+        assert len(calls) <= 2
 
     def test_rule_2_does_not_run_with_keep_rules_only(self, monkeypatch, packs):
         calls: list = []
