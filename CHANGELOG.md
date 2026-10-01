@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.16.0 (2026-10-01)
+
+### Features
+- feat(contrib): the wallet shapes are Ottu's WALLET_RULES, no longer in core (5a84d12)
+- feat(masking): value rules, a service's own shapes of value masked as their label (ECSCTX_MASK_VALUE_RULES) (0801822)
+
+### Fixes
+- fix(net): a form value's end-tag check runs at a `<`, not at every character (3d60f6b)
+- fix(masking): a `>` inside a quoted attribute value is the attribute's (492d64b)
+- fix(masking): a record's rendering is masked again only where a placeholder can join a value (1d319f3)
+- fix(masking): under pci, an email or phone number that holds a card-number run is the label (41f759b)
+- fix(masking): XML card, CVV and SAD elements in free text (81675ea)
+- fix(masking): an XML element's end tag is found once per text (4ff17e7)
+- fix(masking): any key after a bare API-Key scheme is masked, before key=value (11f5ec3)
+- fix(docs): the README and CLAUDE.md say what the code and Ottu's standard do (edc9111)
+- fix(masking): cache a rule set's derived tuples by identity, never by hash (fd9599c)
+- fix(masking): a bare API-Key scheme and its key are one value, as after Authorization (83773e4)
+- fix(masking): a value split between a record's template and argument is masked in the record (a4c86bb)
+- fix(masking): the text rules then redact_body never hash a token again (6815f03)
+- fix(masking): a card truncation after an auth scheme is the credential's label (79193e0)
+- fix(masking): a credential word before a container masks the whole container (4f6759a)
+- fix(masking): a card-shaped user alone in a URL's userinfo is the label in text (1103bfd)
+- fix(masking): the pci bare-digit CVV rule reads only a CVV beside its card (957f8d6)
+- fix(masking): the filter reads a %-style template as CPython's % does (4da024d)
+- fix(masking): a wallet token's payment data is [SAD-MASKED] in every pack (d30ff2f)
+- fix(net): redact_body and the text rules mask an XML body's credentials (9cfa1ea)
+
+### Other
+- Merge pull request #70 from ottuco/fix/160054-masking-0156 (842ec51)
+- test(masking): an argument whose __str__ raises RuntimeError leaves the marker (ff84e8a)
+- test(net): many unclosed <key> and <token> tags in a body take linear time (3849f97)
+- test(net): an element name holding a credential hint is a credential, as a query param is (fe921a5)
+
+
 ## v0.15.5 (2026-09-30)
 
 ### Fixes
