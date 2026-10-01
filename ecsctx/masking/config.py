@@ -15,9 +15,10 @@ A service's own safe key names (``ECSCTX_MASK_SAFE_KEYS``) resolve the same
 way: ``configure_masking_safe_keys()``, else the Django setting, else the
 environment variable, else none. They extend ``patterns.SAFE_KEYS``, which holds
 only names that mean the same in every service. So do its value rules
-(``ECSCTX_MASK_VALUE_RULES``, ``ecsctx.masking.value_rules``): rule objects or
-dotted import paths, ``configure_masking_value_rules()`` first; the environment
-variable names import paths, comma-separated.
+(``ECSCTX_MASK_VALUE_RULES``, ``ecsctx.masking.value_rules``: label rules and
+keep rules, in one list): rule objects or dotted import paths,
+``configure_masking_value_rules()`` first; the environment variable names
+import paths, comma-separated.
 
 The Django setting is read lazily, at log time, because logging is configured
 while settings are still being imported. Until settings are configured the
@@ -281,9 +282,11 @@ _loaded_env_rules = lru_cache(maxsize=8)(load_value_rules)
 
 
 def configure_masking_value_rules(rules: Iterable | str | None) -> None:
-    """The value rules this service masks by shape, wherever they are logged
-    (``ecsctx.masking.value_rules``): rule objects, or dotted import paths to
-    a rule or to a collection of them. ``None`` goes back to settings/env.
+    """The value rules this service masks, or ships as sent, by shape,
+    wherever they are logged (``ecsctx.masking.value_rules``): label and keep
+    rules in one list, asked in its order, the first match winning. Rule
+    objects, or dotted import paths to a rule or to a collection of them.
+    ``None`` goes back to settings/env.
     Raises on an item that is not one: this runs while logging is being
     configured, where failing loudly is right."""
     global _explicit_rules, _resolved_rules
