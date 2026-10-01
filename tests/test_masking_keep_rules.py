@@ -322,11 +322,11 @@ class TestTheKeyWalk:
             "8171999927660000",
             "122000000000003",
             "4111111111111112",
-            "2542323393147",
+            "3542323393147",
             "15423233931470",
             "1542 3233 9314 7",
         ],
-        ids=["luhn-8-prefix", "uatp-1-prefix", "not-luhn", "13-digits-from-2", "14-digits-from-1", "13-in-groups"],
+        ids=["luhn-8-prefix", "uatp-1-prefix", "not-luhn", "13-digits-from-3", "14-digits-from-1", "13-in-groups"],
     )
     def test_every_card_number_shape_but_epoch_milliseconds_blocks_keeping(self, leaf):
         # Only Google Pay's keyExpiration shape is exempt (review M1): no
@@ -335,10 +335,12 @@ class TestTheKeyWalk:
         assert not is_kept(holding)
         _masked_as_a_walk(_walk({"payload": holding})["payload"])
 
-    def test_a_timestamp_is_not_a_card_number_to_the_guard(self):
+    @pytest.mark.parametrize("expiration", ["1542323393147", "2000000000000"], ids=["2018", "after-may-2033"])
+    def test_a_timestamp_is_not_a_card_number_to_the_guard(self, expiration):
         # Google Pay's signedKey carries keyExpiration, epoch milliseconds:
-        # thirteen digits, shaped like a card number but no issuer's.
-        holding = {**SEALED, "signedKey": json.dumps({"keyExpiration": "1542323393147"})}
+        # thirteen digits, shaped like a card number but no issuer's. From
+        # 18 May 2033 they start with a 2, and tokens must stay keepable.
+        holding = {**SEALED, "signedKey": json.dumps({"keyExpiration": expiration})}
         assert _walk({"payload": holding}) == {"payload": holding}
 
     @pytest.mark.parametrize(

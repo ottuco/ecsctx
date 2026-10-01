@@ -275,10 +275,12 @@ def parses_as_written(text: str) -> bool:
 _MAX_DEPTH = 64
 # What the guard refuses to keep: a key the key rules read as one of these.
 _CARD_DATA_TYPES = frozenset({"card", "cvv", "sad"})
-# Epoch milliseconds, as written until 2286: thirteen digits from a 1. Google
-# Pay's `signedKey` carries one (`keyExpiration`), which `pan_shaped` reads as
-# a card number; the one card number's shape the guard lets through.
-_EPOCH_MILLISECONDS = re.compile(r"1[0-9]{12}")
+# Epoch milliseconds, as written until 2065: thirteen digits from a 1, or from
+# a 2 after 18 May 2033. Google Pay's `signedKey` carries one
+# (`keyExpiration`), which `pan_shaped` reads as a card number; the one card
+# number's shape the guard lets through. No card number is thirteen digits
+# from a 1 or a 2.
+_EPOCH_MILLISECONDS = re.compile(r"[12][0-9]{12}")
 
 
 def holds_card_data(value: Any) -> bool:
@@ -293,7 +295,7 @@ def holds_card_data(value: Any) -> bool:
 
     A leaf is a card number when it is an int ``int_is_pan`` reads as one, or
     a string ``pan_shaped`` reads as one -- whatever its prefix, Luhn or not --
-    except thirteen bare digits from a 1: epoch milliseconds, Google Pay's
+    except thirteen bare digits from a 1 or a 2: epoch milliseconds, Google Pay's
     ``keyExpiration`` in ``signedKey``, without which no Google Pay token would
     ever be kept. Not ``holds_pan_run``, which flags hex ids.
     Anything that is no JSON value (an object whose text is not judged here),

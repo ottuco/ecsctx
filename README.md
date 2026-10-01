@@ -1455,7 +1455,7 @@ Two things no keep rule overrides, not even `KeepRule(lambda value: True)`:
   job, which is why a matcher must be strict about what it matches. A leaf is
   a card number when it is an int `int_is_pan` reads as one, or a string
   `pan_shaped` reads as one, whatever its prefix and Luhn or not — except
-  thirteen bare digits from a 1: epoch milliseconds, Google Pay's
+  thirteen bare digits from a 1 or a 2 (epoch milliseconds until 2065), Google Pay's
   `keyExpiration`, which `pan_shaped` reads as a card number and every
   Google Pay token carries. A leaf that is no JSON value counts as card
   data.
