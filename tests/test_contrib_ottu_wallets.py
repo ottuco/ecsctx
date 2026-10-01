@@ -172,7 +172,12 @@ NOT_A_DISPLAY_NAME = {
     "a-cvv-after-the-last-four": "Visa 1234 cvv 123",
     "five-digits": "Visa 12345",
     "the-last-four-first": "1234 Visa",
-    "too-long": "V" * 36 + " 1234",
+    "too-long": "V" * 41,
+    "too-long-before-the-last-four": "V" * 41 + " 1234",
+    # Letters, spaces, `.`, `&` and `-` only, from a letter (review r2, 6).
+    "an-email": "jane.roe@example.com",
+    "a-digit-in-the-name": "Visa2 1234",
+    "a-space-first": " Visa 1234",
 }
 
 PACKS = [["default"], sorted(ALL_PACKS)]
@@ -402,6 +407,8 @@ class TestTheRules:
             {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "Amex", "network": "AmEx", "type": "credit"}},
             {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "Apple Pay", "network": "Visa", "type": "debit"}},
             {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "V" * 35 + " 1234"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "V" * 40 + " 1234"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "American Express 1234", "network": "AmEx"}},
             # A 64-hex id holding a Luhn-valid run of digits, as about one in
             # two hundred does: an id, not a card number (fix round 2).
             {**APPLE_PAY, "header": {**APPLE_PAY["header"], "transactionId": "a" * 10 + "4111111111111111" + "b" * 38}},
@@ -410,6 +417,7 @@ class TestTheRules:
         ids=[
             "apple-application-data", "pk-display-name", "google-signature-plus-and-slash", "pk-display-name-amex",
             "pk-display-name-connects-fixture", "pk-display-name-forty-characters",
+            "pk-display-name-forty-letters-and-the-last-four", "pk-display-name-in-words",
             "apple-transaction-id-with-a-luhn-run", "pk-transaction-identifier-with-a-luhn-run",
         ],
     )

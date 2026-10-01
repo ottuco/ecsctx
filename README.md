@@ -1574,9 +1574,10 @@ signature or ciphertext (`data`, `signature`, the header's
 JSON text of all its fields and nothing else), hex for an id or a hash
 (`transactionId`, `applicationData`, `transactionIdentifier`), digits for
 `keyExpiration`, and for what `paymentMethod` says about the card short
-text: its `network` and `type` at most 64 characters, its `displayName` at
-most 40, the network's name and, after a space, the card's last four
-(`Visa 0492`, `Amex`) with no other digit. A token holding anything else in a
+text: its `network` and `type` at most 64 characters, its `displayName` a
+letter and up to 39 more letters, spaces, `.`, `&` or `-`, optionally
+followed by one space and exactly four digits, the card's last four
+(`Visa 0492`, `American Express`, `Amex`). A token holding anything else in a
 slot — `"data": "cvv=123"`, a spaced card number as its `signature`,
 `"displayName": "cvv 123"` — is not kept, and is masked as before; nor is
 one with a card number in a slot's own alphabet (`"4111…+cvv+123"` in
