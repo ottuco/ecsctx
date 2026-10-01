@@ -55,6 +55,7 @@ from ecsctx.masking.tokens import (
     mask_by_field_type,
 )
 from ecsctx.masking.value_rules import (
+    _EPOCH_MILLISECONDS,
     KEEP,
     DuplicateKey,
     _first_match,
@@ -807,6 +808,27 @@ def pan_shaped(text: str) -> bool:
 # A run of digits joined by single separators, as the card rule reads one, with
 # the "+" an international phone number starts with.
 _DIGIT_RUN = re.compile(rf"\+?\d(?:{_CARD_SEP}?\d)*")
+
+
+# A card number anywhere in a value, as the guard reads one: 13 to 19 digits
+# joined by single separators at most, as the card rule joins them, with no
+# digit next to either end.
+_CARD_RUN_IN_TEXT = re.compile(rf"(?<!\d)(?<!\d{_CARD_SEP})\d(?:{_CARD_SEP}?\d){{12,18}}(?!{_CARD_SEP}?\d)")
+
+
+def holds_card_run(text: str) -> bool:
+    """Whether ``text`` holds, anywhere in it, a run that is a card number:
+    13 to 19 digits that pass Luhn -- `card 4111…`, `4111…+cvv+123`, a hex
+    id holding one -- except thirteen bare digits from a 1 or a 2, epoch
+    milliseconds. For the guard (``value_rules.holds_card_data``), which
+    reads every text leaf of a keep match with it. Stricter than
+    ``holds_pan_run`` about what a card number is (Luhn, 13 digits up), so
+    ciphertext and hex ids are rarely refused."""
+    for m in _CARD_RUN_IN_TEXT.finditer(text):
+        run = m.group()
+        if not _EPOCH_MILLISECONDS.fullmatch(run) and _luhn_valid(re.sub(r"\D", "", run)):
+            return True
+    return False
 
 
 def holds_pan_run(text: str, *, phone: bool = False) -> bool:

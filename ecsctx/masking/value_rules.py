@@ -345,17 +345,20 @@ def holds_card_data(value: Any) -> bool:
     """Whether ``value`` holds, at any depth -- JSON text inside it included --
     a key the key rules read as a card, a CVV or other SAD (every pack on), a
     ``{name, value}`` pair whose identifier reads as one (as the key walk reads
-    a pair, ``filters._pair``), or a leaf that is a card number as a whole:
-    what no keep rule may ship, not even one that matches everything. Keys,
-    pairs and whole leaves only: a CVV or a card number written inside a
-    longer string (``"note": "cvv=123"``) is not read here, and keeping it out
-    is a matcher's job.
+    a pair, ``filters._pair``), a leaf that is a card number as a whole, or a
+    text leaf holding one: what no keep rule may ship, not even one that
+    matches everything. A CVV or other short value written inside a longer
+    string (``"note": "cvv=123"``, ``cvv+123`` in base64) is not read here,
+    and keeping it out is a matcher's job.
 
     A leaf is a card number when it is an int ``int_is_pan`` reads as one, or
     a string ``pan_shaped`` reads as one -- whatever its prefix, Luhn or not --
     except thirteen bare digits from a 1 or a 2: epoch milliseconds, Google Pay's
     ``keyExpiration`` in ``signedKey``, without which no Google Pay token would
-    ever be kept. Not ``holds_pan_run``, which flags hex ids.
+    ever be kept. A text leaf that is no JSON text holds one when
+    ``holds_card_run`` finds a run of 13 to 19 digits passing Luhn in it,
+    epoch milliseconds again excepted (JSON text is read by its own leaves).
+    Not ``holds_pan_run``, which flags hex ids.
     Anything that is no JSON value (an object whose text is not judged here),
     nesting past the depth cap, and a leaf of JSON text that names a key twice
     (``json_as_written``: what ships would not be what was read) count as
@@ -365,6 +368,7 @@ def holds_card_data(value: Any) -> bool:
     from ecsctx.masking.patterns import (
         ALL_PACKS,
         classify_key,
+        holds_card_run,
         int_is_pan,
         pan_shaped,
     )
@@ -391,13 +395,15 @@ def holds_card_data(value: Any) -> bool:
             if pan_shaped(item) and not _EPOCH_MILLISECONDS.fullmatch(item.strip()):
                 return True
             if item.lstrip()[:1] not in ("{", "["):
-                return False
+                return holds_card_run(item)
             try:
                 parsed = json_as_written(item)
             except (DuplicateKey, RecursionError):
                 return True
             except ValueError:
-                return False
+                return holds_card_run(item)
+            # Its own leaves are read: `keyExpiration` in Google Pay's
+            # `signedKey` is a whole leaf there.
             return holds(parsed, depth + 1)
         return True
 

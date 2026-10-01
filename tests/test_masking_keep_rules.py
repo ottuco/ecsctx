@@ -314,13 +314,43 @@ class TestTheKeyWalk:
             {"note": 4111111111111111},
             {"note": json.dumps({"inner": {"securityCode": "123"}})},
             {"deep": [{"pin": "1234"}]},
+            # A card number inside a longer text leaf (review I2).
+            {"note": "card 4111111111111111 exp 12/27"},
+            {"box": "4111111111111111+cvv+123"},
+            {"ref": "4111111111111111ab"},
+            {"note": "Visa 4111 1111 1111 1111 on file"},
+            {"memo": ";4111111111111111=25121010000000000000?"},
+            {"note": "{not json 4111111111111111"},
         ],
-        ids=["cvv", "cardNumber", "a-pan-leaf", "an-int-pan", "a-nested-json-cvv", "a-pin-in-a-list"],
+        ids=[
+            "cvv", "cardNumber", "a-pan-leaf", "an-int-pan", "a-nested-json-cvv", "a-pin-in-a-list",
+            "a-pan-in-prose", "a-pan-in-base64", "a-pan-in-hex", "a-grouped-pan-in-prose", "track-2",
+            "a-pan-in-text-that-is-no-json",
+        ],
     )
     def test_the_guard_a_match_holding_card_data_is_walked(self, extra):
         holding = {**SEALED, **extra}
+        assert not is_kept(holding)
         _masked_as_a_walk(_walk({"payload": holding})["payload"])
         assert _walk({"payload": json.dumps(holding)})["payload"] != json.dumps(holding)
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"note": "cvv=123"},
+            {"box": "QUJD1790318444473QUJD"},
+            {"ref": "order 4111111111111112 retried"},
+            {"ref": "41111111111111111111"},
+            {"note": json.dumps({"keyExpiration": "1790318444473"})},
+        ],
+        ids=["a-cvv-in-a-string", "epoch-milliseconds", "a-run-failing-luhn", "twenty-digits", "json-text-epoch"],
+    )
+    def test_what_the_guard_does_not_read_in_a_text_leaf(self, extra):
+        # A CVV or other short value inside a longer string is the matcher's
+        # to keep out; a run that is no card number is no card number.
+        holding = {**SEALED, **extra}
+        assert is_kept(holding)
+        assert _walk({"payload": holding}) == {"payload": holding}
 
     def test_a_rule_that_keeps_everything_still_cannot_ship_a_card(self):
         configure_masking_value_rules([KeepRule(lambda value: True)])

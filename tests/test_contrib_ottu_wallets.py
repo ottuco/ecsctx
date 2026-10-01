@@ -142,6 +142,12 @@ NOT_TOKEN_TEXT = {
     },
     "google-signature-cvv": {**GOOGLE_PAY, "signature": "cvv=123"},
     "google-v1-encrypted-message-cvv": {**GOOGLE_PAY_V1, "signedMessage": '{"encryptedMessage":"cvv=123"}'},
+    # Text in a slot's own alphabet holding a card number (review I2).
+    "apple-data-pan-and-cvv-in-base64": {**APPLE_PAY, "data": "4111111111111111+cvv+123"},
+    "apple-transaction-id-pan-in-hex": {
+        **APPLE_PAY,
+        "header": {**APPLE_PAY["header"], "transactionId": "4111111111111111ab"},
+    },
 }
 
 PACKS = [["default"], sorted(ALL_PACKS)]
@@ -319,8 +325,13 @@ class TestTheRules:
             {**APPLE_PAY, "header": {**APPLE_PAY["header"], "applicationData": "0a1B" * 16}},
             {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "MasterCard 0492", "network": "MasterCard"}},
             {**GOOGLE_PAY, "signature": "MEQCIGZh+2Utc2/n"},
+            # Thirteen digits from a 1 or a 2 read as epoch milliseconds,
+            # wherever they stand.
+            {**APPLE_PAY, "data": "QUJD1790318444473QUJD"},
         ],
-        ids=["apple-application-data", "pk-display-name", "google-signature-plus-and-slash"],
+        ids=[
+            "apple-application-data", "pk-display-name", "google-signature-plus-and-slash", "apple-data-epoch-run",
+        ],
     )
     def test_a_documented_token_is_still_kept(self, token):
         assert is_kept(token)
