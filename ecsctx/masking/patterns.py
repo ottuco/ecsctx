@@ -56,13 +56,13 @@ from ecsctx.masking.tokens import (
 from ecsctx.masking.value_rules import (
     KEEP,
     DuplicateKey,
+    _first_match,
     applicable,
     hinted,
-    is_keep_rule,
+    holds_card_data,
     json_as_written,
     keep_rules,
     label_rules,
-    rule_of,
     ruling,
     text_ruling,
 )
@@ -1157,17 +1157,22 @@ def _mask_object(m: re.Match, rules: tuple) -> str:
     is itself in a string; bare anywhere else -- in prose, an element's text,
     a string of its own. An object no rule matches is read member by member,
     so one inside it is still found; one a keep rule matches first is left as
-    written and not looked into. Only the rules whose hints the object's text
-    holds are asked."""
+    written and not looked into, unless the guard refuses it or it is
+    written otherwise than it parses: then it is read as one nothing matches.
+    Only the rules whose hints the object's text holds are asked."""
     written = m.group(0)
     asked = applicable(written, rules)
     if not asked:
         return written  # nothing in it can match: every match holds a hint
-    rule = rule_of(_object_value(m), asked)
-    if rule is None:
+    value = _object_value(m)
+    found = _first_match(value, asked)
+    if found is not None and found[1] and (holds_card_data(value) or not _written_as_parsed(m)):
+        found = None
+    if found is None:
         inner = mask_objects(written[1:-1], rules)
         return written if inner == written[1:-1] else f"{{{inner}}}"
-    if is_keep_rule(rule):
+    rule, keep = found
+    if keep:
         return written
     label = f"[{make_label(rule.field_type)}]"
     text, position = m.string, m.start() - 1

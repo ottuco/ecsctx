@@ -419,6 +419,17 @@ class TestText:
         holding = json.dumps({**SEALED, "note": json.dumps({"cvv": "123"})})
         assert _text(f"got {holding}", packs) != f"got {holding}"
 
+    def test_a_keep_match_the_guard_refuses_is_read_as_one_nothing_matches(self, packs):
+        # Rule 2 too: a label match inside it is labelled (review I1).
+        text = "got " + json.dumps({"outer": 1, "cvv": "123", "inner": SEALED}) + " end"
+        configure_masking_value_rules([KeepRule(lambda value: "outer" in value), LABEL_RULE])
+        masked, body = _text(text, packs), redact_body(text)
+        configure_masking_value_rules([LABEL_RULE])
+        assert masked == _text(text, packs)
+        assert body == redact_body(text)
+        assert LABEL in masked
+        assert LABEL in body
+
     def test_masking_twice_masks_once(self, packs):
         once = _text(f"a {json.dumps(SEALED)} b {PASSWORD} c {SEALED!r}", packs)
         assert _text(once, packs) == once
