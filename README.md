@@ -1528,13 +1528,23 @@ Ottu's wallet tokens ship in logs exactly as sent (#159487): an Apple Pay or
 Google Pay token is single-use, and the token as it was sent is what debugs a
 wallet payment. `ecsctx.contrib.ottu.masking.WALLET_RULES` are keep rules
 with strict matchers — an Apple Pay `PKPaymentToken`, its `paymentData`
-(`version` `EC_v1` or `RSA_v1`, the encrypted `data`, a `header` of text
-fields) and a Google Pay payment method token (`protocolVersion` `ECv1`,
-`ECv2` or `ECv2SigningOnly`, with a `signedMessage`), and no key besides the
-ones each writes — found under `paymentData`, TAP's `token_data`, MPGS's
-`paymentToken` (a JSON string), Google Pay's `tokenizationData.token`, KPay's
-`<udf9>`, or in a message. A `PKPaymentToken` with a key of its own keeps
-only its `paymentData`. Saved-card tokens stay masked: no wallet shape
+(`version` `EC_v1` or `RSA_v1`, the encrypted `data`, a `header`) and a
+Google Pay payment method token (`protocolVersion` `ECv1`, `ECv2` or
+`ECv2SigningOnly`, with a `signedMessage`), no key besides the ones each
+writes, and every leaf text in its alphabet: standard base64 for a key, a
+signature or ciphertext (`data`, `signature`, the header's
+`ephemeralPublicKey`, `publicKeyHash` and `wrappedKey`, Google Pay's
+`signatures`, and the fields of its `signedMessage` and `signedKey`, each
+JSON text of its own fields and nothing else), hex for an id or a hash
+(`transactionId`, `applicationData`, `transactionIdentifier`), digits for
+`keyExpiration`, and short text (64 characters at most) for what
+`paymentMethod` says about the card. A token holding anything else in a
+slot — `"data": "cvv=123"`, a spaced card number as its `signature` — is
+not kept, and is masked as before: the guard reads keys, pairs and whole
+leaves, so text riding in a kept slot would ship. They are found under
+`paymentData`, TAP's `token_data`, MPGS's `paymentToken` (a JSON string),
+Google Pay's `tokenizationData.token`, KPay's `<udf9>`, or in a message. A
+`PKPaymentToken` with a key of its own keeps only its `paymentData`. Saved-card tokens stay masked: no wallet shape
 matches one. Samsung Pay's token, a JWE, is not matched yet. An Ottu service
 lists them in `ECSCTX_MASK_VALUE_RULES` next to its `ECSCTX_MASK_SAFE_KEYS`
 (above), or sets
