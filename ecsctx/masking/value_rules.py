@@ -126,16 +126,27 @@ def load_value_rules(value: Iterable[Any] | str) -> tuple[tuple[Any, ...], tuple
 def _rules_in(item: Any) -> tuple[Any, ...]:
     found = _imported(item) if isinstance(item, str) else item
     if is_value_rule(found):
-        return (found,)
-    if isinstance(found, Iterable) and not isinstance(found, (str, bytes, Mapping)):
+        members: tuple[Any, ...] | None = (found,)
+    elif isinstance(found, Iterable) and not isinstance(found, (str, bytes, Mapping)):
         members = tuple(found)
-        if all(is_value_rule(member) for member in members):
-            return members
-    raise ValueError(
-        f"{item!r} is not a value rule or a collection of them: a rule has `matches(value)`, "
-        "either a `field_type` (its label) or `keep = True` (it ships as sent), and optionally "
-        "`hints`, a collection of strings"
-    )
+    else:
+        members = None
+    if members is None or not all(is_value_rule(member) for member in members):
+        raise ValueError(
+            f"{item!r} is not a value rule or a collection of them: a rule has `matches(value)`, "
+            "either a `field_type` (its label) or `keep = True` (it ships as sent), and optionally "
+            "`hints`, a collection of strings"
+        )
+    for member in members:
+        # Read as a keep rule it would ship what its author may have meant
+        # to label: neither reading is taken.
+        if is_keep_rule(member) and is_label_rule(member):
+            where = repr(item) if member is found else f"{member!r} in {item!r}"
+            raise ValueError(
+                f"{where} has both a `field_type` ({member.field_type!r}: a label rule) and "
+                "`keep = True` (a keep rule): a rule is one or the other"
+            )
+    return members
 
 
 def _imported(path: str) -> Any:

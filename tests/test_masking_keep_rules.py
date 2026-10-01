@@ -99,8 +99,20 @@ class KeepYes:
         return True
 
 
+class Ambiguous:
+    """A label rule's `field_type` and a keep rule's `keep = True` at once."""
+
+    field_type = "sad"
+    keep = True
+    hints = ("sealed-box",)
+
+    def matches(self, value) -> bool:
+        return _is_sealed(value)
+
+
 DUCK_KEEP = DuckKeep()
 KEEP_YES = KeepYes()
+AMBIGUOUS = Ambiguous()
 
 PACKS = [["default"], sorted(ALL_PACKS)]
 
@@ -196,6 +208,30 @@ class TestConfiguration:
         assert keep_rules(rules) == (KEEP_RULE, DUCK_KEEP)
         assert label_rules(rules) == (LABEL_RULE,)
         assert keep_rules(rules) is keep_rules(rules)
+
+    def test_a_rule_with_both_a_field_type_and_keep_is_refused(self):
+        # It loaded as a keep rule, the less safe reading (review M6).
+        rules, problems = value_rules.load_value_rules([AMBIGUOUS, KEEP_RULE])
+        assert rules == (KEEP_RULE,)
+        [problem] = problems
+        assert "`field_type`" in problem
+        assert "`keep = True`" in problem
+        with pytest.raises(ValueError, match="`field_type`"):
+            configure_masking_value_rules([AMBIGUOUS])
+        with pytest.raises(ValueError, match="`keep = True`"):
+            configure_masking_value_rules([(KEEP_RULE, AMBIGUOUS)])
+
+    def test_an_ambiguous_rule_is_reported_by_the_boot_check(self, monkeypatch):
+        monkeypatch.setenv(
+            "ECSCTX_MASK_VALUE_RULES",
+            "tests.test_masking_keep_rules.AMBIGUOUS,tests.test_masking_keep_rules.KEEP_RULES",
+        )
+        with pytest.warns(RuntimeWarning, match="AMBIGUOUS"):
+            assert _walk({"x": SEALED}) == {"x": SEALED}
+        [error] = [error for error in find_masking_errors({}) if "ECSCTX_MASK_VALUE_RULES" in error]
+        assert "AMBIGUOUS" in error
+        assert "`field_type`" in error
+        assert "`keep = True`" in error
 
     def test_a_bad_item_is_reported_by_the_boot_check(self, monkeypatch):
         monkeypatch.setenv(

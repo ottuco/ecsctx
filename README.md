@@ -1406,8 +1406,10 @@ under one rule set never comes back as it was under another.
 A **keep rule** ships what it matches exactly as sent: a value a service must
 be able to read in its logs, found by shape. It is any object whose `keep` is
 `True` (the object itself, not a truthy value), with `matches(value)` and,
-optionally, `hints`; it has no `field_type`, since it writes no label.
-`KeepRule` is one:
+optionally, `hints`; it has no `field_type`, since it writes no label. An
+object with both a `field_type` and `keep = True` is neither, rather than
+the less safe of the two: it is refused as an item that is not a rule is
+(above), the problem naming both. `KeepRule` is one:
 
 ```python
 from ecsctx.masking import KeepRule
