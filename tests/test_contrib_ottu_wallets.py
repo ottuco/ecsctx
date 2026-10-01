@@ -379,10 +379,15 @@ class TestTheRules:
             # Thirteen digits from a 1 or a 2 read as epoch milliseconds,
             # wherever they stand.
             {**APPLE_PAY, "data": "QUJD1790318444473QUJD"},
+            # A 64-hex id holding a Luhn-valid run of digits, as about one in
+            # two hundred does: an id, not a card number (fix round 2).
+            {**APPLE_PAY, "header": {**APPLE_PAY["header"], "transactionId": "a" * 10 + "4111111111111111" + "b" * 38}},
+            {**PK_PAYMENT_TOKEN, "transactionIdentifier": "A" * 10 + "4111111111111111" + "B" * 38},
         ],
         ids=[
             "apple-application-data", "pk-display-name", "google-signature-plus-and-slash", "pk-display-name-amex",
             "pk-display-name-connects-fixture", "pk-display-name-forty-characters", "apple-data-epoch-run",
+            "apple-transaction-id-with-a-luhn-run", "pk-transaction-identifier-with-a-luhn-run",
         ],
     )
     def test_a_documented_token_is_still_kept(self, token):

@@ -78,6 +78,9 @@ OUTER_RULE = ValueRule("secret", lambda value: value.get("kind") == "outer-box",
 # A label rule with a hint of its own, which never matches.
 OTHER_RULE = ValueRule("secret", lambda value: value.get("kind") == "never", hints=("other-shape",))
 PASSWORD = "password=s3cret-Hunter2"
+# A 64-hex digest holding a run of digits that passes Luhn, as about one in
+# two hundred random ones does.
+DIGEST_WITH_A_RUN = "a" * 10 + "4111111111111111" + "b" * 38
 
 
 class DuckKeep:
@@ -321,11 +324,15 @@ class TestTheKeyWalk:
             {"note": "Visa 4111 1111 1111 1111 on file"},
             {"memo": ";4111111111111111=25121010000000000000?"},
             {"note": "{not json 4111111111111111"},
+            # Hex shorter than an id, or glued to more letters: read.
+            {"ref": "4111111111111111abcdef"},
+            {"ref": "zz" + DIGEST_WITH_A_RUN},
+            {"ref": DIGEST_WITH_A_RUN + "z"},
         ],
         ids=[
             "cvv", "cardNumber", "a-pan-leaf", "an-int-pan", "a-nested-json-cvv", "a-pin-in-a-list",
             "a-pan-in-prose", "a-pan-in-base64", "a-pan-in-hex", "a-grouped-pan-in-prose", "track-2",
-            "a-pan-in-text-that-is-no-json",
+            "a-pan-in-text-that-is-no-json", "hex-shorter-than-an-id", "hex-glued-to-letters", "hex-glued-to-a-letter-after",
         ],
     )
     def test_the_guard_a_match_holding_card_data_is_walked(self, extra):
@@ -342,8 +349,16 @@ class TestTheKeyWalk:
             {"ref": "order 4111111111111112 retried"},
             {"ref": "41111111111111111111"},
             {"note": json.dumps({"keyExpiration": "1790318444473"})},
+            # A whole hex id of 24 characters or more: a digest, an ObjectId
+            # -- read as Connect's own card scan reads one (fix round 2).
+            {"digest": DIGEST_WITH_A_RUN},
+            {"digest": DIGEST_WITH_A_RUN.upper()},
+            {"note": "session aaaa4111111111111111bbbb ended"},
         ],
-        ids=["a-cvv-in-a-string", "epoch-milliseconds", "a-run-failing-luhn", "twenty-digits", "json-text-epoch"],
+        ids=[
+            "a-cvv-in-a-string", "epoch-milliseconds", "a-run-failing-luhn", "twenty-digits", "json-text-epoch",
+            "a-64-hex-digest", "an-uppercase-digest", "a-24-hex-id-in-prose",
+        ],
     )
     def test_what_the_guard_does_not_read_in_a_text_leaf(self, extra):
         # A CVV or other short value inside a longer string is the matcher's

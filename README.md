@@ -1476,12 +1476,19 @@ Two things no keep rule overrides, not even `KeepRule(lambda value: True)`:
   `"4111…+cvv+123"` in a base64 slot, `"4111…ab"` in a hex one. Both except
   thirteen bare digits from a 1 or a 2 (epoch milliseconds until 2065), Google
   Pay's `keyExpiration`, which `pan_shaped` reads as a card number and every
-  Google Pay token carries. A leaf that is no JSON value counts as card data.
-  What the guard cannot tell from a token's own text ships with it: a CVV or
-  other short value written inside a longer string (`"note": "cvv=123"`, or
-  `cvv+123` inside base64, which reads as ciphertext), and a run of digits
-  that fails Luhn. Keeping that out is the matcher's job, which is why a
-  matcher must be strict about what it matches.
+  Google Pay token carries. A run inside a whole hex token of 24 characters
+  or more — an ObjectId, a 32-hex gateway id, a 64-hex digest such as Apple
+  Pay's `transactionId`, with nothing alphanumeric touching it — is no card
+  number either, as Connect's own card scan reads one: about one random
+  64-hex id in two hundred holds a run that passes Luhn, and read like other
+  text it cost 1.1% of Apple Pay tokens. Shorter hex, or hex glued to more
+  letters, is read. A leaf that is no JSON value counts as card data. What
+  the guard cannot tell from a token's own text ships with it: a CVV or other
+  short value written inside a longer string (`"note": "cvv=123"`, or
+  `cvv+123` inside base64, which reads as ciphertext), a run of digits that
+  fails Luhn, and a card number written into a hex id's own characters.
+  Keeping that out is the matcher's job, which is why a matcher must be
+  strict about what it matches.
 
 Nothing else in a kept value is read: PII or a credential inside it, under a
 key of its own or written in a string, ships with it.

@@ -358,7 +358,8 @@ def holds_card_data(value: Any) -> bool:
     ``keyExpiration`` in ``signedKey``, without which no Google Pay token would
     ever be kept. A text leaf that is no JSON text holds one when
     ``holds_card_run`` finds a run of 13 to 19 digits passing Luhn in it,
-    epoch milliseconds again excepted (JSON text is read by its own leaves).
+    epoch milliseconds again excepted, and a run inside a whole hex id of 24
+    characters or more (JSON text is read by its own leaves).
     Not ``holds_pan_run``, which flags hex ids.
     Anything that is no JSON value (an object whose text is not judged here),
     nesting past the depth cap, and a leaf of JSON text that names a key twice

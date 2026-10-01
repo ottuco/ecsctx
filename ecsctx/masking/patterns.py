@@ -824,21 +824,35 @@ _DIGIT_MARKS = bytes(
 )
 
 
+# An id a run inside which is never a card number: a token of 24 or more hex
+# characters -- an ObjectId, a 32-hex gateway id, a 64-hex digest, Apple
+# Pay's `transactionId` -- whole, nothing alphanumeric touching it. Connect's
+# own card scan reads one so: read like other text, about one 64-hex id in two
+# hundred holds a 13-19 digit run that passes Luhn.
+_HEX_ID = re.compile(r"(?<![0-9A-Za-z])[0-9A-Fa-f]{24,}(?![0-9A-Za-z])")
+
+
 def holds_card_run(text: str) -> bool:
     """Whether ``text`` holds, anywhere in it, a run that is a card number:
-    13 to 19 digits that pass Luhn -- `card 4111…`, `4111…+cvv+123`, a hex
-    id holding one -- except thirteen bare digits from a 1 or a 2, epoch
-    milliseconds. For the guard (``value_rules.holds_card_data``), which
-    reads every text leaf of a keep match with it. Stricter than
+    13 to 19 digits that pass Luhn -- `card 4111…`, `4111…+cvv+123`, short
+    hex holding one (`4111…ab`) -- except thirteen bare digits from a 1 or a
+    2, epoch milliseconds, and a run inside a whole hex id of 24 characters
+    or more (``_HEX_ID``). For the guard (``value_rules.holds_card_data``),
+    which reads every text leaf of a keep match with it. Stricter than
     ``holds_pan_run`` about what a card number is (Luhn, 13 digits up), so
-    ciphertext and hex ids are rarely refused."""
+    ciphertext is rarely refused."""
     if text.isascii():
         marked = text.encode("ascii").translate(_DIGIT_MARKS)
         if b"\0" * 13 not in marked and b"\2" not in marked:
             return False
+    ids = None
     for m in _CARD_RUN_IN_TEXT.finditer(text):
         run = m.group()
-        if not _EPOCH_MILLISECONDS.fullmatch(run) and _luhn_valid(re.sub(r"\D", "", run)):
+        if _EPOCH_MILLISECONDS.fullmatch(run) or not _luhn_valid(re.sub(r"\D", "", run)):
+            continue
+        if ids is None:
+            ids = [found.span() for found in _HEX_ID.finditer(text)]
+        if not any(start <= m.start() and m.end() <= end for start, end in ids):
             return True
     return False
 
