@@ -149,7 +149,6 @@ GOOGLE_PAY_RULE = ValueRule("sad", _is_google_pay_token, hints=("ECv1", "ECv2"))
 # besides these is no wallet's, and the object is walked as before.
 _PAYMENT_DATA_KEYS = frozenset({"version", "data", "signature", "header"})
 _PK_PAYMENT_TOKEN_KEYS = frozenset({"paymentData", "paymentMethod", "transactionIdentifier"})
-_PAYMENT_METHOD_KEYS = frozenset({"displayName", "network", "type"})
 _GOOGLE_PAY_KEYS = frozenset({"signature", "intermediateSigningKey", "protocolVersion", "signedMessage"})
 _SIGNING_KEY_KEYS = frozenset({"signedKey", "signatures"})
 _SIGNED_MESSAGE_KEYS = frozenset({"encryptedMessage", "ephemeralPublicKey", "tag"})
@@ -172,14 +171,19 @@ _HEADER_ALPHABETS = {
     "transactionId": _HEX,
     "applicationData": _HEX,
 }
-# PKPaymentToken's `paymentMethod` is what the device says about the card:
-# its network and type, short text, and a display name: up to 40 letters,
-# spaces, `.`, `&` and `-` from a letter, and optionally a space and the
-# card's last four ("Visa 0492", "American Express", "Amex") -- no other
-# digit or sign, so neither a card number nor an email rides in it, and no
-# name that reads as a CVV or other SAD: a CID is four digits ("CVV 1234").
-_PAYMENT_METHOD_TEXT_LIMIT = 64
-_DISPLAY_NAME = re.compile(r"[A-Za-z][A-Za-z .&-]{0,39}(?: [0-9]{4})?")
+# PKPaymentToken's `paymentMethod` is what the device says about the card, in
+# words: up to 40 letters, spaces, `.`, `&` and `-` from a letter. Its network
+# and type are words alone, or nothing ("AmEx", "debit"); its display name
+# words and optionally a space and the card's last four ("Visa 0492",
+# "American Express"). No other digit or sign, so neither a card number nor an
+# email rides in them, and no words that read as a CVV or other SAD: a CID is
+# four digits ("CVV 1234").
+_CARD_WORDS = r"[A-Za-z][A-Za-z .&-]{0,39}"
+_PAYMENT_METHOD_ALPHABETS = {
+    "displayName": re.compile(rf"{_CARD_WORDS}(?: [0-9]{{4}})?"),
+    "network": re.compile(rf"(?:{_CARD_WORDS})?"),
+    "type": re.compile(rf"(?:{_CARD_WORDS})?"),
+}
 
 
 def _written_in(field: Any, alphabet: re.Pattern) -> bool:
@@ -210,16 +214,16 @@ def _is_apple_pay_payment_data(value: Any) -> bool:
     )
 
 
-def _is_display_name(name: Any) -> bool:
-    if not (isinstance(name, str) and _DISPLAY_NAME.fullmatch(name)):
+def _in_card_words(field: Any, alphabet: re.Pattern) -> bool:
+    if not _written_in(field, alphabet):
         return False
-    return classify_key(name.rstrip("0123456789 "), ALL_PACKS) not in _FLOOR_TYPES
+    return classify_key(field.rstrip("0123456789 "), ALL_PACKS) not in _FLOOR_TYPES
 
 
 def _is_pk_payment_token(value: Any) -> bool:
     """Apple Pay's PKPaymentToken: its `paymentData`, what the device says
-    about the card -- its network and type, each short text, and its display
-    name, letters and the last four -- and the transaction's id in hex."""
+    about the card -- its network, type and display name in words, the name
+    with the last four -- and the transaction's id in hex."""
     payment_data = value.get("paymentData")
     if not (isinstance(payment_data, dict) and _is_apple_pay_payment_data(payment_data)):
         return False
@@ -228,9 +232,8 @@ def _is_pk_payment_token(value: Any) -> bool:
     method = value.get("paymentMethod", {})
     return (
         isinstance(method, dict)
-        and method.keys() <= _PAYMENT_METHOD_KEYS
-        and ("displayName" not in method or _is_display_name(method["displayName"]))
-        and all(isinstance(field, str) and len(field) <= _PAYMENT_METHOD_TEXT_LIMIT for field in method.values())
+        and method.keys() <= _PAYMENT_METHOD_ALPHABETS.keys()
+        and all(_in_card_words(field, _PAYMENT_METHOD_ALPHABETS[key]) for key, field in method.items())
     )
 
 

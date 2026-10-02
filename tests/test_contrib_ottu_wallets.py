@@ -190,6 +190,18 @@ NOT_A_DISPLAY_NAME = {
     "a-security-code-name": "Security Code 1234",
     "a-pin-name": "PIN 1234",
 }
+# A network or a type is words alone, or nothing (bot review on #72, 1).
+NOT_A_NETWORK = {
+    "a-cvv-setting": "cvv=123",
+    "a-cvv": "CVV 123",
+    "a-cvv-name": "cvv",
+    "a-security-code-name": "Security Code",
+    "an-email": "john@example.com",
+    "the-last-four": "Visa 1234",
+    "a-digit": "1",
+    "a-space-first": " Visa",
+    "too-long": "V" * 41,
+}
 
 PACKS = [["default"], sorted(ALL_PACKS)]
 
@@ -395,6 +407,14 @@ class TestTheRules:
         # Its payment data is still kept, on its own.
         assert _walk({"token": token})["token"]["paymentData"] == APPLE_PAY
 
+    @pytest.mark.parametrize("field", ["network", "type"])
+    @pytest.mark.parametrize("text", NOT_A_NETWORK.values(), ids=NOT_A_NETWORK.keys())
+    def test_a_network_and_a_type_are_words(self, field, text):
+        token = {**PK_PAYMENT_TOKEN, "paymentMethod": {**PK_PAYMENT_TOKEN["paymentMethod"], field: text}}
+        assert not is_kept(token)
+        assert not is_kept(json.dumps(token))
+        assert _walk({"token": token})["token"]["paymentData"] == APPLE_PAY
+
     @pytest.mark.parametrize("token", NOT_TOKEN_TEXT.values(), ids=NOT_TOKEN_TEXT.keys())
     def test_a_token_with_text_no_wallet_writes_is_masked_as_without_the_rules(self, token, packs):
         def every_path():
@@ -420,6 +440,8 @@ class TestTheRules:
             {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "V" * 35 + " 1234"}},
             {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "V" * 40 + " 1234"}},
             {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "American Express 1234", "network": "AmEx"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"network": "CartesBancaires", "type": "prepaid"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"network": "girocard", "type": ""}},
             # A 64-hex id holding a Luhn-valid run of digits, as about one in
             # two hundred does: an id, not a card number (fix round 2).
             {**APPLE_PAY, "header": {**APPLE_PAY["header"], "transactionId": "a" * 10 + "4111111111111111" + "b" * 38}},
@@ -429,6 +451,7 @@ class TestTheRules:
             "apple-application-data", "pk-display-name", "google-signature-plus-and-slash", "pk-display-name-amex",
             "pk-display-name-connects-fixture", "pk-display-name-forty-characters",
             "pk-display-name-forty-letters-and-the-last-four", "pk-display-name-in-words",
+            "pk-network-and-type", "pk-network-and-no-type",
             "apple-transaction-id-with-a-luhn-run", "pk-transaction-identifier-with-a-luhn-run",
         ],
     )

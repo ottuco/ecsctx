@@ -1586,14 +1586,14 @@ alone, for a key, a signature or ciphertext (`data`, `signature`, the header's
 `signatures`, and the fields of its `signedMessage` and `signedKey`, each
 JSON text of all its fields and nothing else), hex for an id or a hash
 (`transactionId`, `applicationData`, `transactionIdentifier`), digits for
-`keyExpiration`, and for what `paymentMethod` says about the card short
-text: its `network` and `type` at most 64 characters, its `displayName` a
-letter and up to 39 more letters, spaces, `.`, `&` or `-`, optionally
-followed by one space and exactly four digits, the card's last four
-(`Visa 0492`, `American Express`, `Amex`), and no name that reads as a CVV
-or other SAD (`CVV 1234`: a CID is four digits). A token holding anything else in a
-slot — `"data": "cvv=123"`, a spaced card number as its `signature`,
-`"displayName": "cvv 123"` — is not kept, and is masked as before; nor is
+`keyExpiration`, and for what `paymentMethod` says about the card words: a
+letter and up to 39 more letters, spaces, `.`, `&` or `-` — its `network`
+and `type` that alone or nothing (`AmEx`, `debit`), its `displayName`
+optionally followed by one space and exactly four digits, the card's last
+four (`Visa 0492`, `American Express`) — and no words that read as a CVV or
+other SAD (`cvv`, `CVV 1234`: a CID is four digits). A token holding
+anything else in a slot — `"data": "cvv=123"`, a spaced card number as its
+`signature`, `"network": "cvv=123"` — is not kept, and is masked as before; nor is
 one with a card number in a slot's own alphabet (`"4111…+cvv+123"` in
 base64), which the guard reads. What neither can tell from ciphertext ships
 with a kept token: a CVV or other short value written in a slot's own
