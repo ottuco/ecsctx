@@ -164,6 +164,13 @@ NOT_TOKEN_TEXT = {
         **APPLE_PAY,
         "header": {**APPLE_PAY["header"], "transactionId": "41111111111111110000"},
     },
+    # A base64 slot is no hex id: hex alone there is not base64 a wallet
+    # writes, and a card number would ride in it as a hex id (review r3, 1).
+    "apple-data-all-hex": {**APPLE_PAY, "data": "4111111111111111abcd1234"},
+    "apple-key-hash-all-hex": {
+        **APPLE_PAY,
+        "header": {**APPLE_PAY["header"], "publicKeyHash": "4111111111111111123a0000"},
+    },
 }
 # What the device says about the card: the network's name and the last four.
 NOT_A_DISPLAY_NAME = {
@@ -178,6 +185,10 @@ NOT_A_DISPLAY_NAME = {
     "an-email": "jane.roe@example.com",
     "a-digit-in-the-name": "Visa2 1234",
     "a-space-first": " Visa 1234",
+    # A name that reads as a CVV or other SAD: a CID is four digits (review r3, 3).
+    "a-cvv-name": "CVV 1234",
+    "a-security-code-name": "Security Code 1234",
+    "a-pin-name": "PIN 1234",
 }
 
 PACKS = [["default"], sorted(ALL_PACKS)]

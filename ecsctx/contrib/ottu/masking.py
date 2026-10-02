@@ -67,6 +67,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from ecsctx.masking.patterns import _FLOOR_TYPES, ALL_PACKS, classify_key
 from ecsctx.masking.value_rules import KeepRule, ValueRule, json_as_written
 
 SAFE_KEYS = frozenset({
@@ -159,7 +160,9 @@ _SIGNED_KEY_KEYS = frozenset({"keyValue", "keyExpiration"})
 # The guard reads keys, pairs, whole leaves and a card number inside one, so
 # other text in a kept token's slot (`"data": "cvv=123"`) would ship with it
 # (Redmine R3).
-_BASE64 = re.compile(r"[A-Za-z0-9+/]+={0,2}")
+# Not hex alone: a whole hex id is not read for a card number (the guard's
+# exemption for Apple Pay's ids), and a wallet's base64 never is one.
+_BASE64 = re.compile(r"(?![0-9A-Fa-f]*\Z)[A-Za-z0-9+/]+={0,2}")
 _HEX = re.compile(r"[0-9A-Fa-f]+")
 _DIGITS = re.compile(r"[0-9]+")
 _HEADER_ALPHABETS = {
@@ -173,7 +176,8 @@ _HEADER_ALPHABETS = {
 # its network and type, short text, and a display name: up to 40 letters,
 # spaces, `.`, `&` and `-` from a letter, and optionally a space and the
 # card's last four ("Visa 0492", "American Express", "Amex") -- no other
-# digit or sign, so neither a card number, a CVV nor an email rides in it.
+# digit or sign, so neither a card number nor an email rides in it, and no
+# name that reads as a CVV or other SAD: a CID is four digits ("CVV 1234").
 _PAYMENT_METHOD_TEXT_LIMIT = 64
 _DISPLAY_NAME = re.compile(r"[A-Za-z][A-Za-z .&-]{0,39}(?: [0-9]{4})?")
 
@@ -207,7 +211,9 @@ def _is_apple_pay_payment_data(value: Any) -> bool:
 
 
 def _is_display_name(name: Any) -> bool:
-    return isinstance(name, str) and _DISPLAY_NAME.fullmatch(name) is not None
+    if not (isinstance(name, str) and _DISPLAY_NAME.fullmatch(name)):
+        return False
+    return classify_key(name.rstrip("0123456789 "), ALL_PACKS) not in _FLOOR_TYPES
 
 
 def _is_pk_payment_token(value: Any) -> bool:
