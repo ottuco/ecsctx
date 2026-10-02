@@ -1475,22 +1475,24 @@ Two things no keep rule overrides, not even `KeepRule(lambda value: True)`:
   (`holds_pan_run`), it holds a run of 12 digits or more joined by single
   separators at most: `"card 4111…"`, `"1234 4111…"`, `"4111… 123"`, Track 2
   data, 20 bare digits, `"4111…+cvv+123"` in a base64 slot, `"4111…ab"` in a
-  hex one. Two leaves hold none: a leaf that is thirteen bare digits from a 1
-  or a 2 (epoch milliseconds until 2065), Google Pay's `keyExpiration`, which
-  `pan_shaped` reads as a card number and every Google Pay token carries; and
-  a leaf that is a whole hex id of 24 characters or more — a 64-hex digest
-  such as Apple Pay's `transactionId`, an ObjectId — about one random 64-hex
-  id in two hundred holds a 13-19 digit run that passes Luhn, and read like
-  other text it cost 1.1% of Apple Pay tokens. Only a whole leaf holding a
-  hex letter: a hex id inside base64 or prose (`"AA/4111…deadbeef/AA"`),
-  digits alone however many, and epoch milliseconds inside a longer string
-  are read. A leaf that is no JSON value counts as
+  hex one. Three leaves are not read for one: a leaf that is thirteen bare
+  digits from a 1 or a 2 (epoch milliseconds until 2065), Google Pay's
+  `keyExpiration`, which `pan_shaped` reads as a card number and every Google
+  Pay token carries; a leaf that is a canonical UUID (8-4-4-4-12 hex with a
+  hex letter), as everywhere in ecsctx; and a leaf that is a whole hex id of
+  24 characters or more holding a hex letter, such as Apple Pay's 64-hex
+  `transactionId`: about one random 64-hex id in two hundred holds a 13-19
+  digit run that passes Luhn, and reading them cost 1.1% of Apple Pay tokens.
+  Each is the whole leaf only: a hex id inside base64 or prose
+  (`"AA/4111…deadbeef/AA"`), digits alone however many, and epoch milliseconds
+  inside a longer string are all read. A leaf that is no JSON value counts as
   card data. What the guard cannot tell from a token's own text ships with
   it: a CVV or other short value written inside a longer string
   (`"note": "cvv=123"`, or `cvv+123` inside base64, which reads as
   ciphertext), and a card number written into a leaf that is a whole hex id
-  (`4111…` and eight hex letters). Keeping that out is the matcher's job,
-  which is why a matcher must be strict about what it matches.
+  (`4111…` then hex holding a letter, a CVV's digits among it). Keeping that
+  out is the matcher's job, which is why a matcher must be strict about what
+  it matches: Ottu's refuse hex alone in a base64 slot.
 
 Nothing else in a kept value is read: PII or a credential inside it, under a
 key of its own or written in a string, ships with it.
@@ -1532,8 +1534,9 @@ nothing, and is masked as without a keep rule. A name is a quoted key then
 padding inside a string), an XML tag, or a `{name, value}` pair's label
 (`"name": "card security code"`), classified as the key walk classifies a
 key — every pack on, the service's safe keys honoured. It is read as
-written: a quoted key, tag or pair label up to 128 characters (a longer key
-by its last 128, before `:` or `=>`), with no `\uXXXX` escape decoded, in the
+written: a quoted key or pair label up to 128 characters (a longer key by
+its last 128, before `:` or `=>`), an XML tag of any length, with no
+`\uXXXX` escape decoded, in the
 text as it stands and, where it holds an entity, as the entities decode. The
 key walk reads more: it parses JSON, so a key written with escapes
 (`"\u0063vv"`), or longer than 128 characters with its CVV word first, is a
@@ -1577,8 +1580,8 @@ with strict matchers — an Apple Pay `PKPaymentToken`, its `paymentData`
 (`version` `EC_v1` or `RSA_v1`, the encrypted `data`, a `header`) and a
 Google Pay payment method token (`protocolVersion` `ECv1`, `ECv2` or
 `ECv2SigningOnly`, with a `signedMessage`), no key besides the ones each
-writes, and every leaf text in its alphabet: standard base64 for a key, a
-signature or ciphertext (`data`, `signature`, the header's
+writes, and every leaf text in its alphabet: standard base64, never hex
+alone, for a key, a signature or ciphertext (`data`, `signature`, the header's
 `ephemeralPublicKey`, `publicKeyHash` and `wrappedKey`, Google Pay's
 `signatures`, and the fields of its `signedMessage` and `signedKey`, each
 JSON text of all its fields and nothing else), hex for an id or a hash
@@ -1587,7 +1590,8 @@ JSON text of all its fields and nothing else), hex for an id or a hash
 text: its `network` and `type` at most 64 characters, its `displayName` a
 letter and up to 39 more letters, spaces, `.`, `&` or `-`, optionally
 followed by one space and exactly four digits, the card's last four
-(`Visa 0492`, `American Express`, `Amex`). A token holding anything else in a
+(`Visa 0492`, `American Express`, `Amex`), and no name that reads as a CVV
+or other SAD (`CVV 1234`: a CID is four digits). A token holding anything else in a
 slot — `"data": "cvv=123"`, a spaced card number as its `signature`,
 `"displayName": "cvv 123"` — is not kept, and is masked as before; nor is
 one with a card number in a slot's own alphabet (`"4111…+cvv+123"` in

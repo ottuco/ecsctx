@@ -359,8 +359,8 @@ def holds_card_data(value: Any) -> bool:
     ever be kept. Any other text leaf that is no JSON text holds one when
     ``holds_card_run`` finds a run of 12 digits or more in it, read as the pci
     rules read a value -- except a leaf that is a whole hex id of 24
-    characters or more (JSON text is read by its own leaves).
-    Not ``holds_pan_run``, which flags hex ids.
+    characters or more holding a hex letter, which ``holds_pan_run`` alone
+    would read (JSON text is read by its own leaves).
     Anything that is no JSON value (an object whose text is not judged here),
     nesting past the depth cap, and a leaf of JSON text that names a key twice
     (``json_as_written``: what ships would not be what was read) count as

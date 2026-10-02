@@ -832,7 +832,7 @@ def holds_card_run(text: str) -> bool:
     (``holds_pan_run``: 12 digits or more, joined by single separators at
     most -- `card 4111…`, `1234 4111…`, `4111… 123`, `4111…+cvv+123` in
     base64, `4111…ab` in hex) -- except a leaf that is a whole hex id of 24
-    characters or more (``_HEX_ID``). For the guard
+    characters or more holding a hex letter (``_HEX_ID``). For the guard
     (``value_rules.holds_card_data``), which excepts a leaf that is epoch
     milliseconds itself. One pass, linear in the leaf: ASCII text with no
     such run of digits and no separator is told by one bytes translate."""
