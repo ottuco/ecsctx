@@ -44,6 +44,7 @@ from ecsctx.masking.patterns import (
     _end_tags,
     _mask_card_field,
     _mask_userinfo,
+    floored_text,
     holds_pan_run,
     mask_card_elements,
     mask_objects,
@@ -425,16 +426,19 @@ def redact_body(text: str) -> str:
     return _redact_body(text)[0]
 
 
-def _redact_body(text: str) -> tuple[str, bool]:
-    """``redact_body``'s result, and whether it set a kept value aside."""
+def _redact_body(text: str, keep: bool = True) -> tuple[str, bool]:
+    """``redact_body``'s result, and whether it set a kept value aside --
+    never one with ``keep`` False: the text holding this text names a CVV
+    or SAD key (``patterns.floored_text``)."""
     stash = None
     if "{" in text and (rules := value_rules_in_force()):
         text = mask_objects(text, rules)
-        stash = stash_kept(text, rules)
-        if stash is None and "&" in text and keep_rules(rules) and _KEPT_HEAD not in text:
-            # None in the text as written; an element's entity-encoded text
-            # may hold one (_encoded_leaf).
-            stash = KeptStash(text, {})
+        if keep:
+            stash = stash_kept(text, rules)
+            if stash is None and "&" in text and keep_rules(rules) and _KEPT_HEAD not in text:
+                # None in the text as written; an element's entity-encoded
+                # text may hold one (_encoded_leaf).
+                stash = KeptStash(text, {})
     if stash is None:
         return _redact_body_text(text, None), False
     return stash.restore(_redact_body_text(stash.text, stash)), bool(stash.originals)
@@ -479,10 +483,14 @@ def _mask_xml_elements(text: str, stash: KeptStash | None = None) -> str:
     other leaf, through the body rules as it decodes -- set aside in
     ``stash`` when it holds a kept value, so the form and JSON rules that
     read the body next never read into it (base64's `==` after a run holding
-    `cvv` reads as a CVV form field)."""
+    `cvv` reads as a CVV form field). No leaf keeps a value without a
+    ``stash``, nor in text that names a CVV or SAD key, element or pair
+    label (``floored_text``, read once a leaf keeps one)."""
     text = mask_card_elements(text)
     names = _get_compiled()[3]
     parts, copied, ends = [], 0, None
+    # Whether a leaf may keep a value: None until one does.
+    keep: bool | None = None if stash is not None else False
     for start in _XML_START.finditer(text):
         if start.start() < copied:
             continue  # inside an element already masked whole
@@ -494,11 +502,13 @@ def _mask_xml_elements(text: str, stash: KeptStash | None = None) -> str:
             continue
         end = closing.start()
         if not _is_credential_element(start.group("local"), names):
-            if (leaf := _encoded_leaf(text, start.end(), end)) is not None:
-                masked, kept = leaf
-                if kept and stash is not None:
-                    masked = stash.hold(masked)
-                parts += [text[copied : start.end()], masked]
+            leaf = _encoded_leaf(text, start.end(), end, keep is not False)
+            if leaf is not None and leaf[1]:
+                if keep is None:
+                    keep = not floored_text(text)
+                leaf = (stash.hold(leaf[0]), True) if keep else _encoded_leaf(text, start.end(), end, False)
+            if leaf is not None:
+                parts += [text[copied : start.end()], leaf[0]]
                 copied = end
             continue
         value = _element_text(text[start.end() : end])
@@ -512,7 +522,7 @@ def _mask_xml_elements(text: str, stash: KeptStash | None = None) -> str:
     return "".join(parts)
 
 
-def _encoded_leaf(text: str, start: int, end: int) -> tuple[str, bool] | None:
+def _encoded_leaf(text: str, start: int, end: int, keep: bool = True) -> tuple[str, bool] | None:
     """The text of a leaf, ``text[start:end]``, masked by the body rules as
     it decodes and escaped again -- when it is JSON or XML written with
     entities, and masking changed it or kept a value in it (then as written,
@@ -520,13 +530,13 @@ def _encoded_leaf(text: str, start: int, end: int) -> tuple[str, bool] | None:
     needs nothing here, nor a form body's: the body rules read them where
     they stand, `&amp;` a form's separator either way. Decoded, a form value
     ran on past `&quot;`, and a leaf the first pass left as a form body read
-    differently on the next."""
+    differently on the next. Nothing is kept in it with ``keep`` False."""
     if text.find("<", start, end) != -1 or text.find("&", start, end) == -1:
         return None
     decoded = html.unescape(text[start:end])
     if decoded.lstrip()[:1] not in ("{", "[", "<"):
         return None
-    masked, kept = _redact_body(decoded)
+    masked, kept = _redact_body(decoded, keep)
     if masked == decoded:
         return (text[start:end], True) if kept else None
     return xml_escape(masked), kept

@@ -22,7 +22,11 @@ A rule is one of two kinds, both asked in list order, the first match winning:
   is kept under a CVV or SAD key or inside a CVV or SAD container (the floor,
   applied where a key is known: ``filters``, ``patterns.kept_spans``), and a
   match holding a card, CVV or SAD key, or a card number, at any depth, is
-  walked as if nothing matched (the guard, ``holds_card_data``).
+  walked as if nothing matched (the guard, ``holds_card_data``). A match
+  holding a value whose own first match is a label rule is walked so too
+  (``keep_refused``): a label rule wins at any depth inside a keep match, the
+  first match deciding each value -- a catch-all keep rule listed first is
+  every value's first match.
 
 Both have:
 
@@ -123,16 +127,27 @@ def load_value_rules(value: Iterable[Any] | str) -> tuple[tuple[Any, ...], tuple
 def _rules_in(item: Any) -> tuple[Any, ...]:
     found = _imported(item) if isinstance(item, str) else item
     if is_value_rule(found):
-        return (found,)
-    if isinstance(found, Iterable) and not isinstance(found, (str, bytes, Mapping)):
+        members: tuple[Any, ...] | None = (found,)
+    elif isinstance(found, Iterable) and not isinstance(found, (str, bytes, Mapping)):
         members = tuple(found)
-        if all(is_value_rule(member) for member in members):
-            return members
-    raise ValueError(
-        f"{item!r} is not a value rule or a collection of them: a rule has `matches(value)`, "
-        "either a `field_type` (its label) or `keep = True` (it ships as sent), and optionally "
-        "`hints`, a collection of strings"
-    )
+    else:
+        members = None
+    if members is None or not all(is_value_rule(member) for member in members):
+        raise ValueError(
+            f"{item!r} is not a value rule or a collection of them: a rule has `matches(value)`, "
+            "either a `field_type` (its label) or `keep = True` (it ships as sent), and optionally "
+            "`hints`, a collection of strings"
+        )
+    for member in members:
+        # Read as a keep rule it would ship what its author may have meant
+        # to label: neither reading is taken.
+        if is_keep_rule(member) and is_label_rule(member):
+            where = repr(item) if member is found else f"{member!r} in {item!r}"
+            raise ValueError(
+                f"{where} has both a `field_type` ({member.field_type!r}: a label rule) and "
+                "`keep = True` (a keep rule): a rule is one or the other"
+            )
+    return members
 
 
 def _imported(path: str) -> Any:
@@ -306,53 +321,65 @@ _CARD_DATA_TYPES = frozenset({"card", "cvv", "sad"})
 _EPOCH_MILLISECONDS = re.compile(r"[12][0-9]{12}")
 
 
+def pair_labelled(pair: Mapping, types: frozenset[str]) -> bool:
+    """Whether a ``{name, value}`` pair's identifier reads as one of ``types``
+    (every pack on), as the key walk reads a pair (``filters._pair``), which
+    masks its ``value`` as that type."""
+    keys = {str(key).lower(): key for key in pair}
+    if "value" not in keys:
+        return False
+    # Imported here, past the check nearly every mapping fails: patterns and
+    # filters import this module as they load.
+    from ecsctx.masking.filters import _PAIR_IDENTIFIERS
+    from ecsctx.masking.patterns import ALL_PACKS, classify_key
+
+    # Uncached, as the key walk classifies free text: an identifier may be a
+    # sentence, and must not evict a key name.
+    return any(
+        isinstance(label := pair[keys[identifier]], str) and classify_key.__wrapped__(label, ALL_PACKS) in types
+        for identifier in _PAIR_IDENTIFIERS
+        if identifier in keys
+    )
+
+
 def holds_card_data(value: Any) -> bool:
     """Whether ``value`` holds, at any depth -- JSON text inside it included --
     a key the key rules read as a card, a CVV or other SAD (every pack on), a
     ``{name, value}`` pair whose identifier reads as one (as the key walk reads
-    a pair, ``filters._pair``), or a leaf that is a card number as a whole:
-    what no keep rule may ship, not even one that matches everything. Keys,
-    pairs and whole leaves only: a CVV or a card number written inside a
-    longer string (``"note": "cvv=123"``) is not read here, and keeping it out
-    is a matcher's job.
+    a pair, ``filters._pair``), a leaf that is a card number as a whole, or a
+    text leaf holding one: what no keep rule may ship, not even one that
+    matches everything. A CVV or other short value written inside a longer
+    string (``"note": "cvv=123"``, ``cvv+123`` in base64) is not read here,
+    and keeping it out is a matcher's job.
 
     A leaf is a card number when it is an int ``int_is_pan`` reads as one, or
     a string ``pan_shaped`` reads as one -- whatever its prefix, Luhn or not --
     except thirteen bare digits from a 1 or a 2: epoch milliseconds, Google Pay's
     ``keyExpiration`` in ``signedKey``, without which no Google Pay token would
-    ever be kept. Not ``holds_pan_run``, which flags hex ids.
+    ever be kept. Any other text leaf that is no JSON text holds one when
+    ``holds_card_run`` finds a run of 12 digits or more in it, read as the pci
+    rules read a value -- except a leaf that is a whole hex id of 24
+    characters or more holding a hex letter, which ``holds_pan_run`` alone
+    would read (JSON text is read by its own leaves).
     Anything that is no JSON value (an object whose text is not judged here),
     nesting past the depth cap, and a leaf of JSON text that names a key twice
     (``json_as_written``: what ships would not be what was read) count as
     holding card data: such a match is walked, not shipped.
     """
-    # Imported here: patterns and filters import this module as they load.
-    from ecsctx.masking.filters import _PAIR_IDENTIFIERS
+    # Imported here: patterns imports this module as it loads.
     from ecsctx.masking.patterns import (
         ALL_PACKS,
         classify_key,
+        holds_card_run,
         int_is_pan,
         pan_shaped,
     )
-
-    def labels_card_data(pair: Mapping) -> bool:
-        keys = {str(key).lower(): key for key in pair}
-        if "value" not in keys:
-            return False
-        # Uncached, as the key walk classifies free text: an identifier may be
-        # a sentence, and must not evict a key name.
-        return any(
-            isinstance(label := pair[keys[identifier]], str)
-            and classify_key.__wrapped__(label, ALL_PACKS) in _CARD_DATA_TYPES
-            for identifier in _PAIR_IDENTIFIERS
-            if identifier in keys
-        )
 
     def holds(item: Any, depth: int) -> bool:
         if depth > _MAX_DEPTH:
             return True
         if isinstance(item, Mapping):
-            if labels_card_data(item):
+            if pair_labelled(item, _CARD_DATA_TYPES):
                 return True
             return any(
                 classify_key(str(key), ALL_PACKS) in _CARD_DATA_TYPES or holds(member, depth + 1)
@@ -367,33 +394,58 @@ def holds_card_data(value: Any) -> bool:
         if isinstance(item, float):
             return item.is_integer() and int_is_pan(int(item))
         if isinstance(item, str):
-            if pan_shaped(item) and not _EPOCH_MILLISECONDS.fullmatch(item.strip()):
+            if _EPOCH_MILLISECONDS.fullmatch(item.strip()):
+                return False  # Google Pay's `keyExpiration`, a whole leaf
+            if pan_shaped(item):
                 return True
-            if item.lstrip()[:1] not in ("{", "["):
-                return False
-            try:
-                parsed = json_as_written(item)
-            except (DuplicateKey, RecursionError):
-                return True
-            except ValueError:
-                return False
-            return holds(parsed, depth + 1)
+            if item.lstrip()[:1] in ("{", "["):
+                try:
+                    parsed = json_as_written(item)
+                except (DuplicateKey, RecursionError):
+                    return True
+                except ValueError:
+                    pass
+                else:
+                    # Its own leaves are read: `keyExpiration` in Google
+                    # Pay's `signedKey` is a whole leaf there.
+                    return holds(parsed, depth + 1)
+            return holds_card_run(item)
         return True
 
     return holds(value, 0)
 
 
+def keep_refused(value: dict, rules: Iterable[Any]) -> bool:
+    """Whether a keep match is walked as if nothing had matched: the guard
+    refuses it (``holds_card_data``), or a label rule among ``rules`` labels
+    something strictly inside it (``label_within``, over its members): a
+    label rule wins at any depth inside a keep match. For the value itself
+    the first match still wins. Only with a label rule among ``rules``; one
+    that raises there refuses the keep, and raises nothing: keep rules are
+    asked on paths that must never raise, and a member is asked here that
+    the walk might never ask."""
+    if holds_card_data(value):
+        return True
+    if not _split(rules).label:
+        return False
+    try:
+        return any(label_within(member, rules, 1) is not None for member in value.values())
+    except Exception:  # noqa: BLE001 -- a service's label matcher; refusing the keep fails closed
+        return True
+
+
 def ruling(value: Any, rules: Iterable[Any]) -> str | _Keep | None:
     """What the first of ``rules`` a mapping matches makes of it: its label,
-    ``KEEP``, or None -- nothing matched, or a keep rule did and the guard
-    refused it (``holds_card_data``), so it is walked as if nothing had: no
-    rule listed after it is asked."""
+    ``KEEP``, or None -- nothing matched, or a keep rule did and it is
+    refused (``keep_refused``: the guard, or a label rule matching inside
+    it), so it is walked as if nothing had: no rule listed after it is
+    asked."""
     found = _first_match(value, rules)
     if found is None:
         return None
     rule, keep = found
     if keep:
-        return None if holds_card_data(value) else KEEP
+        return None if keep_refused(value, rules) else KEEP
     return f"[{make_label(rule.field_type)}]"
 
 
@@ -469,17 +521,15 @@ def text_label(text: str, rules: Iterable[Any]) -> str | None:
 
 def label_within(value: Any, rules: Iterable[Any], depth: int = 0) -> str | None:
     """The label of a value a rule matches anywhere in ``value`` -- a
-    mapping, a list, or JSON text, however deep -- or None. A kept mapping is
-    not descended into: what a keep rule ships holds no label."""
+    mapping, a list, or JSON text, however deep -- or None. A keep match is
+    looked into like any other mapping: one holding a label match is not kept
+    (``keep_refused``), and one that is kept holds none."""
     if depth > _MAX_DEPTH:
         return None
     if isinstance(value, dict):
         found = _first_match(value, rules)
-        if found is not None:
-            if not found[1]:
-                return f"[{make_label(found[0].field_type)}]"
-            if not holds_card_data(value):
-                return None
+        if found is not None and not found[1]:
+            return f"[{make_label(found[0].field_type)}]"
         items = value.values()
     elif isinstance(value, (list, tuple)):
         items = value

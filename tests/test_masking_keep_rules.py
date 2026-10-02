@@ -17,8 +17,10 @@ without one, and in the default pack and with every pack.
 """
 
 import copy
+import html
 import json
 import logging
+import re
 
 import pytest
 from django.test import override_settings
@@ -69,12 +71,16 @@ def _is_sealed(value) -> bool:
 
 KEEP_RULE = KeepRule(_is_sealed, hints=("sealed-box",))
 KEEP_RULES = (KEEP_RULE,)
+KEEP_ALL = KeepRule(lambda value: True)
 LABEL_RULE = ValueRule("sad", _is_sealed, hints=("sealed-box",))
 LABEL = "[SAD-MASKED]"
 OUTER_RULE = ValueRule("secret", lambda value: value.get("kind") == "outer-box", hints=("outer-box",))
 # A label rule with a hint of its own, which never matches.
 OTHER_RULE = ValueRule("secret", lambda value: value.get("kind") == "never", hints=("other-shape",))
 PASSWORD = "password=s3cret-Hunter2"
+# A 64-hex digest holding a run of digits that passes Luhn, as about one in
+# two hundred random ones does.
+DIGEST_WITH_A_RUN = "a" * 10 + "4111111111111111" + "b" * 38
 
 
 class DuckKeep:
@@ -96,8 +102,20 @@ class KeepYes:
         return True
 
 
+class Ambiguous:
+    """A label rule's `field_type` and a keep rule's `keep = True` at once."""
+
+    field_type = "sad"
+    keep = True
+    hints = ("sealed-box",)
+
+    def matches(self, value) -> bool:
+        return _is_sealed(value)
+
+
 DUCK_KEEP = DuckKeep()
 KEEP_YES = KeepYes()
+AMBIGUOUS = Ambiguous()
 
 PACKS = [["default"], sorted(ALL_PACKS)]
 
@@ -194,6 +212,30 @@ class TestConfiguration:
         assert label_rules(rules) == (LABEL_RULE,)
         assert keep_rules(rules) is keep_rules(rules)
 
+    def test_a_rule_with_both_a_field_type_and_keep_is_refused(self):
+        # It loaded as a keep rule, the less safe reading (review M6).
+        rules, problems = value_rules.load_value_rules([AMBIGUOUS, KEEP_RULE])
+        assert rules == (KEEP_RULE,)
+        [problem] = problems
+        assert "`field_type`" in problem
+        assert "`keep = True`" in problem
+        with pytest.raises(ValueError, match="`field_type`"):
+            configure_masking_value_rules([AMBIGUOUS])
+        with pytest.raises(ValueError, match="`keep = True`"):
+            configure_masking_value_rules([(KEEP_RULE, AMBIGUOUS)])
+
+    def test_an_ambiguous_rule_is_reported_by_the_boot_check(self, monkeypatch):
+        monkeypatch.setenv(
+            "ECSCTX_MASK_VALUE_RULES",
+            "tests.test_masking_keep_rules.AMBIGUOUS,tests.test_masking_keep_rules.KEEP_RULES",
+        )
+        with pytest.warns(RuntimeWarning, match="AMBIGUOUS"):
+            assert _walk({"x": SEALED}) == {"x": SEALED}
+        [error] = [error for error in find_masking_errors({}) if "ECSCTX_MASK_VALUE_RULES" in error]
+        assert "AMBIGUOUS" in error
+        assert "`field_type`" in error
+        assert "`keep = True`" in error
+
     def test_a_bad_item_is_reported_by_the_boot_check(self, monkeypatch):
         monkeypatch.setenv(
             "ECSCTX_MASK_VALUE_RULES",
@@ -275,13 +317,73 @@ class TestTheKeyWalk:
             {"note": 4111111111111111},
             {"note": json.dumps({"inner": {"securityCode": "123"}})},
             {"deep": [{"pin": "1234"}]},
+            # A card number inside a longer text leaf (review I2).
+            {"note": "card 4111111111111111 exp 12/27"},
+            {"box": "4111111111111111+cvv+123"},
+            {"ref": "4111111111111111ab"},
+            {"note": "Visa 4111 1111 1111 1111 on file"},
+            {"memo": ";4111111111111111=25121010000000000000?"},
+            {"note": "{not json 4111111111111111"},
+            # Hex shorter than an id, or glued to more letters: read.
+            {"ref": "4111111111111111abcdef"},
+            {"ref": "zz" + DIGEST_WITH_A_RUN},
+            {"ref": DIGEST_WITH_A_RUN + "z"},
+            # Only a leaf that is a whole hex id is not read (review r2, 1 and
+            # 4): one inside base64, or in prose, is.
+            {"box": "AA/4111111111111111deadbeef/AA"},
+            {"note": "session aaaa4111111111111111bbbb ended"},
+            # A run read as the pci rules read one (review r2, 3): a card
+            # beside another digit group, more digits than a card, no Luhn.
+            {"note": "1234 4111111111111111"},
+            {"note": "4111111111111111 123"},
+            {"note": "4111111111111111 12/25"},
+            {"ref": "41111111111111110000"},
+            {"ref": "order 4111111111111112 retried"},
+            # Epoch milliseconds are only a whole leaf's.
+            {"box": "QUJD1790318444473QUJD"},
+            # A hex id holds a hex letter: 24 digits or more are read.
+            {"digest": "411111111111111112345678"},
         ],
-        ids=["cvv", "cardNumber", "a-pan-leaf", "an-int-pan", "a-nested-json-cvv", "a-pin-in-a-list"],
+        ids=[
+            "cvv", "cardNumber", "a-pan-leaf", "an-int-pan", "a-nested-json-cvv", "a-pin-in-a-list",
+            "a-pan-in-prose", "a-pan-in-base64", "a-pan-in-hex", "a-grouped-pan-in-prose", "track-2",
+            "a-pan-in-text-that-is-no-json", "hex-shorter-than-an-id", "hex-glued-to-letters", "hex-glued-to-a-letter-after",
+            "a-hex-id-in-base64", "a-24-hex-id-in-prose", "a-group-before-a-card", "a-cvv-after-a-card",
+            "an-expiry-after-a-card", "twenty-digits", "a-run-failing-luhn", "epoch-milliseconds-in-a-longer-leaf",
+            "digits-only-in-a-hex-slot",
+        ],
     )
     def test_the_guard_a_match_holding_card_data_is_walked(self, extra):
         holding = {**SEALED, **extra}
+        assert not is_kept(holding)
         _masked_as_a_walk(_walk({"payload": holding})["payload"])
         assert _walk({"payload": json.dumps(holding)})["payload"] != json.dumps(holding)
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"note": "cvv=123"},
+            {"note": "order 12345678901 shipped"},
+            {"expiration": "1790318444473"},
+            {"note": json.dumps({"keyExpiration": "1790318444473"})},
+            # A leaf that is a whole hex id of 24 characters or more: a
+            # digest, an ObjectId, Apple Pay's transactionId (fix rounds 2, 3).
+            {"digest": DIGEST_WITH_A_RUN},
+            {"digest": DIGEST_WITH_A_RUN.upper()},
+            {"digest": "aaaa4111111111111111bbbb"},
+        ],
+        ids=[
+            "a-cvv-in-a-string", "eleven-digits", "epoch-milliseconds", "json-text-epoch",
+            "a-64-hex-digest", "an-uppercase-digest", "a-24-hex-id",
+        ],
+    )
+    def test_what_the_guard_does_not_read_in_a_text_leaf(self, extra):
+        # A CVV or other short value inside a longer string is the matcher's
+        # to keep out; fewer digits than a card number, epoch milliseconds
+        # and a whole hex id hold none.
+        holding = {**SEALED, **extra}
+        assert is_kept(holding)
+        assert _walk({"payload": holding}) == {"payload": holding}
 
     def test_a_rule_that_keeps_everything_still_cannot_ship_a_card(self):
         configure_masking_value_rules([KeepRule(lambda value: True)])
@@ -368,6 +470,30 @@ class TestTheKeyWalk:
         configure_masking_value_rules([KEEP_RULE, LABEL_RULE])
         assert _walk({"x": SEALED, "y": json.dumps(SEALED)}) == {"x": SEALED, "y": json.dumps(SEALED)}
 
+    def test_a_label_rule_wins_inside_a_keep_match(self, packs):
+        # A keep rule matching the outer mapping first shipped what a label
+        # rule names inside it unlabelled (review M8).
+        configure_masking_value_rules([LABEL_RULE, KEEP_ALL])
+        event = {"outer": {"inner": SEALED}, "note": "x"}
+        labelled = {"outer": {"inner": LABEL}, "note": "x"}
+        assert _walk({"payload": event}) == {"payload": labelled}
+        assert json.loads(_walk({"payload": json.dumps(event)})["payload"]) == labelled
+        assert _walk({"password": json.dumps(event)}) == {"password": LABEL}
+        assert _text(f"got {json.dumps(event)} back", packs) == f"got {json.dumps(labelled)} back"
+        assert json.loads(redact_body(json.dumps(event))) == labelled
+        assert not is_kept(event)
+        assert not is_kept(json.dumps(event))
+        assert is_kept({"outer": {"note": "x"}})
+
+    def test_a_label_rule_listed_after_a_keep_match_of_the_same_value_is_not_asked(self, packs):
+        # The first match still wins for the value itself: a keep rule listed
+        # first that matches every value labels nothing inside.
+        configure_masking_value_rules([KEEP_ALL, LABEL_RULE])
+        event = {"outer": {"inner": SEALED}, "note": "x"}
+        assert _walk({"payload": event}) == {"payload": event}
+        assert _text(f"got {json.dumps(event)} back", packs) == f"got {json.dumps(event)} back"
+        assert is_kept(event)
+
     def test_a_keep_match_the_guard_refuses_asks_no_rule_listed_after_it(self, packs):
         configure_masking_value_rules([KEEP_RULE, LABEL_RULE])
         holding = {**SEALED, "cvv": "123"}
@@ -403,6 +529,37 @@ class TestTheKeyWalk:
 def _kept_in(masked: str, kept: str) -> None:
     assert kept in masked
     assert "s3cret-Hunter2" not in masked
+
+
+# CVV and SAD containers in text that are not the key right before the
+# object (review M2), and the same keys beside the value (review I1): text
+# that names a CVV or SAD key, element or pair label anywhere keeps nothing.
+FLOORED = {
+    "a-list-between": '{"cvv": [ PLAIN ]}',
+    "a-pair-labelled-cvv": '{"name": "cvv", "value": PLAIN}',
+    "a-pair-labelled-pin-as-json-text": '{"Name": "PIN", "Value": "ESCAPED"}',
+    "quoted-key-equals": '"cvv" = PLAIN',
+    "quoted-key-arrow": "'cvv' => PLAIN",
+    "bare-key-arrow": "securityCode => PLAIN",
+    "a-sibling-of-a-cvv-key": '{"cvv": "123", "token": PLAIN}',
+    "a-pair-whose-name-is-written-twice": '{"name": "cvv", "name": "note", "value": PLAIN}',
+    "an-object-that-does-not-parse": '{"cvv": undefined, "token": PLAIN}',
+    "a-cvv-list-beside": '{"payment": {"cvv": ["123"]}, "token": PLAIN}',
+    "a-cvv-pair-beside": '[{"name": "cvv", "value": "123"}, PLAIN]',
+    "a-cvv-key-before": '"cvv" = "123", "token" => PLAIN',
+    "a-form-field-before": "a=1&cvv=123 PLAIN",
+    "an-element-after": "PLAIN <pin>1234</pin>",
+    "a-key-longer-than-a-key-is-read": '{"' + "x" * 200 + '_cvv": "123", "token": PLAIN}',
+}
+# Keys about a CVV, not one: text naming them keeps its value.
+NOT_FLOORED = {
+    "a-flag-about-a-cvv": '{"cvv_required": true, "token": PLAIN}',
+    "a-cvv-word-in-prose": "the cvv check passed for PLAIN",
+}
+
+
+def _written(template: str) -> str:
+    return template.replace("ESCAPED", json.dumps(json.dumps(SEALED))[1:-1]).replace("PLAIN", json.dumps(SEALED))
 
 
 @pytest.mark.usefixtures("keep")
@@ -455,16 +612,35 @@ class TestText:
         text = template.format(sealed)
         assert _text(text, packs) != text
 
+    @pytest.mark.parametrize("template", FLOORED.values(), ids=FLOORED.keys())
+    def test_nothing_in_a_cvv_container_is_kept_whatever_stands_between(self, template, packs):
+        # Not only right after a CVV key: the key walk keeps nothing in any
+        # of these (review M2).
+        text = _written(template)
+        masked = _text(text, packs)
+        assert masked == _unconfigured(lambda: _text(text, packs))
+        assert SEALED["api_key"] not in masked
+
+    @pytest.mark.parametrize("template", NOT_FLOORED.values(), ids=NOT_FLOORED.keys())
+    def test_text_naming_no_cvv_key_keeps_its_value(self, template, packs):
+        assert json.dumps(SEALED) in _text(_written(template), packs)
+
     def test_an_outer_label_match_wins(self, packs):
         configure_masking_value_rules([KEEP_RULE, OUTER_RULE])
         text = "got " + json.dumps({"kind": "outer-box", "inner": SEALED})
         assert _text(text, packs) == "got [SECRET-MASKED]"
 
-    def test_an_inner_label_match_is_kept_with_the_kept_object(self, packs):
+    def test_an_inner_label_match_wins_over_the_keep_match_around_it(self, packs):
+        # 0.17.0 kept it with the kept object (review M8): the keep match is
+        # now read as one nothing matches, the inner match labelled.
         configure_masking_value_rules([KEEP_RULE, OUTER_RULE])
         sealed = {**SEALED, "inner": {"kind": "outer-box"}}
         text = f"got {json.dumps(sealed)}"
-        assert _text(text, packs) == text
+        masked = _text(text, packs)
+        assert '"inner": "[SECRET-MASKED]"' in masked
+        assert SEALED["api_key"] not in masked
+        configure_masking_value_rules([OUTER_RULE])
+        assert masked == _text(text, packs)
 
     def test_a_label_rule_listed_first_labels_it(self, packs):
         configure_masking_value_rules([LABEL_RULE, KEEP_RULE])
@@ -501,6 +677,42 @@ class TestText:
         masked = _text(text, packs)
         assert BOX not in masked
         assert "KEPT-" not in masked
+
+    def test_a_placeholder_is_named_from_the_value_it_holds(self):
+        # Not by position (review M3, M4): the same value has the same name in
+        # any text, another value another name, all of one length.
+        sealed, other = json.dumps(SEALED), json.dumps({**SEALED, "n": 1})
+        stash = patterns.stash_kept(f"a {sealed} b {other} c {sealed}", KEEP_RULES)
+        names = re.findall(r"\[KEPT-[A-Z]+-MASKED\]", stash.text)
+        assert len(names) == 3
+        assert names[0] == names[2] != names[1]
+        assert len(names[0]) == len(names[1])
+        assert stash.originals == {names[0]: sealed, names[1]: other}
+        assert patterns.stash_kept(f"x {sealed}", KEEP_RULES).text == f"x {names[0]}"
+
+    def test_two_identical_kept_values_are_both_restored(self, packs):
+        text = f"a {json.dumps(SEALED)} b {PASSWORD} c {json.dumps(SEALED)}"
+        masked = _text(text, packs)
+        assert masked.count(json.dumps(SEALED)) == 2
+        assert "s3cret-Hunter2" not in masked
+
+    def test_a_credential_hashed_around_a_kept_value_carries_that_value(self, mode, packs):
+        # The credential's token hashes the placeholder: named by position,
+        # every kept value there gave one token, where the key walk gives
+        # each its own (review M3).
+        def in_a_secret(sealed: dict) -> str:
+            return json.dumps({"secret": json.dumps({"k": sealed})})
+
+        first, second = {**SEALED, "n": 1}, {**SEALED, "n": 2}
+        masked = _text(in_a_secret(first), packs)
+        assert BOX not in masked
+        assert masked == _text(in_a_secret(first), packs)
+        if mode == "keyset":
+            assert masked != _text(in_a_secret(second), packs)
+
+    def test_a_value_holding_a_lone_surrogate_is_kept_and_nothing_raises(self, packs):
+        text = "got " + json.dumps({**SEALED, "note": "\ud800"}, ensure_ascii=False)
+        assert _text(text, packs) == text
 
 
 @pytest.mark.usefixtures("keep")
@@ -648,6 +860,60 @@ class TestBodies:
     def test_nothing_under_a_cvv_key_is_kept(self):
         assert SEALED["api_key"] not in redact_body(KPAY.format(json.dumps({"cvv": SEALED})))
         assert BOX not in redact_body(f"<cvv>{json.dumps(SEALED)}</cvv>")
+
+    @pytest.mark.parametrize("template", FLOORED.values(), ids=FLOORED.keys())
+    def test_nothing_in_a_cvv_container_is_kept_whatever_stands_between(self, template):
+        body = _written(template)
+        assert patterns.kept_spans(body, KEEP_RULES) == []
+        assert redact_body(body) == _unconfigured(lambda: redact_body(body))
+
+    @pytest.mark.parametrize("template", NOT_FLOORED.values(), ids=NOT_FLOORED.keys())
+    def test_text_naming_no_cvv_key_keeps_its_value(self, template):
+        assert json.dumps(SEALED) in redact_body(_written(template))
+
+    def test_an_element_naming_a_placeholder_gets_no_copy_of_a_kept_value(self):
+        # Its entity-encoded text decodes to a placeholder's name, which the
+        # outer restore filled with the kept value beside it (review M4).
+        forged = "&#123;&quot;password&quot;:&quot;pw&quot;,&quot;n&quot;:&quot;&#91;KEPT-A-MASKED&#93;&quot;&#125;"
+        masked = redact_body(f"<r><x>{forged}</x><udf9>{json.dumps(SEALED)}</udf9></r>")
+        element = json.loads(html.unescape(masked.split("<x>")[1].split("</x>")[0]))
+        assert element["n"] == "[KEPT-A-MASKED]"
+        assert element["password"] != "pw"
+        assert f"<udf9>{json.dumps(SEALED)}</udf9>" in masked
+
+    def test_two_identical_entity_encoded_elements_are_both_restored(self):
+        encoded = json.dumps(SEALED).replace('"', "&quot;")
+        masked = redact_body(f"<r><udf8>{encoded}</udf8><password>S3cretPassw0rd</password><udf9>{encoded}</udf9></r>")
+        assert f"<udf8>{encoded}</udf8>" in masked
+        assert f"<udf9>{encoded}</udf9>" in masked
+        assert "S3cretPassw0rd" not in masked
+
+    def test_a_label_rule_that_raises_inside_a_keep_match_refuses_it_and_raises_nothing(self, packs):
+        # Asked about a keep match's members (review M5): its error refuses
+        # the keep, and the value is masked as with the label rule alone.
+        def raises_on_members(value):
+            if value.get("kind") == "inner-box":
+                raise RuntimeError("rule failed")
+            return False
+
+        label_rule = ValueRule("sad", raises_on_members, hints=("sealed-box",))
+        sealed = {**SEALED, "inner": {"kind": "inner-box"}}
+        compact = json.dumps(sealed, separators=(",", ":"))
+
+        def every_path():
+            return (
+                _text(f"got {json.dumps(sealed)} back", packs),
+                redact_body(json.dumps(sealed)),
+                redact_body(KPAY.format(json.dumps(sealed).replace('"', "&quot;"))),
+                redact_url(f"https://pg.example/pay?card_number={compact}&password=s3cret"),
+                mask_outside_kept(f"got {json.dumps(sealed)} back", str.upper),
+            )
+
+        configure_masking_value_rules([KEEP_RULE, label_rule])
+        masked = every_path()
+        configure_masking_value_rules([label_rule])
+        assert masked == every_path()
+        assert SEALED["api_key"] not in masked[0]
 
     def test_redact_url_never_raises_with_a_keep_rule_that_raises(self):
         def broken(_value):

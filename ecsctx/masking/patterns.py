@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import hashlib
 import html
 import json
 import re
@@ -59,8 +60,8 @@ from ecsctx.masking.value_rules import (
     _first_match,
     applicable,
     hinted,
-    holds_card_data,
     json_as_written,
+    keep_refused,
     keep_rules,
     label_rules,
     ruling,
@@ -808,6 +809,42 @@ def pan_shaped(text: str) -> bool:
 _DIGIT_RUN = re.compile(rf"\+?\d(?:{_CARD_SEP}?\d)*")
 
 
+# ASCII text with each digit marked 0 and each separator the card rule reads
+# 2: text with neither twelve 0s in a row nor a 2 -- base64 and hex, a
+# wallet's ciphertext -- holds no run, found in one bytes translate where the
+# regex costs thirty times as much.
+_DIGIT_MARKS = bytes(
+    0 if chr(code) in "0123456789" else 2 if code < 128 and re.fullmatch(_CARD_SEP, chr(code)) else code or 1
+    for code in range(256)
+)
+_RUN_MARKS = b"\0" * _MIN_PAN_DIGITS
+# A leaf that is a hex id of 24 characters or more -- a 64-hex digest, Apple
+# Pay's `transactionId`, an ObjectId -- holds no card number: read like other
+# text, about one random 64-hex id in two hundred holds a 13-19 digit run
+# that passes Luhn. Only a whole leaf, holding a hex letter: hex inside
+# base64 or prose is read, and so are digits alone, which no hex id is.
+_HEX_ID = re.compile(r"(?=[0-9]*[A-Fa-f])[0-9A-Fa-f]{24,}")
+
+
+def holds_card_run(text: str) -> bool:
+    """Whether ``text``, a text leaf of a keep match, holds a run of digits
+    long enough to be a card number, read as the pci rules read a value
+    (``holds_pan_run``: 12 digits or more, joined by single separators at
+    most -- `card 4111…`, `1234 4111…`, `4111… 123`, `4111…+cvv+123` in
+    base64, `4111…ab` in hex) -- except a leaf that is a whole hex id of 24
+    characters or more holding a hex letter (``_HEX_ID``). For the guard
+    (``value_rules.holds_card_data``), which excepts a leaf that is epoch
+    milliseconds itself. One pass, linear in the leaf: ASCII text with no
+    such run of digits and no separator is told by one bytes translate."""
+    if _HEX_ID.fullmatch(text):
+        return False
+    if text.isascii():
+        marked = text.encode("ascii").translate(_DIGIT_MARKS)
+        if _RUN_MARKS not in marked and b"\2" not in marked:
+            return False
+    return holds_pan_run(text)
+
+
 def holds_pan_run(text: str, *, phone: bool = False) -> bool:
     """Whether ``text`` holds, anywhere in it, a run of digits long enough to
     be a PAN.
@@ -1157,16 +1194,17 @@ def _mask_object(m: re.Match, rules: tuple) -> str:
     is itself in a string; bare anywhere else -- in prose, an element's text,
     a string of its own. An object no rule matches is read member by member,
     so one inside it is still found; one a keep rule matches first is left as
-    written and not looked into, unless the guard refuses it or it is
-    written otherwise than it parses: then it is read as one nothing matches.
-    Only the rules whose hints the object's text holds are asked."""
+    written and not looked into, unless it is refused (``keep_refused``: the
+    guard, or a label rule matching inside it) or written otherwise than it
+    parses: then it is read as one nothing matches. Only the rules whose
+    hints the object's text holds are asked."""
     written = m.group(0)
     asked = applicable(written, rules)
     if not asked:
         return written  # nothing in it can match: every match holds a hint
     value = _object_value(m)
     found = _first_match(value, asked)
-    if found is not None and found[1] and (holds_card_data(value) or not _written_as_parsed(m)):
+    if found is not None and found[1] and (keep_refused(value, asked) or not _written_as_parsed(m)):
         found = None
     if found is None:
         inner = mask_objects(written[1:-1], rules)
@@ -1204,29 +1242,116 @@ def mask_objects(text: str, rules: tuple) -> str:
 # or in such a container (filters): a CVV and the rest of Sensitive
 # Authentication Data.
 _FLOOR_TYPES = frozenset({"cvv", "sad"})
-# The key right before an object in text, as the floor reads it: a quoted key
-# and its colon (JSON, a repr, JSON in a JSON string, its quotes escaped), a
-# key and `=` or `:`, or an XML start tag -- then any space and the opening
-# quote of a string the object is the JSON text of.
-_KEY_BEFORE = re.compile(
-    r"(?:(?P<quote>\\?[\"'])(?P<quoted>[^\"'\\]{1,128})(?P=quote)\s*:"
-    r"|(?<![\w.-])(?P<bare>[\w.-]{1,128})\s*[:=]"
-    r"|<(?:[A-Za-z_][\w.-]*:)?(?P<tag>[A-Za-z_][\w.-]*)(?:\s[^<>]*)?(?<!/)>)"
-    r"\s*(?:\\?[\"'])?\s*\Z"
-)
-# How far back the key is looked for.
-_KEY_REACH = 192
+# A key in text, as the floor reads it, is found from the `:`, `=` or `=>`
+# after it and read back from there (``_key_names``): a quoted key (JSON, a
+# repr, JSON in a JSON string, its quotes escaped), or a bare one -- after a
+# `=`, only where a key starts, never inside a quoted string, where base64's
+# `=` padding follows a word (`"…/cvvXYZ=="`). A find per separator, not a
+# regex tried at every character: this reads a 7 KB wallet body in
+# microseconds.
+_NAME_LIMIT = 128
+_QUOTES = "\"'"
+# What a key assigned with `=` follows, besides whitespace and the text's start.
+_KEY_STARTS = frozenset("&?,({[")
+# The name characters a bare key ends with, matched on the text before its
+# separator reversed: matched forward, from every position, a long word cost
+# its length squared.
+_NAME_RUN = re.compile(r"[\w.-]*")
+_TAG_NAME = re.compile(r"</?(?:[A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*)(?=[\s/>])")
 
 
-def _floored_before(text: str, start: int) -> bool:
-    """Whether the object at ``start`` sits right after a CVV or SAD key --
-    `"cvv": {…}`, `cvv={…}`, `<cvv>{…}</cvv>`, `"pin": "{…}"`: nothing under
-    one is kept, however deep. Every pack on, as the key walk reads a key."""
-    found = _KEY_BEFORE.search(text, max(0, start - _KEY_REACH), start)
-    if found is None:
-        return False
-    name = found.group("quoted") or found.group("bare") or found.group("tag")
-    return classify_key(name, ALL_PACKS) in _FLOOR_TYPES
+def _key_at(text: str, at: int, assigned: bool) -> str | None:
+    """The key written before the separator at ``at``: quoted, or a bare name
+    starting with a letter or `_` (where a key starts, for a bare ``=``)."""
+    end = at
+    while end > 0 and text[end - 1].isspace():
+        end -= 1
+    if end and text[end - 1] in _QUOTES:
+        close = end - 1
+        while close > 0 and text[close - 1] == "\\":
+            close -= 1
+        opening = text.rfind(text[end - 1], max(0, close - _NAME_LIMIT - 1), close)
+        if opening != -1 and not any(quote in text[opening + 1 : close] for quote in "\"'\\"):
+            return text[opening + 1 : close] or None
+        end = close
+    length = _NAME_RUN.match(text[max(0, end - _NAME_LIMIT - 1) : end][::-1]).end()
+    if length > _NAME_LIMIT:
+        # Longer than a key is read: its end, which names what it holds --
+        # never after a bare `=`, as base64 padding follows a long word.
+        return None if assigned else text[end - _NAME_LIMIT : end]
+    start = end - length
+    name = text[start:end]
+    if not name or not (name[0].isalpha() or name[0] == "_"):
+        return None
+    if assigned and start and not (text[start - 1].isspace() or text[start - 1] in _KEY_STARTS):
+        return None
+    return name
+
+
+def _quoted_after(text: str, at: int) -> str | None:
+    """The quoted text right after ``at`` (whitespace and escapes skipped),
+    as a `{name, value}` pair writes its label: None for anything else."""
+    while at < len(text) and (text[at].isspace() or text[at] == "\\"):
+        at += 1
+    if at >= len(text) or text[at] not in _QUOTES:
+        return None
+    closing = text.find(text[at], at + 1, at + 2 + _NAME_LIMIT)
+    label = text[at + 1 : closing].rstrip("\\") if closing != -1 else ""
+    return label if label and not any(quote in label for quote in "\"'\\") else None
+
+
+def _key_names(text: str) -> Iterator[tuple[str, int]]:
+    """Each key ``text`` writes, and where what follows its separator starts."""
+    for separator in ":=":
+        at = text.find(separator)
+        while at != -1:
+            arrow = separator == "=" and text.startswith(">", at + 1)
+            if (name := _key_at(text, at, separator == "=" and not arrow)) is not None:
+                yield name, at + 1 + arrow
+            at = text.find(separator, at + 1)
+
+
+@lru_cache(maxsize=1)
+def _pair_identifiers() -> frozenset[str]:
+    """The identifier keys the key walk reads a `{name, value}` pair by.
+    Imported here: filters imports this module as it loads."""
+    from ecsctx.masking.filters import _PAIR_IDENTIFIERS
+
+    return frozenset(_PAIR_IDENTIFIERS)
+
+
+def _safe_keys_in_force() -> frozenset[str]:
+    """The service's safe keys (``ECSCTX_MASK_SAFE_KEYS``), as the key walk
+    reads them. Imported here: config imports this module as it loads."""
+    from ecsctx.masking.config import get_masking_safe_keys
+
+    return get_masking_safe_keys()
+
+
+def floored_text(text: str) -> bool:
+    """Whether ``text`` names, anywhere, a CVV or SAD key, an XML tag named
+    so, or a `{name, value}` pair labelled so -- an identifier key and the
+    quoted label after it -- read as the key walk reads a key (every pack
+    on, the service's safe keys honoured), in the text as written and,
+    where it holds an entity, as it decodes. Text that does keeps nothing: a
+    container's reach cannot be told from text the rules read three levels
+    deep, so the whole text fails closed."""
+    safe = _safe_keys_in_force()
+    identifiers = _pair_identifiers()
+    for written in (text, html.unescape(text)) if "&" in text else (text,):
+        for name, after in _key_names(written):
+            if classify_key(name, ALL_PACKS, safe) in _FLOOR_TYPES:
+                return True
+            if (
+                name.lower() in identifiers
+                and (label := _quoted_after(written, after)) is not None
+                # Uncached, as the key walk classifies a pair's label: free text.
+                and classify_key.__wrapped__(label, ALL_PACKS, safe) in _FLOOR_TYPES
+            ):
+                return True
+        if any(classify_key(m.group(1), ALL_PACKS, safe) in _FLOOR_TYPES for m in _TAG_NAME.finditer(written)):
+            return True
+    return False
 
 
 def _written_as_parsed(m: re.Match) -> bool:
@@ -1289,19 +1414,21 @@ def _object_ruling(m: re.Match, rules: tuple) -> Any:
 def kept_spans(text: str, rules: tuple) -> list[tuple[int, int]]:
     """Where ``text`` writes a value a keep rule among ``rules`` matches first
     and may keep: each JSON object (rule 2's reading), top down. An object a
-    label rule matches first is no span and is not looked into, nor is one
-    right after a CVV or SAD key; one nothing matches is read member by
-    member; a keep match the guard refuses (``holds_card_data``) is read as
-    one nothing matches. In order, none inside another."""
+    label rule matches first is no span and is not looked into; one nothing
+    matches is read member by member; a keep match refused (``keep_refused``:
+    the guard, or a label rule matching inside it) is read as one nothing
+    matches. In order, none inside another. None at all in text that names a
+    CVV or SAD key, element or pair label anywhere (``floored_text``, read
+    only once a span is found)."""
     spans: list[tuple[int, int]] = []
     _find_kept(text, 0, len(text), rules, spans)
-    return spans
+    return [] if spans and floored_text(text) else spans
 
 
 def _find_kept(text: str, start: int, end: int, rules: tuple, spans: list[tuple[int, int]]) -> None:
     for m in _OBJECT_RULE.pattern.finditer(text, start, end):
         asked = applicable(m.group(0), rules)
-        if not asked or _floored_before(text, m.start()):
+        if not asked:
             continue
         found = _object_ruling(m, asked)
         if found is KEEP:
@@ -1314,16 +1441,24 @@ def _find_kept(text: str, start: int, end: int, rules: tuple, spans: list[tuple[
 # which every rule leaves as it is, with no digit in it for a rule to read.
 _KEPT_HEAD = "[KEPT-"
 _KEPT_PLACEHOLDER = re.compile(r"\[KEPT-[A-Z]+-MASKED\]")
+# A placeholder's letters: its value's 8-byte digest in base 26, always this
+# many (26**14 > 2**64), so no two names differ by length alone.
+_NAME_LETTERS = 14
 
 
-def _letters(index: int) -> str:
-    """0 is A, 25 is Z, 26 is AA: a placeholder's own, digit-free name."""
-    letters = ""
-    index += 1
-    while index:
-        index, rest = divmod(index - 1, 26)
-        letters = chr(ord("A") + rest) + letters
-    return letters
+def _placeholder(value: str) -> str:
+    """The placeholder standing for ``value``, named from a digest of it, not
+    by position: the same value has the same name in any text, so a
+    credential hashed with one around it carries that value in its token, as
+    under a key; and only who has the value can write its name, so a name
+    written into the text (an element's entity-encoded text decodes to one)
+    restores nothing. Digit-free; never raises (a lone surrogate passes)."""
+    digest = hashlib.blake2b(value.encode("utf-8", "surrogatepass"), digest_size=8).digest()
+    number, letters = int.from_bytes(digest, "big"), []
+    for _ in range(_NAME_LETTERS):
+        number, rest = divmod(number, 26)
+        letters.append(chr(ord("A") + rest))
+    return f"{_KEPT_HEAD}{''.join(letters)}-MASKED]"
 
 
 class KeptStash(NamedTuple):
@@ -1334,11 +1469,14 @@ class KeptStash(NamedTuple):
     originals: dict[str, str]
 
     def hold(self, value: str) -> str:
-        """A new placeholder standing for ``value``, for the caller to put
+        """The placeholder standing for ``value``, for the caller to put
         where it stood: ``contrib.net.redact_body`` sets aside an element's
-        entity-encoded text that holds a kept value."""
-        placeholder = f"{_KEPT_HEAD}{_letters(len(self.originals))}-MASKED]"
-        self.originals[placeholder] = value
+        entity-encoded text that holds a kept value. ``value`` itself where
+        its name already stands for another value: the rules then read it,
+        and may mask what is in it."""
+        placeholder = _placeholder(value)
+        if self.originals.setdefault(placeholder, value) != value:
+            return value
         return placeholder
 
     def restore(self, masked: str) -> str:
@@ -1352,11 +1490,12 @@ class KeptStash(NamedTuple):
 
 def stash_kept(text: str, rules: tuple | None = None) -> KeptStash | None:
     """``text`` with each value a keep rule ships set aside as a placeholder
-    (``[KEPT-A-MASKED]``), for the rules to read around it -- or None when
-    there is none: no keep rule among ``rules`` (the rules in force when
-    None), none whose hints the text holds, no span (``kept_spans``), or text
-    that already holds a placeholder's head, which is masked as before.
-    Never raises."""
+    named from it (``[KEPT-<letters>-MASKED]``; the same value twice, one
+    name), for the rules to read around it -- or None when there is none: no
+    keep rule among ``rules`` (the rules in force when None), none whose
+    hints the text holds, no span (``kept_spans``), text that already holds a
+    placeholder's head, or two values whose names collide; such text is
+    masked as before. Never raises."""
     if "{" not in text:
         return None
     if rules is None:
@@ -1369,9 +1508,11 @@ def stash_kept(text: str, rules: tuple | None = None) -> KeptStash | None:
     parts: list[str] = []
     originals: dict[str, str] = {}
     copied = 0
-    for index, (start, end) in enumerate(spans):
-        placeholder = f"{_KEPT_HEAD}{_letters(index)}-MASKED]"
-        originals[placeholder] = text[start:end]
+    for start, end in spans:
+        value = text[start:end]
+        placeholder = _placeholder(value)
+        if originals.setdefault(placeholder, value) != value:
+            return None
         parts += [text[copied:start], placeholder]
         copied = end
     parts.append(text[copied:])

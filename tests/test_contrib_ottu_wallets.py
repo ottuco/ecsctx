@@ -18,8 +18,10 @@ wallet token. Every test runs with a keyset and without one, in the default
 pack and with every pack.
 """
 
+import html
 import json
 import logging
+import time
 
 import pytest
 
@@ -33,11 +35,16 @@ from ecsctx.contrib.ottu.masking import (
     WALLET_RULES,
     WALLET_SAD_RULES,
 )
-from ecsctx.masking import is_kept, patterns
-from ecsctx.masking.config import configure_masking_packs, configure_masking_value_rules
+from ecsctx.contrib.ottu.masking import SAFE_KEYS as OTTU_SAFE_KEYS
+from ecsctx.masking import is_kept, mask_outside_kept, patterns
+from ecsctx.masking.config import (
+    configure_masking_packs,
+    configure_masking_safe_keys,
+    configure_masking_value_rules,
+)
 from ecsctx.masking.filters import MaskPIIFilter
 from ecsctx.masking.patterns import ALL_PACKS, mask_by_patterns, rules_for
-from ecsctx.masking.value_rules import is_keep_rule
+from ecsctx.masking.value_rules import KeepRule, is_keep_rule
 from ecsctx.pii import configure_pii
 from ecsctx.processors import mask_sensitive_data
 
@@ -73,7 +80,11 @@ GOOGLE_PAY = {
     "protocolVersion": "ECv2",
     "signedMessage": json.dumps({"encryptedMessage": "ZW5j", "ephemeralPublicKey": "ZXBr", "tag": "dGFn"}),
 }
-GOOGLE_PAY_V1 = {"signature": "MEQCIA==", "protocolVersion": "ECv1", "signedMessage": '{"encryptedMessage":"ZW5j"}'}
+GOOGLE_PAY_V1 = {
+    "signature": "MEQCIA==",
+    "protocolVersion": "ECv1",
+    "signedMessage": '{"encryptedMessage":"ZW5j","ephemeralPublicKey":"ZXBr","tag":"dGFn"}',
+}
 NOT_A_WALLET = {"amount": "10.000", "currency": "KWD"}
 TOKENS = [APPLE_PAY, APPLE_PAY_RSA, PK_PAYMENT_TOKEN, GOOGLE_PAY, GOOGLE_PAY_V1]
 TOKEN_IDS = ["apple-pay", "apple-pay-rsa", "pk-payment-token", "google-pay", "google-pay-v1"]
@@ -125,6 +136,72 @@ NESTED_DUP = {
     "signedMessage": '{"encryptedMessage": {"cvv": "123", "number": "4111111111111111"}, "encryptedMessage": "ZW5j"}',
 }
 REPR_COMMENT = "{'version': 'EC_v1', 'data': 'Zm9v', 'header': {'transactionId': 'abc' # 4111111111111111 cvv=123\n}}"
+# Text a wallet never writes in an opaque slot (review N3, Redmine R3): the
+# guard reads keys, pairs and whole leaves, so this rode in a kept token.
+NOT_TOKEN_TEXT = {
+    "apple-data-cvv": {**APPLE_PAY, "data": "cvv=123"},
+    "apple-signature-card-number": {**APPLE_PAY, "signature": "4111 1111 1111 1111"},
+    "google-signed-message-extra-key": {
+        **GOOGLE_PAY,
+        "signedMessage": json.dumps({**json.loads(GOOGLE_PAY["signedMessage"]), "note": "cvv=123"}),
+    },
+    "google-signature-cvv": {**GOOGLE_PAY, "signature": "cvv=123"},
+    "google-v1-encrypted-message-cvv": {
+        **GOOGLE_PAY_V1,
+        "signedMessage": '{"encryptedMessage":"cvv=123","ephemeralPublicKey":"ZXBr","tag":"dGFn"}',
+    },
+    # Text in a slot's own alphabet holding a card number (review I2).
+    "apple-data-pan-and-cvv-in-base64": {**APPLE_PAY, "data": "4111111111111111+cvv+123"},
+    "apple-transaction-id-pan-in-hex": {
+        **APPLE_PAY,
+        "header": {**APPLE_PAY["header"], "transactionId": "4111111111111111ab"},
+    },
+    # A hex id inside base64 is base64's text, read (review r2, 1 and 4);
+    # digits beside a card number are read as the pci rules read them (3).
+    "apple-data-hex-id-holding-a-pan": {**APPLE_PAY, "data": "AA/4111111111111111deadbeef/AA"},
+    "apple-data-epoch-run": {**APPLE_PAY, "data": "QUJD1790318444473QUJD"},
+    "apple-transaction-id-twenty-digits": {
+        **APPLE_PAY,
+        "header": {**APPLE_PAY["header"], "transactionId": "41111111111111110000"},
+    },
+    # A base64 slot is no hex id: hex alone there is not base64 a wallet
+    # writes, and a card number would ride in it as a hex id (review r3, 1).
+    "apple-data-all-hex": {**APPLE_PAY, "data": "4111111111111111abcd1234"},
+    "apple-key-hash-all-hex": {
+        **APPLE_PAY,
+        "header": {**APPLE_PAY["header"], "publicKeyHash": "4111111111111111123a0000"},
+    },
+}
+# What the device says about the card: the network's name and the last four.
+NOT_A_DISPLAY_NAME = {
+    "a-card-number": "Visa 4111111111111111",
+    "a-cvv": "cvv 123",
+    "a-cvv-after-the-last-four": "Visa 1234 cvv 123",
+    "five-digits": "Visa 12345",
+    "the-last-four-first": "1234 Visa",
+    "too-long": "V" * 41,
+    "too-long-before-the-last-four": "V" * 41 + " 1234",
+    # Letters, spaces, `.`, `&` and `-` only, from a letter (review r2, 6).
+    "an-email": "jane.roe@example.com",
+    "a-digit-in-the-name": "Visa2 1234",
+    "a-space-first": " Visa 1234",
+    # A name that reads as a CVV or other SAD: a CID is four digits (review r3, 3).
+    "a-cvv-name": "CVV 1234",
+    "a-security-code-name": "Security Code 1234",
+    "a-pin-name": "PIN 1234",
+}
+# A network or a type is words alone, or nothing (bot review on #72, 1).
+NOT_A_NETWORK = {
+    "a-cvv-setting": "cvv=123",
+    "a-cvv": "CVV 123",
+    "a-cvv-name": "cvv",
+    "a-security-code-name": "Security Code",
+    "an-email": "john@example.com",
+    "the-last-four": "Visa 1234",
+    "a-digit": "1",
+    "a-space-first": " Visa",
+    "too-long": "V" * 41,
+}
 
 PACKS = [["default"], sorted(ALL_PACKS)]
 
@@ -220,6 +297,67 @@ class TestTheRules:
             {**GOOGLE_PAY, "intermediateSigningKey": {"signedKey": {"keyValue": "a2V5"}, "signatures": ["c2ln"]}},
             {**GOOGLE_PAY, "intermediateSigningKey": {"signedKey": "{}", "signatures": "c2ln"}},
             {**GOOGLE_PAY, "intermediateSigningKey": {"signedKey": "{}", "signatures": [{"x": "c2ln"}]}},
+            # Every leaf is text in its alphabet (review N3): base64 for keys,
+            # signatures and ciphertext, hex for ids, digits for a time.
+            *NOT_TOKEN_TEXT.values(),
+            {**APPLE_PAY, "data": ""},
+            {**APPLE_PAY, "data": "ZGF0YQ==\n"},
+            {**APPLE_PAY, "signature": "c2ln-_"},
+            {**APPLE_PAY, "header": {**APPLE_PAY["header"], "ephemeralPublicKey": "cvv=123"}},
+            {**APPLE_PAY, "header": {**APPLE_PAY["header"], "publicKeyHash": ""}},
+            {**APPLE_PAY_RSA, "header": {**APPLE_PAY_RSA["header"], "wrappedKey": "pin 1234"}},
+            {**APPLE_PAY, "header": {**APPLE_PAY["header"], "transactionId": "cvv-123"}},
+            {**APPLE_PAY, "header": {**APPLE_PAY["header"], "applicationData": "ZW5j="}},
+            {**PK_PAYMENT_TOKEN, "transactionIdentifier": "cvv 123"},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {**PK_PAYMENT_TOKEN["paymentMethod"], "displayName": "V" * 65}},
+            {**GOOGLE_PAY, "signedMessage": "cvv=123"},
+            {**GOOGLE_PAY, "signedMessage": json.dumps(["ZW5j"])},
+            {**GOOGLE_PAY, "signedMessage": '{"tag": "dGFn", "tag": "cvv=123"}'},
+            {**GOOGLE_PAY, "signedMessage": json.dumps({"encryptedMessage": {"cvv": "123"}})},
+            {**GOOGLE_PAY, "intermediateSigningKey": {**GOOGLE_PAY["intermediateSigningKey"], "signatures": ["cvv=1"]}},
+            {
+                **GOOGLE_PAY,
+                "intermediateSigningKey": {
+                    **GOOGLE_PAY["intermediateSigningKey"],
+                    "signedKey": json.dumps({"keyValue": "a2V5", "keyExpiration": "1700000000000", "cvv": "123"}),
+                },
+            },
+            {
+                **GOOGLE_PAY,
+                "intermediateSigningKey": {
+                    **GOOGLE_PAY["intermediateSigningKey"],
+                    "signedKey": json.dumps({"keyValue": "pin=1234", "keyExpiration": "1700000000000"}),
+                },
+            },
+            {
+                **GOOGLE_PAY,
+                "intermediateSigningKey": {
+                    **GOOGLE_PAY["intermediateSigningKey"],
+                    "signedKey": json.dumps({"keyValue": "a2V5", "keyExpiration": "17000000000-0"}),
+                },
+            },
+            {**GOOGLE_PAY, "intermediateSigningKey": {**GOOGLE_PAY["intermediateSigningKey"], "signedKey": "a2V5"}},
+            # Each signed object holds every field it is documented to hold
+            # (review M7).
+            {**GOOGLE_PAY, "signedMessage": "{}"},
+            {**GOOGLE_PAY, "signedMessage": json.dumps({"encryptedMessage": "ZW5j", "ephemeralPublicKey": "ZXBr"})},
+            {**GOOGLE_PAY, "signedMessage": json.dumps({"encryptedMessage": "ZW5j", "tag": "dGFn"})},
+            {**GOOGLE_PAY, "signedMessage": json.dumps({"ephemeralPublicKey": "ZXBr", "tag": "dGFn"})},
+            {**GOOGLE_PAY, "intermediateSigningKey": {**GOOGLE_PAY["intermediateSigningKey"], "signedKey": "{}"}},
+            {
+                **GOOGLE_PAY,
+                "intermediateSigningKey": {
+                    **GOOGLE_PAY["intermediateSigningKey"],
+                    "signedKey": json.dumps({"keyValue": "a2V5"}),
+                },
+            },
+            {
+                **GOOGLE_PAY,
+                "intermediateSigningKey": {
+                    **GOOGLE_PAY["intermediateSigningKey"],
+                    "signedKey": json.dumps({"keyExpiration": "1700000000000"}),
+                },
+            },
         ],
         ids=[
             "apple-extra-key", "apple-version", "apple-data-not-text", "apple-header-extra-key",
@@ -229,11 +367,97 @@ class TestTheRules:
             "apple-signature-pair", "apple-signature-list", "pk-display-name-pair", "pk-network-list",
             "pk-transaction-identifier-number", "google-signed-message-pair", "google-signed-message-mapping",
             "google-signature-number", "google-signed-key-mapping", "google-signatures-text",
-            "google-signatures-mappings",
+            "google-signatures-mappings", *NOT_TOKEN_TEXT, "apple-data-empty", "apple-data-line-break",
+            "apple-signature-base64url", "apple-ephemeral-key-cvv", "apple-public-key-hash-empty",
+            "apple-wrapped-key-pin", "apple-transaction-id-not-hex", "apple-application-data-not-hex",
+            "pk-transaction-identifier-not-hex", "pk-display-name-too-long", "google-signed-message-not-json",
+            "google-signed-message-a-list", "google-signed-message-duplicate-key",
+            "google-signed-message-a-mapping-inside", "google-signatures-cvv", "google-signed-key-extra-key",
+            "google-key-value-pin", "google-key-expiration-not-digits", "google-signed-key-not-json",
+            "google-signed-message-empty", "google-signed-message-no-tag", "google-signed-message-no-ephemeral-key",
+            "google-signed-message-no-encrypted-message", "google-signed-key-empty", "google-signed-key-no-expiration",
+            "google-signed-key-no-key-value",
         ],
     )
     def test_the_matchers_are_strict(self, value):
         assert not is_kept(value)
+
+    @pytest.mark.parametrize("path", ["key-walk", "text", "body"])
+    def test_a_crafted_400_kb_token_is_read_in_linear_time(self, path, packs):
+        # Hex ids inside a base64 slot, each holding a Luhn-valid run: 400 KB
+        # of them cost 6.5 s while a run inside a hex token was skipped by
+        # rescanning the tokens for each run (review r2, 1).
+        token = {**APPLE_PAY, "data": "AA" + "/4111111111111111deadbeef" * 16_000}
+        assert len(token["data"]) > 400_000
+        started = time.perf_counter()
+        assert not is_kept(token)
+        if path == "key-walk":
+            assert patterns.kept_spans(json.dumps({"x": token}), WALLET_RULES) == []
+        elif path == "text":
+            assert patterns.kept_spans(f"token {json.dumps(token)} end", WALLET_RULES) == []
+        else:
+            assert patterns.kept_spans(KPAY_BODY.format(json.dumps(token)), WALLET_RULES) == []
+        assert time.perf_counter() - started < 1.0
+
+    @pytest.mark.parametrize("name", NOT_A_DISPLAY_NAME.values(), ids=NOT_A_DISPLAY_NAME.keys())
+    def test_a_display_name_is_a_network_and_the_last_four(self, name):
+        token = {**PK_PAYMENT_TOKEN, "paymentMethod": {**PK_PAYMENT_TOKEN["paymentMethod"], "displayName": name}}
+        assert not is_kept(token)
+        assert not is_kept(json.dumps(token))
+        # Its payment data is still kept, on its own.
+        assert _walk({"token": token})["token"]["paymentData"] == APPLE_PAY
+
+    @pytest.mark.parametrize("field", ["network", "type"])
+    @pytest.mark.parametrize("text", NOT_A_NETWORK.values(), ids=NOT_A_NETWORK.keys())
+    def test_a_network_and_a_type_are_words(self, field, text):
+        token = {**PK_PAYMENT_TOKEN, "paymentMethod": {**PK_PAYMENT_TOKEN["paymentMethod"], field: text}}
+        assert not is_kept(token)
+        assert not is_kept(json.dumps(token))
+        assert _walk({"token": token})["token"]["paymentData"] == APPLE_PAY
+
+    @pytest.mark.parametrize("token", NOT_TOKEN_TEXT.values(), ids=NOT_TOKEN_TEXT.keys())
+    def test_a_token_with_text_no_wallet_writes_is_masked_as_without_the_rules(self, token, packs):
+        def every_path():
+            return (
+                _walk({"payload": token}),
+                _walk({"paymentToken": json.dumps(token)}),
+                _text(f"token {json.dumps(token)} end", packs),
+                _message("token %s", json.dumps(token)),
+                redact_body(json.dumps({"token": token, "amt": "1"})),
+                redact_body(KPAY_BODY.format(json.dumps(token))),
+            )
+
+        assert every_path() == _unconfigured(every_path)
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            {**APPLE_PAY, "header": {**APPLE_PAY["header"], "applicationData": "0a1B" * 16}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "MasterCard 0492", "network": "MasterCard"}},
+            {**GOOGLE_PAY, "signature": "MEQCIGZh+2Utc2/n"},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "Amex", "network": "AmEx", "type": "credit"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "Apple Pay", "network": "Visa", "type": "debit"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "V" * 35 + " 1234"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "V" * 40 + " 1234"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"displayName": "American Express 1234", "network": "AmEx"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"network": "CartesBancaires", "type": "prepaid"}},
+            {**PK_PAYMENT_TOKEN, "paymentMethod": {"network": "girocard", "type": ""}},
+            # A 64-hex id holding a Luhn-valid run of digits, as about one in
+            # two hundred does: an id, not a card number (fix round 2).
+            {**APPLE_PAY, "header": {**APPLE_PAY["header"], "transactionId": "a" * 10 + "4111111111111111" + "b" * 38}},
+            {**PK_PAYMENT_TOKEN, "transactionIdentifier": "A" * 10 + "4111111111111111" + "B" * 38},
+        ],
+        ids=[
+            "apple-application-data", "pk-display-name", "google-signature-plus-and-slash", "pk-display-name-amex",
+            "pk-display-name-connects-fixture", "pk-display-name-forty-characters",
+            "pk-display-name-forty-letters-and-the-last-four", "pk-display-name-in-words",
+            "pk-network-and-type", "pk-network-and-no-type",
+            "apple-transaction-id-with-a-luhn-run", "pk-transaction-identifier-with-a-luhn-run",
+        ],
+    )
+    def test_a_documented_token_is_still_kept(self, token):
+        assert is_kept(token)
+        assert is_kept(json.dumps(token))
 
 
 class TestWalletTokensShipAsSent:
@@ -311,6 +535,15 @@ class TestWalletTokensShipAsSent:
         assert masked["paymentToken"] == plain
         assert masked["signature"] != "outer-signature"
 
+    def test_a_label_rule_inside_a_keep_match_wins(self, packs):
+        # A keep rule matching the outer mapping first shipped the token a
+        # label rule names inside it unlabelled (review M8).
+        configure_masking_value_rules([APPLE_PAY_RULE, KeepRule(lambda value: True)])
+        event = {"outer": {"inner": APPLE_PAY}}
+        assert _walk({"payload": event}) == {"payload": {"outer": {"inner": SAD}}}
+        assert _text(f"got {json.dumps(event)}", packs) == f'got {{"outer": {{"inner": "{SAD}"}}}}'
+        assert redact_body(json.dumps(event)) == f'{{"outer": {{"inner": "{SAD}"}}}}'
+
     def test_a_cvv_beside_it_is_still_masked(self):
         masked = _walk({"payload": {"paymentData": APPLE_PAY, "cvv": "123"}})
         assert masked == {"payload": {"paymentData": APPLE_PAY, "cvv": "[CVV-MASKED]"}}
@@ -372,6 +605,103 @@ class TestWalletTokensShipAsSent:
         assert before != {"token": saved}
         assert _walk({"token": saved}) == before
         assert "4111111111111111" not in json.dumps(before)
+
+
+# A CVV or SAD container in text around a token, or beside it (review I1):
+# the key walk keeps nothing in any of them, and text that names a CVV or SAD
+# key, element or pair label anywhere keeps nothing.
+FLOORED = {
+    "a-list-between": '{"cvv": [ TOKEN ]}',
+    "a-pair-labelled-cvv": '{"name": "cvv", "value": TOKEN}',
+    "a-pair-in-a-list": '[{"name":"cvv","value": TOKEN}]',
+    "a-pair-labelled-in-words": '{"name": "card security code", "value": TOKEN}',
+    "a-pair-labelled-pin-as-json-text": '{"Name": "PIN", "Value": "ESCAPED"}',
+    "quoted-key-equals": '"cvv" = TOKEN',
+    "quoted-key-arrow": "'cvv' => TOKEN",
+    "bare-key-arrow": "securityCode => TOKEN",
+    "deeper-than-the-text-rules-read": '{"securityCode": {"x": {"y": [TOKEN]}}}',
+    "a-sibling-of-a-cvv-key": '{"cvv": "123", "token": TOKEN}',
+    "an-element-elsewhere": "<pin>1234</pin> TOKEN",
+    "a-key-written-after-it": 'TOKEN and then "cryptogram": "AAAB"',
+}
+FLOOR_TOKENS = {"pk-payment-token": PK_PAYMENT_TOKEN, "apple-pay": APPLE_PAY, "google-pay": GOOGLE_PAY}
+
+
+def _floored(template: str, token: dict) -> str:
+    escaped = json.dumps(json.dumps(token))[1:-1]
+    return template.replace("ESCAPED", escaped).replace("TOKEN", json.dumps(token))
+
+
+def _connect_apple_pay_request() -> dict:
+    """What Connect's SDK sends to pay with Apple Pay."""
+    return {
+        "payment_method": "apple_pay",
+        "code": "apple-pay-kwd",
+        "amount": "100.000",
+        "currency_code": "KWD",
+        "session_id": "b1e2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+        "cvv_required": False,
+        "apple_pay_payload": {"token": {"token": PK_PAYMENT_TOKEN}},
+    }
+
+
+class TestTheFloorInText:
+    @pytest.fixture(params=FLOOR_TOKENS.values(), ids=FLOOR_TOKENS.keys())
+    def token(self, request):
+        return request.param
+
+    @pytest.mark.parametrize("template", FLOORED.values(), ids=FLOORED.keys())
+    def test_mask_by_patterns(self, template, token, packs):
+        text = _floored(template, token)
+        assert patterns.kept_spans(text, WALLET_RULES) == []
+        assert _text(text, packs) == _unconfigured(lambda: _text(text, packs))
+
+    @pytest.mark.parametrize("template", FLOORED.values(), ids=FLOORED.keys())
+    def test_redact_body(self, template, token):
+        # Connect's extra secret keys: what is not kept has its signature masked.
+        configure_redaction(extra_secret_keys=["signature", "hash"])
+        text = _floored(template, token)
+        for body in (
+            text,
+            f"<request><password>S3cretPassw0rd</password><udf9>{text}</udf9></request>",
+            f"<request><password>S3cretPassw0rd</password><udf9>{html.escape(text)}</udf9></request>",
+        ):
+            assert redact_body(body) == _unconfigured(lambda body=body: redact_body(body))
+
+    @pytest.mark.parametrize("template", FLOORED.values(), ids=FLOORED.keys())
+    def test_mask_outside_kept(self, template, token):
+        text = _floored(template, token)
+        assert mask_outside_kept(text, str.upper) == text.upper()
+
+
+class TestStillKeptInText:
+    @pytest.fixture(autouse=True)
+    def ottu_safe_keys(self):
+        configure_masking_safe_keys(OTTU_SAFE_KEYS)
+
+    def test_a_kpay_body(self, packs):
+        written = json.dumps(PK_PAYMENT_TOKEN)
+        body = KPAY_BODY.format(written)
+        for masked in (redact_body(body), _text(body, packs), redact_body(KPAY_BODY.format(html.escape(written)))):
+            assert "S3cretPassw0rd" not in masked
+        assert f"<udf9>{written}</udf9>" in redact_body(body)
+        assert f"<udf9>{written}</udf9>" in _text(body, packs)
+        assert f"<udf9>{html.escape(written)}</udf9>" in redact_body(KPAY_BODY.format(html.escape(written)))
+
+    def test_connects_sdk_apple_pay_request(self, packs):
+        request = json.dumps(_connect_apple_pay_request())
+        written = json.dumps(PK_PAYMENT_TOKEN)
+        assert written in _text(f"pay request {request}", packs)
+        assert written in redact_body(request)
+        assert written in mask_outside_kept(request, str.upper)
+        assert _walk({"payload": _connect_apple_pay_request()}) == {"payload": _connect_apple_pay_request()}
+
+    def test_a_google_pay_payment_data_body(self, packs):
+        body = json.dumps(GOOGLE_PAYMENT_DATA)
+        escaped = json.dumps(json.dumps(GOOGLE_PAY))[1:-1]
+        for masked in (_text(f"google pay {body}", packs), redact_body(body)):
+            assert escaped in masked
+        assert "jane.roe@example.com" not in _text(f"google pay {body}", packs)
 
 
 class TestTheSadVariant:

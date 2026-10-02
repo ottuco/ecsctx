@@ -1406,8 +1406,10 @@ under one rule set never comes back as it was under another.
 A **keep rule** ships what it matches exactly as sent: a value a service must
 be able to read in its logs, found by shape. It is any object whose `keep` is
 `True` (the object itself, not a truthy value), with `matches(value)` and,
-optionally, `hints`; it has no `field_type`, since it writes no label.
-`KeepRule` is one:
+optionally, `hints`; it has no `field_type`, since it writes no label. An
+object with both a `field_type` and `keep = True` is neither, rather than
+the less safe of the two: it is refused as an item that is not a rule is
+(above), the problem naming both. `KeepRule` is one:
 
 ```python
 from ecsctx.masking import KeepRule
@@ -1425,42 +1427,72 @@ asked where label rules are: every mapping the key walk meets, every string
 that is JSON text, every JSON object in free text or in a body `redact_body`
 masks. They are asked in list order and **the first match wins**: a label
 rule listed first labels a value a keep rule would have kept, and an object a
-label rule matches is not looked into for one to keep. A keep match the guard
-refuses (below) is walked as if nothing had matched: no rule listed after it
-is asked, a label rule for the same shape included. A kept value is left
-as sent under any key and not descended into — a credential's key, a card's,
-or a PII container's above it does not stop it (`token`, `paymentToken`,
-`password`, `card.devicePayment`, `customer`): what the rule names is the
-value itself, not something the key says about it. In text, what a keep rule
+label rule matches is not looked into for one to keep. A label rule wins at
+any depth inside a keep match, though: a keep match holding a value whose
+own first match is a label rule is walked as if nothing had matched, and
+that value is labelled — with an Apple Pay label rule listed before
+`KeepRule(lambda value: True)`, `{"outer": {"inner": <paymentData>}}` is
+`{"outer": {"inner": "[SAD-MASKED]"}}`. Listed after it, the catch-all keep
+rule is the inner value's first match too, and the whole value ships as
+sent. A keep match the guard refuses
+(below) is walked as if nothing had matched too, and either way no rule
+listed after it is asked about the value itself, a label rule for the same
+shape included. A kept value is left as sent under any key and not
+descended into — a credential's key, a card's, or a PII container's above it
+does not stop it (`token`, `paymentToken`, `password`, `card.devicePayment`,
+`customer`): what the rule names is the value itself, not something the key
+says about it. In text, what a keep rule
 ships is set aside as a `[KEPT-<letters>-MASKED]` placeholder before every
 content rule, and put back as it was written after; a placeholder a rule
 destroys — a credential hashed with what was around it — takes the value with
-it. Text that already holds `[KEPT-` is masked as if no keep rule were
-configured. A keep rule that raises counts as no match: keep rules are asked
-on paths that must never raise (`redact_url`, `redact_body`,
-`mask_card_value`).
+it. A placeholder is named from a digest of the value it stands for: the same
+value has the same name, so a credential hashed around one carries that value
+in its token, as under a key, and a name written into the text by anyone
+without the value (an element's entity-encoded text decodes to one) is not a
+placeholder and restores nothing. Text that already holds `[KEPT-` is masked
+as if no keep rule were configured. A keep rule that raises counts as no
+match: keep rules are asked on paths that must never raise (`redact_url`,
+`redact_body`, `mask_card_value`). So does a label rule asked about what is
+inside a keep match: its error refuses the keep and raises nothing there,
+and the value is masked as with the label rules alone — whose error reaches
+the caller only where the walk itself asks them, as before.
 
 Two things no keep rule overrides, not even `KeepRule(lambda value: True)`:
 
 - **The floor.** Nothing is kept under a CVV or SAD key (`cvv`,
   `securityCode`, `pin`, `cryptogram`, …), inside a CVV or SAD container
   (a key the service lists there included), or as the `value` of a pair
-  labelled as one; in text, right after such a quoted key, `key=` or XML
-  start tag. Such a value is masked exactly as without the rule.
+  labelled as one; in text, anywhere in text that names such a key, element
+  or pair label. Such a value is masked exactly as without the rule.
 - **The guard.** A match that holds, at any depth — JSON text inside it
   included — a key the key rules read as a card, a CVV or other SAD, a
   `{name, value}` pair whose identifier reads as one (as the key walk reads a
-  pair), or a leaf that is a card number, is walked as if nothing had
-  matched. It reads keys, pairs and whole leaves only: a CVV or a card number
-  written inside a longer string of a kept value (`"note": "cvv=123"`, Track
-  2 data, `"card 4111…"`) ships with it. Keeping that out is the matcher's
-  job, which is why a matcher must be strict about what it matches. A leaf is
-  a card number when it is an int `int_is_pan` reads as one, or a string
-  `pan_shaped` reads as one, whatever its prefix and Luhn or not — except
-  thirteen bare digits from a 1 or a 2 (epoch milliseconds until 2065), Google Pay's
-  `keyExpiration`, which `pan_shaped` reads as a card number and every
-  Google Pay token carries. A leaf that is no JSON value counts as card
-  data.
+  pair), a leaf that is a card number, or a text leaf with a card number's
+  digits in it, is walked as if nothing had matched. A leaf is a card number
+  when it is an int `int_is_pan` reads as one, or a string `pan_shaped` reads
+  as one, whatever its prefix and Luhn or not. A text leaf holds a card
+  number's digits when, read in one pass as the `pci` rules read a value
+  (`holds_pan_run`), it holds a run of 12 digits or more joined by single
+  separators at most: `"card 4111…"`, `"1234 4111…"`, `"4111… 123"`, Track 2
+  data, 20 bare digits, `"4111…+cvv+123"` in a base64 slot, `"4111…ab"` in a
+  hex one. Three leaves are not read for one: a leaf that is thirteen bare
+  digits from a 1 or a 2 (epoch milliseconds until 2065), Google Pay's
+  `keyExpiration`, which `pan_shaped` reads as a card number and every Google
+  Pay token carries; a leaf that is a canonical UUID (8-4-4-4-12 hex with a
+  hex letter), as everywhere in ecsctx; and a leaf that is a whole hex id of
+  24 characters or more holding a hex letter, such as Apple Pay's 64-hex
+  `transactionId`: about one random 64-hex id in two hundred holds a 13-19
+  digit run that passes Luhn, and reading them cost 1.1% of Apple Pay tokens.
+  Each is the whole leaf only: a hex id inside base64 or prose
+  (`"AA/4111…deadbeef/AA"`), digits alone however many, and epoch milliseconds
+  inside a longer string are all read. A leaf that is no JSON value counts as
+  card data. What the guard cannot tell from a token's own text ships with
+  it: a CVV or other short value written inside a longer string
+  (`"note": "cvv=123"`, or `cvv+123` inside base64, which reads as
+  ciphertext), and a card number written into a leaf that is a whole hex id
+  (`4111…` then hex holding a letter, a CVV's digits among it). Keeping that
+  out is the matcher's job, which is why a matcher must be strict about what
+  it matches: Ottu's refuse hex alone in a base64 slot.
 
 Nothing else in a kept value is read: PII or a credential inside it, under a
 key of its own or written in a string, ships with it.
@@ -1473,7 +1505,16 @@ A keep decision rests on the text as written, since that is what ships: JSON
 that names a key twice in one object (`json.loads` keeps the last) is not
 kept, and a JSON-text leaf naming one inside a match is card data to the
 guard; a Python repr is kept only where its parse renders back to it exactly
-(a comment, or a key written twice, is dropped by the parse).
+(a comment, or a key written twice, is dropped by the parse). So a repr whose
+strings hold a `"` — a Google Pay token's `signedMessage` — written inside
+JSON text, where that quote is escaped, is not kept: it no longer renders
+back as written (fails closed).
+
+An entity-encoded value (`{&quot;…&quot;}`, an XML element's text) is set
+aside by `redact_body`, which reads such text as it decodes, but not by the
+text rules the log processor runs, which read it as written: there it is not
+kept and the content rules read into it — with `pci`, about one
+entity-encoded Google Pay token in ten comes out altered (fails closed).
 
 A service that masks again after ecsctx — Connect does — asks
 `is_kept(value, key=None)` (a mapping or JSON text; the rules in force, first
@@ -1481,15 +1522,37 @@ match, the guard, and the floor on `key`; False with no keep rule configured)
 before masking a field, and runs its text masker through
 `mask_outside_kept(text, mask)`, which hands `mask` the text with each kept
 value set aside and puts back each placeholder it leaves. Both are in
-`ecsctx.masking` and never raise.
+`ecsctx.masking` and never raise of their own: `mask_outside_kept` passes on
+an error the caller's `mask` raises.
 
-In text the floor reads the key right before an object, and every object
-the text rules read whole inside it: they read three levels of nesting, so a
-kept value two keys below a CVV key (`{"cvv": {"x": {"y": {…}}}}`, the value
-itself nested) is not floored there — the guard still holds. An object right
-after a CVV key in text is not kept, but no `default` content rule masks a
-JSON object there either, with or without keep rules; the key walk masks one
-under a CVV key leaf by leaf.
+In text a container's reach cannot be told — the text rules read an object
+three levels deep, and a wallet token's own nesting takes two — so the floor
+reads the whole text: text that names a CVV or SAD key anywhere keeps
+nothing, and is masked as without a keep rule. A name is a quoted key then
+`:`, `=` or `=>` (JSON, a repr, JSON in a JSON string), a bare key then `:` or
+`=>`, a key and `=` where a key starts (`cvv=`, `&cvv=`; not base64's `=`
+padding inside a string), an XML tag, or a `{name, value}` pair's label
+(`"name": "card security code"`), classified as the key walk classifies a
+key — every pack on, the service's safe keys honoured. It is read as
+written: a quoted key or pair label up to 128 characters (a longer key by
+its last 128, before `:` or `=>`), an XML tag of any length, with no
+`\uXXXX` escape decoded, in the
+text as it stands and, where it holds an entity, as the entities decode. The
+key walk reads more: it parses JSON, so a key written with escapes
+(`"\u0063vv"`), or longer than 128 characters with its CVV word first, is a
+CVV key there and not to the text floor, which can keep a value under it in
+text where the key walk would not. Through Ottu's `WALLET_RULES` that gap
+ships nothing but a wallet token's own text: their matchers fix every key a
+token holds and every slot's alphabet, and the guard reads them, so nothing
+else can ride in what they keep. A word in prose (`the cvv check passed`) names
+no key. That fails closed: a value beside such a key, not under it
+(`{"cvv": "123", "token": {…}}`, or a `<pin>` element elsewhere in a body),
+is not kept in text, though the key walk keeps it. `redact_body` reads an
+element's entity-encoded text the same way, and keeps nothing in it when the
+body around it names one. The text is read for names only once a value to
+keep is found in it. An object right after a CVV key in text is not kept, but
+no `default` content rule masks a JSON object there either, with or without
+keep rules; the key walk masks one under a CVV key leaf by leaf.
 
 The cost: with no keep rule configured none of this runs — a string with no
 `{` pays one check, one with a `{` a look at the rules in force; with keep
@@ -1498,23 +1561,48 @@ rule's hints never asks it; text holding one is read once for the objects in
 it. Every mapping the key walk meets asks every rule, once — a mapping has no
 text to hint with — so a matcher must be cheap: test a literal field first.
 JSON text under a key asks, and its key walk passes on, only the rules whose
-hints it holds. On the benchmark's lines (`scripts/bench_masking.py`) 0.17.0
-masks within a few percent of 0.16.0, the run-to-run noise, with no value rule
-and with Ottu's `WALLET_RULES` (three keep rules where 0.16.0 had two label
-rules): the key walk now asks each mapping once, where it asked twice.
+hints it holds. With Ottu's `WALLET_RULES`, a line carrying no wallet token
+costs 1-4% more than with 0.16.0's two label rules, and 5-16% more than with
+no value rule (most on a line of many small mappings, each of which asks
+every rule; `scripts/bench_masking.py`). A line carrying a token has no
+single figure: about 2.3-2.5× 0.16.0's label rules on a short line (an MPGS
+line with the token as `paymentToken`: ~73 µs labelled, ~175 µs kept, ~47 µs
+with no rule; a message holding a Google Pay token: ~135 / ~300 / ~305 µs),
+and less on a body every content rule would otherwise read (KPay `<udf9>`:
+~0.96 ms labelled, ~0.87 ms kept, ~3.1 ms with no rule). The slot checks,
+the guard's digit runs and the text floor's scan add 10-35% over 0.17.0 on
+such lines.
 
 Ottu's wallet tokens ship in logs exactly as sent (#159487): an Apple Pay or
 Google Pay token is single-use, and the token as it was sent is what debugs a
 wallet payment. `ecsctx.contrib.ottu.masking.WALLET_RULES` are keep rules
 with strict matchers — an Apple Pay `PKPaymentToken`, its `paymentData`
-(`version` `EC_v1` or `RSA_v1`, the encrypted `data`, a `header` of text
-fields) and a Google Pay payment method token (`protocolVersion` `ECv1`,
-`ECv2` or `ECv2SigningOnly`, with a `signedMessage`), and no key besides the
-ones each writes — found under `paymentData`, TAP's `token_data`, MPGS's
-`paymentToken` (a JSON string), Google Pay's `tokenizationData.token`, KPay's
-`<udf9>`, or in a message. A `PKPaymentToken` with a key of its own keeps
-only its `paymentData`. Saved-card tokens stay masked: no wallet shape
-matches one. Samsung Pay's token, a JWE, is not matched yet. An Ottu service
+(`version` `EC_v1` or `RSA_v1`, the encrypted `data`, a `header`) and a
+Google Pay payment method token (`protocolVersion` `ECv1`, `ECv2` or
+`ECv2SigningOnly`, with a `signedMessage`), no key besides the ones each
+writes, and every leaf text in its alphabet: standard base64, never hex
+alone, for a key, a signature or ciphertext (`data`, `signature`, the header's
+`ephemeralPublicKey`, `publicKeyHash` and `wrappedKey`, Google Pay's
+`signatures`, and the fields of its `signedMessage` and `signedKey`, each
+JSON text of all its fields and nothing else), hex for an id or a hash
+(`transactionId`, `applicationData`, `transactionIdentifier`), digits for
+`keyExpiration`, and for what `paymentMethod` says about the card words: a
+letter and up to 39 more letters, spaces, `.`, `&` or `-` — its `network`
+and `type` that alone or nothing (`AmEx`, `debit`), its `displayName`
+optionally followed by one space and exactly four digits, the card's last
+four (`Visa 0492`, `American Express`) — and no words that read as a CVV or
+other SAD (`cvv`, `CVV 1234`: a CID is four digits). A token holding
+anything else in a slot — `"data": "cvv=123"`, a spaced card number as its
+`signature`, `"network": "cvv=123"` — is not kept, and is masked as before; nor is
+one with a card number in a slot's own alphabet (`"4111…+cvv+123"` in
+base64), which the guard reads. What neither can tell from ciphertext ships
+with a kept token: a CVV or other short value written in a slot's own
+alphabet (`cvv+123` inside base64). They are found under `paymentData`,
+TAP's `token_data`, MPGS's `paymentToken` (a JSON string), Google Pay's
+`tokenizationData.token`, KPay's `<udf9>`, or in a message. A
+`PKPaymentToken` with a key of its own keeps only its `paymentData`.
+Saved-card tokens stay masked: no wallet shape matches one. Samsung Pay's
+token, a JWE, is not matched yet. An Ottu service
 lists them in `ECSCTX_MASK_VALUE_RULES` next to its `ECSCTX_MASK_SAFE_KEYS`
 (above), or sets
 `ECSCTX_MASK_VALUE_RULES=ecsctx.contrib.ottu.masking.WALLET_RULES`.

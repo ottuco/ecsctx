@@ -33,9 +33,13 @@ What stays masked:
   a credential: no wallet shape matches it, under ``token`` or anywhere.
 - What is not exactly a wallet's shape. The matchers are strict -- an Apple
   Pay ``paymentData`` or ``PKPaymentToken``, a Google Pay payment method
-  token, and no key besides the ones they write -- so anything else is walked
-  as before: a ``PKPaymentToken`` with a key of its own keeps only its
-  ``paymentData``.
+  token, no key besides the ones they write, and every leaf text in its
+  alphabet (base64, hex or digits; short text for what ``paymentMethod``
+  says about the card, its display name letters and the last four)
+  -- so anything else is walked as before: a ``PKPaymentToken`` with a key
+  of its own keeps only its ``paymentData``, and a token with
+  ``"data": "cvv=123"`` is masked. A CVV written in a slot's own alphabet
+  (``cvv+123`` inside base64) cannot be told from ciphertext, and ships.
 - Card data. ecsctx keeps nothing under a CVV or SAD key, and nothing that
   holds a card, CVV or SAD key or a card number (the floor and the guard).
 
@@ -59,9 +63,12 @@ Nothing installs them implicitly: ``register_ottu()`` registers events, and what
 service masks stays in its own settings.
 """
 
+import re
+from collections.abc import Mapping
 from typing import Any
 
-from ecsctx.masking.value_rules import KeepRule, ValueRule
+from ecsctx.masking.patterns import _FLOOR_TYPES, ALL_PACKS, classify_key
+from ecsctx.masking.value_rules import KeepRule, ValueRule, json_as_written
 
 SAFE_KEYS = frozenset({
     # Ottu PG API fields: a gateway's short name ("mpgs") and flags saying
@@ -141,77 +148,141 @@ GOOGLE_PAY_RULE = ValueRule("sad", _is_google_pay_token, hints=("ECv1", "ECv2"))
 # Pay's payment method token are documented to hold, and nothing else. A key
 # besides these is no wallet's, and the object is walked as before.
 _PAYMENT_DATA_KEYS = frozenset({"version", "data", "signature", "header"})
-_PAYMENT_DATA_HEADER_KEYS = frozenset(
-    {"ephemeralPublicKey", "wrappedKey", "publicKeyHash", "transactionId", "applicationData"}
-)
 _PK_PAYMENT_TOKEN_KEYS = frozenset({"paymentData", "paymentMethod", "transactionIdentifier"})
-_PAYMENT_METHOD_KEYS = frozenset({"displayName", "network", "type"})
 _GOOGLE_PAY_KEYS = frozenset({"signature", "intermediateSigningKey", "protocolVersion", "signedMessage"})
 _SIGNING_KEY_KEYS = frozenset({"signedKey", "signatures"})
+_SIGNED_MESSAGE_KEYS = frozenset({"encryptedMessage", "ephemeralPublicKey", "tag"})
+_SIGNED_KEY_KEYS = frozenset({"keyValue", "keyExpiration"})
+
+# What a wallet writes in a slot: standard base64 for a key, a signature or
+# ciphertext, hex for an id or a hash, digits for a time -- nothing else.
+# The guard reads keys, pairs, whole leaves and a card number inside one, so
+# other text in a kept token's slot (`"data": "cvv=123"`) would ship with it
+# (Redmine R3).
+# Not hex alone: a whole hex id is not read for a card number (the guard's
+# exemption for Apple Pay's ids), and a wallet's base64 never is one.
+_BASE64 = re.compile(r"(?![0-9A-Fa-f]*\Z)[A-Za-z0-9+/]+={0,2}")
+_HEX = re.compile(r"[0-9A-Fa-f]+")
+_DIGITS = re.compile(r"[0-9]+")
+_HEADER_ALPHABETS = {
+    "ephemeralPublicKey": _BASE64,
+    "publicKeyHash": _BASE64,
+    "wrappedKey": _BASE64,
+    "transactionId": _HEX,
+    "applicationData": _HEX,
+}
+# PKPaymentToken's `paymentMethod` is what the device says about the card, in
+# words: up to 40 letters, spaces, `.`, `&` and `-` from a letter. Its network
+# and type are words alone, or nothing ("AmEx", "debit"); its display name
+# words and optionally a space and the card's last four ("Visa 0492",
+# "American Express"). No other digit or sign, so neither a card number nor an
+# email rides in them, and no words that read as a CVV or other SAD: a CID is
+# four digits ("CVV 1234").
+_CARD_WORDS = r"[A-Za-z][A-Za-z .&-]{0,39}"
+_PAYMENT_METHOD_ALPHABETS = {
+    "displayName": re.compile(rf"{_CARD_WORDS}(?: [0-9]{{4}})?"),
+    "network": re.compile(rf"(?:{_CARD_WORDS})?"),
+    "type": re.compile(rf"(?:{_CARD_WORDS})?"),
+}
 
 
-def _text_or_absent(value: Any, key: str) -> bool:
-    """A wallet's field is text where it is written: every leaf a wallet
+def _written_in(field: Any, alphabet: re.Pattern) -> bool:
+    """Whether a wallet's field is text in its alphabet: every leaf a wallet
     writes is a string, so a container or a number in a slot is no wallet's,
-    and nothing can ride in it -- a `{name, value}` pair among them."""
-    return key not in value or isinstance(value[key], str)
+    nor is text another alphabet writes -- nothing can ride in it."""
+    return isinstance(field, str) and alphabet.fullmatch(field) is not None
+
+
+def _absent_or_in(value: Mapping, key: str, alphabet: re.Pattern) -> bool:
+    return key not in value or _written_in(value[key], alphabet)
 
 
 def _is_apple_pay_payment_data(value: Any) -> bool:
     """Apple Pay's `paymentData`: an EC_v1 or RSA_v1 `version`, the
-    encrypted `data` and its `signature` as text, and a `header` of text
-    fields."""
+    encrypted `data` and its `signature` in base64, and a `header` of its
+    keys in base64 and its ids in hex."""
     version = value.get("version")
-    if not (isinstance(version, str) and version in _APPLE_PAY_VERSIONS and isinstance(value.get("data"), str)):
+    if not (isinstance(version, str) and version in _APPLE_PAY_VERSIONS and _written_in(value.get("data"), _BASE64)):
         return False
-    if not (value.keys() <= _PAYMENT_DATA_KEYS and _text_or_absent(value, "signature")):
+    if not (value.keys() <= _PAYMENT_DATA_KEYS and _absent_or_in(value, "signature", _BASE64)):
         return False
     header = value.get("header", {})
     return (
         isinstance(header, dict)
-        and header.keys() <= _PAYMENT_DATA_HEADER_KEYS
-        and all(isinstance(field, str) for field in header.values())
+        and header.keys() <= _HEADER_ALPHABETS.keys()
+        and all(_written_in(field, _HEADER_ALPHABETS[key]) for key, field in header.items())
     )
 
 
+def _in_card_words(field: Any, alphabet: re.Pattern) -> bool:
+    if not _written_in(field, alphabet):
+        return False
+    return classify_key(field.rstrip("0123456789 "), ALL_PACKS) not in _FLOOR_TYPES
+
+
 def _is_pk_payment_token(value: Any) -> bool:
-    """Apple Pay's PKPaymentToken: its `paymentData`, and what the device says
-    about the card -- its display name, network and type -- and the
-    transaction's id, each as text."""
+    """Apple Pay's PKPaymentToken: its `paymentData`, what the device says
+    about the card -- its network, type and display name in words, the name
+    with the last four -- and the transaction's id in hex."""
     payment_data = value.get("paymentData")
     if not (isinstance(payment_data, dict) and _is_apple_pay_payment_data(payment_data)):
         return False
-    if not (value.keys() <= _PK_PAYMENT_TOKEN_KEYS and _text_or_absent(value, "transactionIdentifier")):
+    if not (value.keys() <= _PK_PAYMENT_TOKEN_KEYS and _absent_or_in(value, "transactionIdentifier", _HEX)):
         return False
     method = value.get("paymentMethod", {})
     return (
         isinstance(method, dict)
-        and method.keys() <= _PAYMENT_METHOD_KEYS
-        and all(isinstance(field, str) for field in method.values())
+        and method.keys() <= _PAYMENT_METHOD_ALPHABETS.keys()
+        and all(_in_card_words(field, _PAYMENT_METHOD_ALPHABETS[key]) for key, field in method.items())
     )
 
 
+def _signed_object(text: Any, keys: frozenset[str]) -> dict | None:
+    """JSON text a Google Pay token signs, read as the keep decision reads
+    JSON (a key written twice refused): an object of exactly ``keys``, or
+    None."""
+    if not isinstance(text, str):
+        return None
+    try:
+        parsed = json_as_written(text)
+    except (ValueError, RecursionError):
+        return None
+    return parsed if isinstance(parsed, dict) and parsed.keys() == keys else None
+
+
+def _is_signed_message(text: Any) -> bool:
+    """`signedMessage`: JSON text of the encrypted message, its ephemeral
+    public key and tag, each in base64, and nothing else."""
+    message = _signed_object(text, _SIGNED_MESSAGE_KEYS)
+    return message is not None and all(_written_in(field, _BASE64) for field in message.values())
+
+
+def _is_signed_key(text: Any) -> bool:
+    """`signedKey`: JSON text of the intermediate signing key in base64 and
+    its expiration, epoch milliseconds, and nothing else."""
+    key = _signed_object(text, _SIGNED_KEY_KEYS)
+    return key is not None and _written_in(key["keyValue"], _BASE64) and _written_in(key["keyExpiration"], _DIGITS)
+
+
 def _is_google_pay_payment_token(value: Any) -> bool:
-    """Google Pay's payment method token: its `protocolVersion`, the
-    `signedMessage` and its `signature` as text, and the intermediate signing
-    key ECv2 signs with: a `signedKey` as text and its `signatures`, a list
-    of text."""
+    """Google Pay's payment method token: its `protocolVersion`, its
+    `signature` in base64, the intermediate signing key ECv2 signs with --
+    a `signedKey` and its `signatures`, a list in base64 -- and the
+    `signedMessage`. The two signed JSON texts are parsed last."""
     protocol = value.get("protocolVersion")
     if not (isinstance(protocol, str) and protocol in _GOOGLE_PAY_VERSIONS):
         return False
-    if not isinstance(value.get("signedMessage"), str):
-        return False
-    if not (value.keys() <= _GOOGLE_PAY_KEYS and _text_or_absent(value, "signature")):
+    if not (value.keys() <= _GOOGLE_PAY_KEYS and _absent_or_in(value, "signature", _BASE64)):
         return False
     signing_key = value.get("intermediateSigningKey", {})
     if not (isinstance(signing_key, dict) and signing_key.keys() <= _SIGNING_KEY_KEYS):
         return False
     signatures = signing_key.get("signatures", [])
-    return (
-        _text_or_absent(signing_key, "signedKey")
-        and isinstance(signatures, list)
-        and all(isinstance(signature, str) for signature in signatures)
-    )
+    if not (isinstance(signatures, list) and all(_written_in(signature, _BASE64) for signature in signatures)):
+        return False
+    if "signedKey" in signing_key and not _is_signed_key(signing_key["signedKey"]):
+        return False
+    return _is_signed_message(value.get("signedMessage"))
 
 
 APPLE_PAY_TOKEN_KEEP_RULE = KeepRule(_is_pk_payment_token, hints=("EC_v1", "RSA_v1"))
