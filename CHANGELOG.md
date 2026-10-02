@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.17.1 (2026-10-02)
+
+### Fixes
+- fix(contrib): an Apple Pay token's network and type are words, as its display name (9efb3a6)
+- fix(contrib): a wallet's base64 slot is never hex alone; its displayName never names a CVV (9dac34c)
+- fix(masking): a whole hex id the guard skips holds a hex letter (9cf12af)
+- fix(contrib): a displayName is letters, spaces and `.&-`, and optionally the last four (bac465b)
+- fix(masking): the guard reads a text leaf's digits as the pci rules do, in one pass, skipping only a whole hex id (20a2877)
+- fix(masking): the guard's card-number run skips a whole hex id of 24 characters or more (4285de8)
+- fix(masking): a label rule that raises inside a keep match refuses the keep, raising nothing (4e7ac96)
+- fix(contrib): a Google Pay token's signed message and signed key hold every field (56f2528)
+- fix(contrib): a PKPaymentToken's displayName is the network's name and the last four (9b69a94)
+- fix(masking): the guard refuses a keep match one of whose text leaves holds a card number (6f36003)
+- fix(masking): text that names a CVV or SAD key anywhere keeps nothing (2594c71)
+- fix(contrib): Ottu's wallet matchers keep a token only when every slot holds token text (f0c3662)
+- fix(masking): a rule with both a field_type and keep = True is refused, not read as a keep rule (8f90e25)
+- fix(masking): a label rule wins at any depth inside a keep match (74fc3c6)
+- fix(masking): the text floor reads a CVV container that is not the key right before (7da3aca)
+- fix(masking): a kept value's placeholder is named from the value it holds (2550cf4)
+
+### Other
+- Merge pull request #72 from ottuco/fix/160102-keep-rules-followups (20dbd5a)
+- docs(masking): the guard's three exempt leaves, an XML tag's length, the hex letter (350f017)
+- docs(masking): the cost paragraph's wallet-line figures after the guard's one-pass read (83dd6bd)
+- docs(masking): what the text floor reads, and what only the key walk does (d49e060)
+- docs(masking): what keep rules cost, measured; a label rule wins inside a keep match when it is the first match (011ad42)
+- perf(masking): the text floor and the guard's card-run check read a wallet in microseconds (fc0bac9)
+- docs(masking): what the text pass keeps of an entity-encoded or repr'd token, what never raises, what keep rules cost (e67140e)
+
+
 ## v0.17.0 (2026-10-01)
 
 ### Features
