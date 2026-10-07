@@ -3,45 +3,92 @@ name: CI
 on:
   push:
     branches: [main]
-  # Every PR, not only those into main, so a stacked PR is tested before its
-  # base merges.
+  # PRs into main only (#160214). A stacked PR is tested once it targets main
+  # and gets a new push; push: main still tests every merge.
   pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # Explicit Django dimension: 4.2 covers the django>=4.0 floor,
-        # 5.2 LTS is what consuming projects run, 6.0 is current.
-        # Pairings follow Django's own python support (4.2/5.2: <=3.12 and
-        # >=3.10 here; 6.0: >=3.12).
-        python-version: ["3.10", "3.12"]
-        django-version: ["4.2", "5.2", "6.0"]
-        exclude:
-          - python-version: "3.10"
-            django-version: "6.0"
+  # One job, not a matrix (#160214): GitHub bills every job rounded up to a
+  # whole minute, so six half-minute jobs cost six minutes. Each combination
+  # is its own step with its own venv; !cancelled() runs every combination
+  # even after one fails, so a red step names exactly what broke.
+  ci:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: uv sync --group test --extra django
-      # The pip install overrides the lock's Django; every later step MUST
-      # use --no-sync (a plain `uv run` or second `uv sync` re-syncs the
-      # venv to the lock and silently reverts the matrix pin).
-      - run: uv pip install "Django~=${{ matrix.django-version }}.0"
-      - run: uv run --no-sync pytest tests/ -v
 
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.12"
-      - run: uv build
+      # Explicit Django dimension: 4.2 covers the django>=4.0 floor,
+      # 5.2 LTS is what consuming projects run, 6.0 is current.
+      # Pairings follow Django's own python support (4.2/5.2: <=3.12 and
+      # >=3.10 here; 6.0: >=3.12).
+      #
+      # The venvs live in runner.temp, not the checkout: hatchling does not
+      # read a venv's own .gitignore, so `uv build` would pack one into the
+      # sdist.
+      #
+      # The pip install overrides the lock's Django; every later command MUST
+      # use --no-sync (a plain `uv run` or second `uv sync` re-syncs the
+      # venv to the lock and silently reverts the pin).
+      - name: Python 3.10 / Django 4.2
+        if: ${{ !cancelled() }}
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/py310-dj42
+        run: |
+          uv sync --python 3.10 --group test --extra django
+          uv pip install --python "$UV_PROJECT_ENVIRONMENT" "Django~=4.2.0"
+          uv run --no-sync pytest tests/ -v
+
+      - name: Python 3.10 / Django 5.2
+        if: ${{ !cancelled() }}
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/py310-dj52
+        run: |
+          uv sync --python 3.10 --group test --extra django
+          uv pip install --python "$UV_PROJECT_ENVIRONMENT" "Django~=5.2.0"
+          uv run --no-sync pytest tests/ -v
+
+      - name: Python 3.12 / Django 4.2
+        if: ${{ !cancelled() }}
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/py312-dj42
+        run: |
+          uv sync --python 3.12 --group test --extra django
+          uv pip install --python "$UV_PROJECT_ENVIRONMENT" "Django~=4.2.0"
+          uv run --no-sync pytest tests/ -v
+
+      - name: Python 3.12 / Django 5.2
+        if: ${{ !cancelled() }}
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/py312-dj52
+        run: |
+          uv sync --python 3.12 --group test --extra django
+          uv pip install --python "$UV_PROJECT_ENVIRONMENT" "Django~=5.2.0"
+          uv run --no-sync pytest tests/ -v
+
+      - name: Python 3.12 / Django 6.0
+        if: ${{ !cancelled() }}
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/py312-dj60
+        run: |
+          uv sync --python 3.12 --group test --extra django
+          uv pip install --python "$UV_PROJECT_ENVIRONMENT" "Django~=6.0.0"
+          uv run --no-sync pytest tests/ -v
+
+      - name: Build
+        id: build
+        if: ${{ !cancelled() }}
+        run: uv build --python 3.12
+
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         with:
           name: dist
           path: dist/
