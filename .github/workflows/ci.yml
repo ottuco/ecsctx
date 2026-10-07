@@ -9,9 +9,12 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
 
+# A new push to a PR cancels its older run. A push to main gets a group of its
+# own (run_id): a group holds one pending run, so a shared one would drop
+# queued pushes.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   # One job, not a matrix (#160214): GitHub bills every job rounded up to a
