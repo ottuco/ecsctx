@@ -18,9 +18,12 @@ jobs:
   # whole minute, so six half-minute jobs cost six minutes. Each combination
   # is its own step with its own venv; !cancelled() runs every combination
   # even after one fails, so a red step names exactly what broke.
+  # Not ubuntu-slim: on its single vCPU the 0.25 s wall-clock bound in
+  # test_many_start_tags_nothing_closes_take_linear_time fails in every
+  # combination.
   ci:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
