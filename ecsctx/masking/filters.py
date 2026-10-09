@@ -654,6 +654,7 @@ class MaskPIIFilter(logging.Filter):
             pair_type, pair_labels = None, frozenset()
         result = {}
         for key, value in data.items():
+            key = str(key)
             if path == () and key in self._skip_keys:
                 result[key] = self._mask_skipped(key, value, ctx)
                 continue
@@ -798,10 +799,10 @@ class MaskPIIFilter(logging.Filter):
         items = [self._mask_value(v, arr_path, ctx, inherited=inherited) for v in data]
         try:
             return type(data)(items)
-        except TypeError:
-            # A tuple subclass that cannot be rebuilt from one iterable -- a
-            # struct sequence such as sys.version_info. Its shape is lost, not
-            # the log line.
+        except (TypeError, KeyError):
+            # A subclass that cannot be rebuilt from one iterable -- a struct
+            # sequence such as sys.version_info, DRF's ReturnList (KeyError on
+            # its required keyword). Its shape is lost, not the log line.
             return tuple(items) if isinstance(data, tuple) else items
 
     def _mask_value(
