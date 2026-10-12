@@ -797,13 +797,12 @@ class MaskPIIFilter(logging.Filter):
                 return self._mask_iterable(data, path, ctx, inherited)
         arr_path = path + ("[*]",)
         items = [self._mask_value(v, arr_path, ctx, inherited=inherited) for v in data]
-        try:
+        if type(data) in (list, tuple, set, frozenset):
             return type(data)(items)
-        except (TypeError, KeyError):
-            # A subclass that cannot be rebuilt from one iterable -- a struct
-            # sequence such as sys.version_info, DRF's ReturnList (KeyError on
-            # its required keyword). Its shape is lost, not the log line.
-            return tuple(items) if isinstance(data, tuple) else items
+        # A subclass is never rebuilt: its constructor is foreign code (DRF's
+        # ReturnList needs a keyword, a struct sequence such as
+        # sys.version_info takes none). Its shape is lost, not the log line.
+        return tuple(items) if isinstance(data, tuple) else items
 
     def _mask_value(
         self,

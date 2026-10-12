@@ -82,3 +82,57 @@ def test_masking_a_dict_with_integer_keys_gives_string_keys():
     masked = MaskPIIFilter(packs=ALL_PACKS)._mask_value({"errors": {0: {"id": ["x"]}}})
 
     assert masked == {"errors": {"0": {"id": ["x"]}}}
+
+
+
+class Unbuildable(list):
+    def __init__(self, *args):
+        raise ValueError("foreign constructor ran")
+
+
+def test_a_subclass_constructor_never_runs(shipped):
+    stream, errors = shipped
+    body = list.__new__(Unbuildable)
+    body.append({"email": "jane@example.com"})
+
+    structlog.get_logger("t").info("response sent", http={"response": {"body": body}})
+
+    assert not errors
+    (line,) = [x for x in _lines(stream) if x["message"] == "response sent"]
+    shipped_body = line["http"]["response"]["body"]
+    assert type(shipped_body) is list
+    assert "jane@example.com" not in json.dumps(shipped_body)
+
+
+def test_a_drf_list_serializer_data_ships(shipped):
+    from rest_framework import serializers
+
+    class Item(serializers.Serializer):
+        email = serializers.EmailField()
+
+    stream, errors = shipped
+    data = Item([{"email": "jane@example.com"}], many=True).data
+
+    structlog.get_logger("t").info("response sent", http={"response": {"body": data}})
+
+    assert not errors
+    (line,) = [x for x in _lines(stream) if x["message"] == "response sent"]
+    assert "jane@example.com" not in json.dumps(line["http"])
+    assert isinstance(line["http"]["response"]["body"], list)
+
+
+def test_a_drf_list_field_error_body_ships(shipped):
+    from rest_framework import serializers
+
+    class Ticket(serializers.Serializer):
+        ids = serializers.ListField(child=serializers.IntegerField())
+
+    stream, errors = shipped
+    serializer = Ticket(data={"ids": [1, "x", 3, "y"]})
+    assert not serializer.is_valid()
+
+    structlog.get_logger("t").info("response sent", http={"response": {"body": serializer.errors}})
+
+    assert not errors
+    (line,) = [x for x in _lines(stream) if x["message"] == "response sent"]
+    assert set(line["http"]["response"]["body"]["ids"]) == {"1", "3"}
