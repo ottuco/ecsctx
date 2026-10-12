@@ -2,7 +2,8 @@ name: Release
 
 # A release reaches main through a pull request, like every other change (RUL-SD-001, #160284):
 # 1. Run this workflow by hand on main with the bump type. It bumps the version, writes the
-#    CHANGELOG entry, runs the tests and opens the pull request "release: vX.Y.Z".
+#    CHANGELOG entry, runs the tests and pushes the branch release/vX.Y.Z; open the pull
+#    request "release: vX.Y.Z" from the link in the run's summary.
 # 2. Approve and merge that pull request. On the push to main, a version with no tag yet is
 #    built, tested, tagged, released on GitHub and published to PyPI.
 # PyPI's trusted publisher names this file and the `pypi` environment: keep both.
@@ -30,7 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,9 +108,10 @@ jobs:
           uv sync --group test --extra django
           uv run pytest tests/ -v
 
-      - name: Open the release pull request
+      # Workflows may not open or approve pull requests in this organisation (#160364), so a
+      # person opens it from the link below, and someone else approves it.
+      - name: Push the release branch
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW: ${{ steps.version.outputs.new }}
         run: |
           git config user.name "github-actions[bot]"
@@ -119,8 +120,9 @@ jobs:
           git add pyproject.toml ecsctx/__init__.py CHANGELOG.md
           git commit -m "release: v${NEW}"
           git push origin "release/v${NEW}"
-          gh pr create --base main --head "release/v${NEW}" --title "release: v${NEW}" \
-            --body "Version ${NEW} and its CHANGELOG entry. Merging this pull request publishes v${NEW} to PyPI."
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/main...release/v${NEW}?expand=1&title=release:%20v${NEW}"
+          echo "Open the release pull request: ${url}"
+          echo "### Open the release pull request: [release: v${NEW}](${url})" >> "$GITHUB_STEP_SUMMARY"
 
   # On every push to main: is the version in pyproject.toml already released (tagged)?
   check:
