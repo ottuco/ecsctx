@@ -1,5 +1,12 @@
 name: Release
 
+# A release reaches main through a pull request, like every other change (RUL-SD-001, #160284):
+# 1. Run this workflow by hand on main with the bump type. It bumps the version, writes the
+#    CHANGELOG entry, runs the tests and opens the pull request "release: vX.Y.Z".
+# 2. Approve and merge that pull request. On the push to main, a version with no tag yet is
+#    built, tested, tagged, released on GitHub and published to PyPI.
+# PyPI's trusted publisher names this file and the `pypi` environment: keep both.
+
 on:
   workflow_dispatch:
     inputs:
@@ -11,15 +18,19 @@ on:
           - patch
           - minor
           - major
+  push:
+    branches: [main]
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
-  release:
+  prepare:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: pypi
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,10 +42,12 @@ jobs:
 
       - name: Calculate new version
         id: version
+        env:
+          BUMP: ${{ inputs.bump }}
         run: |
           current=$(python -c "import re; print(re.search(r'version = \"(.+?)\"', open('pyproject.toml').read()).group(1))")
           IFS='.' read -r major minor patch <<< "$current"
-          case "${{ inputs.bump }}" in
+          case "$BUMP" in
             major) major=$((major + 1)); minor=0; patch=0 ;;
             minor) minor=$((minor + 1)); patch=0 ;;
             patch) patch=$((patch + 1)) ;;
@@ -90,6 +103,66 @@ jobs:
             } > CHANGELOG.md
           fi
 
+      - name: Run tests
+        run: |
+          uv sync --group test --extra django
+          uv run pytest tests/ -v
+
+      - name: Open the release pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW: ${{ steps.version.outputs.new }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "release/v${NEW}"
+          git add pyproject.toml ecsctx/__init__.py CHANGELOG.md
+          git commit -m "release: v${NEW}"
+          git push origin "release/v${NEW}"
+          gh pr create --base main --head "release/v${NEW}" --title "release: v${NEW}" \
+            --body "Version ${NEW} and its CHANGELOG entry. Merging this pull request publishes v${NEW} to PyPI."
+
+  # On every push to main: is the version in pyproject.toml already released (tagged)?
+  check:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      new: ${{ steps.version.outputs.new }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read the version
+        id: version
+        run: |
+          version=$(python3 -c "import re; print(re.search(r'version = \"(.+?)\"', open('pyproject.toml').read()).group(1))")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    needs: check
+    if: needs.check.outputs.new == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    concurrency: release-publish
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
       - name: Build
         run: uv build
 
@@ -98,21 +171,17 @@ jobs:
           uv sync --group test --extra django
           uv run pytest tests/ -v
 
-      - name: Commit and tag
+      - name: Tag
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml ecsctx/__init__.py CHANGELOG.md
-          git commit -m "release: v${{ steps.version.outputs.new }}"
-          git tag "v${{ steps.version.outputs.new }}"
-          git push origin main --tags
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "v${{ steps.version.outputs.new }}" dist/* \
-            --title "v${{ steps.version.outputs.new }}" \
+          gh release create "v${VERSION}" dist/* \
+            --title "v${VERSION}" \
             --generate-notes
 
       - name: Publish to PyPI
