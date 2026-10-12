@@ -17,6 +17,7 @@ import logging.config
 
 import pytest
 import structlog
+from cid.locals import set_cid
 
 from ecsctx.contrib.django import get_logging_config, setup_logging
 from ecsctx.masking.filters import MaskPIIFilter
@@ -151,6 +152,23 @@ def test_a_masking_failure_on_a_dict_record_ships_a_marker_line(shipped, monkeyp
     (line,) = [x for x in _lines(stream) if "MASKING-FAILED" in x["message"]]
     assert line["message"] == "[MASKING-FAILED: RuntimeError]"
     assert "service" in line and "log" in line
+    assert "jane@example.com" not in json.dumps(line)
+    assert "http" not in line and "email" not in line
+
+
+def test_the_dict_marker_line_keeps_the_trace_id(shipped, monkeypatch):
+    stream, errors = shipped
+    monkeypatch.setattr(MaskPIIFilter, "_mask_args", lambda self, args, ctx: 1 / 0)
+    set_cid("0af7651916cd43dd8448eb211c80319c")
+    try:
+        structlog.get_logger("t").info("response sent", email="jane@example.com", http={"body": {"a": 1}})
+    finally:
+        set_cid(None)
+
+    assert not errors
+    (line,) = [x for x in _lines(stream) if "MASKING-FAILED" in x["message"]]
+    assert line["trace"] == {"id": "0af7651916cd43dd8448eb211c80319c"}
+    assert "name" in line["service"] and "logger" in line["log"]
     assert "jane@example.com" not in json.dumps(line)
     assert "http" not in line and "email" not in line
 

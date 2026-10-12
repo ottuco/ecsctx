@@ -1058,7 +1058,7 @@ class MaskPIIFilter(logging.Filter):
                         # kept (a service dict may hold a caller's own keys).
                         kept = {
                             root: {k: v for k, v in record.msg[root].items() if k in _OWNED_FIELDS[root]}
-                            for root in ("service", "log")
+                            for root in _OWNED_FIELDS
                             if isinstance(record.msg.get(root), dict)
                         }
                         record.msg = {"event": marker, **kept}
