@@ -84,7 +84,6 @@ def test_masking_a_dict_with_integer_keys_gives_string_keys():
     assert masked == {"errors": {"0": {"id": ["x"]}}}
 
 
-
 class Unbuildable(list):
     def __init__(self, *args):
         raise ValueError("foreign constructor ran")
@@ -166,3 +165,13 @@ def test_a_masking_failure_on_a_str_record_keeps_the_str_marker(shipped, monkeyp
     (line,) = [x for x in _lines(stream) if "MASKING-FAILED" in x["message"]]
     assert line["message"] == "[MASKING-FAILED: ZeroDivisionError]"
     assert "4111111111111111" not in json.dumps(line)
+
+
+def test_an_integer_key_under_a_skip_key_ships(shipped):
+    stream, errors = shipped
+
+    structlog.get_logger("t").info("response sent", service={0: "x", "name": "n"})
+
+    assert not errors
+    (line,) = [x for x in _lines(stream) if x["message"] == "response sent"]
+    assert "MASKING-FAILED" not in json.dumps(line)

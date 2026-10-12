@@ -674,18 +674,17 @@ class MaskPIIFilter(logging.Filter):
                 # container. Masking it only destroyed the flag.
                 result[key] = value
                 continue
-            lookup_key = str(key)
-            child_path = path + (lookup_key,)
+            child_path = path + (key,)
             if pair_labels and key in pair_labels:
                 # A field label, not a person: judged by content alone.
                 result[key] = self._mask_value(value, child_path, ctx, ruled=True)
                 continue
-            field_type = classify_key(lookup_key, ctx.packs, ctx.safe)
-            if pair_type is not None and lookup_key.lower() == "value":
+            field_type = classify_key(key, ctx.packs, ctx.safe)
+            if pair_type is not None and key.lower() == "value":
                 field_type = pair_type
             elif (
                 field_type == "name"
-                and lookup_key.lower() in ("name", "names")
+                and key.lower() in ("name", "names")
                 and (container := _container_of(path)) is not None
             ):
                 context = name_context(container)
@@ -695,12 +694,12 @@ class MaskPIIFilter(logging.Filter):
                 # Only a key the service listed -- a list never_safe() vets --
                 # reads through; anything else is the container's type, however
                 # it classifies on its own.
-                if field_type is None and _listed(lookup_key, ctx.safe):
+                if field_type is None and _listed(key, ctx.safe):
                     result[key] = self._mask_value(value, child_path, _without_keep(ctx))
                     continue
                 field_type = inherited
             elif field_type is None:
-                lowered = lookup_key.lower()
+                lowered = key.lower()
                 # Both spellings, as classify_key has: `customerId` escapes a
                 # customer container as `customer_id` always did.
                 if (
@@ -718,9 +717,9 @@ class MaskPIIFilter(logging.Filter):
                         bool(ctx.safe)
                         and ((type(value) is str and value.isdigit()) or type(value) is int)
                         and _is_reference_number(value)
-                        and _listed(lookup_key, ctx.safe)
+                        and _listed(key, ctx.safe)
                         and inherited not in _WALKED_TYPES
-                        and classify_key(lookup_key, ctx.packs) in (None, "payment_id")
+                        and classify_key(key, ctx.packs) in (None, "payment_id")
                     )
                     result[key] = self._mask_value(value, child_path, ctx, verbatim_digits=verbatim, ruled=True)
                     continue
@@ -919,7 +918,7 @@ class MaskPIIFilter(logging.Filter):
         if not rest:
             return value
         masked = self._mask_dict(rest, (root,), ctx)
-        return {key: sub if key in owned else masked[key] for key, sub in value.items()}
+        return {str(key): sub if key in owned else masked[str(key)] for key, sub in value.items()}
 
     def _mask_record(self, value: Any, path: tuple, ctx: _Pass) -> str:
         """A dataclass or namedtuple, masked field by field under its own
