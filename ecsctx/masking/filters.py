@@ -1052,7 +1052,19 @@ class MaskPIIFilter(logging.Filter):
                     # here became the caller's: a failed log line failed the
                     # payment. The message is replaced whole -- the one outcome
                     # that cannot leak what masking failed to mask.
-                    record.msg = MASKING_FAILED.format(type(error).__name__)
+                    marker = MASKING_FAILED.format(type(error).__name__)
+                    if isinstance(record.msg, dict):
+                        # A dict stays a dict: the formatter copies it, and a str
+                        # lost the line. Only the fields ecsctx writes itself are
+                        # kept (a service dict may hold a caller's own keys).
+                        kept = {
+                            root: {k: v for k, v in record.msg[root].items() if k in _OWNED_FIELDS[root]}
+                            for root in ("service", "log")
+                            if isinstance(record.msg.get(root), dict)
+                        }
+                        record.msg = {"event": marker, **kept}
+                    else:
+                        record.msg = marker
                     record.args = ()
             mark_object_as_masked(record, ctx.packs)
         return True

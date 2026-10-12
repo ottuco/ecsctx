@@ -136,3 +136,33 @@ def test_a_drf_list_field_error_body_ships(shipped):
     assert not errors
     (line,) = [x for x in _lines(stream) if x["message"] == "response sent"]
     assert set(line["http"]["response"]["body"]["ids"]) == {"1", "3"}
+
+
+def test_a_masking_failure_on_a_dict_record_ships_a_marker_line(shipped, monkeypatch):
+    stream, errors = shipped
+
+    def boom(self, args, ctx):
+        raise RuntimeError("masker broke")
+
+    monkeypatch.setattr(MaskPIIFilter, "_mask_args", boom)
+
+    structlog.get_logger("t").info("response sent", email="jane@example.com", http={"body": {"a": 1}})
+
+    assert not errors
+    (line,) = [x for x in _lines(stream) if "MASKING-FAILED" in x["message"]]
+    assert line["message"] == "[MASKING-FAILED: RuntimeError]"
+    assert "service" in line and "log" in line
+    assert "jane@example.com" not in json.dumps(line)
+    assert "http" not in line and "email" not in line
+
+
+def test_a_masking_failure_on_a_str_record_keeps_the_str_marker(shipped, monkeypatch):
+    stream, errors = shipped
+    monkeypatch.setattr(MaskPIIFilter, "_mask_args", lambda self, args, ctx: 1 / 0)
+
+    logging.getLogger("plain").info("card 4111111111111111")
+
+    assert not errors
+    (line,) = [x for x in _lines(stream) if "MASKING-FAILED" in x["message"]]
+    assert line["message"] == "[MASKING-FAILED: ZeroDivisionError]"
+    assert "4111111111111111" not in json.dumps(line)
