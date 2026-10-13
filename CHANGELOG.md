@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.17.2 (2026-10-13)
+
+### Fixes
+- fix(masking): keep every ecsctx-owned field on the masking-failure line (#160126) (8de6b9f)
+- fix(masking): string keys under a skip key; _mask_dict uses its already-str key (#160126) (7cf68c7)
+- fix(masking): a failed mask on a dict record ships a dict marker line, not a str (#160126) (99dc56e)
+- fix(masking): never run a list subclass's constructor to rebuild a masked list (#160126) (18f9a5f)
+- fix(masking): a body with integer keys or a list subclass that cannot be rebuilt keeps its line (#160126) (1ffc883)
+
+### Other
+- Merge pull request #76 from ottuco/fix/160126 (f31dff6)
+- Merge pull request #77 from ottuco/chore/160284-release-by-pull-request (ea02487)
+- ci(release): push the release branch and link the pull request, as workflows may not open one (#160364) (15d4180)
+- ci(release): open a release pull request instead of pushing to main (#160284) (318f021)
+
+
 ## v0.17.1 (2026-10-02)
 
 ### Fixes
