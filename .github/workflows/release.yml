@@ -29,6 +29,7 @@ jobs:
   prepare:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -128,6 +129,7 @@ jobs:
   check:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.version.outputs.version }}
       new: ${{ steps.version.outputs.new }}
@@ -151,6 +153,7 @@ jobs:
     needs: check
     if: needs.check.outputs.new == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: pypi
     concurrency: release-publish
     permissions:
