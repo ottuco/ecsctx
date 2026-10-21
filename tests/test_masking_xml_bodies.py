@@ -368,7 +368,9 @@ class TestAnElementsEndTagIsFoundOnce:
         for mask in (_default_text, _text, redact_body):
             started = time.perf_counter()
             assert mask(text) == text
-            assert time.perf_counter() - started < 0.25, mask.__name__
+            # Linear, the text rule runs 127 KB of distinct names in ~0.25 s
+            # on a CI runner; the quadratic search this guards took seconds.
+            assert time.perf_counter() - started < 1.0, mask.__name__
 
 
 # An element named as the key walk names a card, a CVV or other SAD, and its
