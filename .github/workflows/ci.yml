@@ -6,6 +6,7 @@ on:
   # Every PR, not only those into main, so a stacked PR is tested before its
   # base merges.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 # A new push to a PR cancels its superseded run. A push gets a group of its own
 # (run_id), so pushes to main never cancel each other.
@@ -15,6 +16,7 @@ concurrency:
 
 jobs:
   test:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -41,6 +43,7 @@ jobs:
       - run: uv run --no-sync pytest tests/ -v
 
   build:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
