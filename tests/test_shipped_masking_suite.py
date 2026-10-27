@@ -57,3 +57,15 @@ class TestShippedMaskingSuite(MaskingTestsMixin, SimpleTestCase):
         logging.root.handlers, logging.root.level = cls._saved_root
         structlog.reset_defaults()
         super().tearDownClass()
+
+
+class TestShippedMaskingSuiteWithDefaultPacksOnly(TestShippedMaskingSuite):
+    """The same suite as a service that never turns on an opt-in pack.
+
+    Its card and financial-id cases skip themselves; WITHOUT_PACK_CASES, which
+    pin those rules to doing nothing until the pack is on, only run here.
+    """
+
+    def setUp(self):
+        super().setUp()
+        configure_masking_packs([])
