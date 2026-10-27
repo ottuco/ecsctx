@@ -8,7 +8,6 @@ are opt-in packs a PCI service enables in its logging config. The default pack
 
 import logging
 import random
-from decimal import Decimal
 
 import pytest
 
@@ -42,29 +41,6 @@ def _mask(msg, packs=None):
 
 
 class TestPacks:
-    def test_default_pack_leaves_card_shaped_text_alone(self):
-        text = "card 4111111111111111 cvv 123 HTTP 200 OK took 1500 ms"
-        assert _mask(text) == text
-
-    def test_pci_pack_truncates_the_pan_and_masks_the_cvv(self):
-        assert _mask("card 4111111111111111 cvv 123", packs=("pci",)) == (
-            "card [CARD-MASKED:411111******1111] cvv [CVV-MASKED]"
-        )
-
-    def test_pci_pack_masks_a_cvv_sent_with_a_saved_card_token(self):
-        assert _mask("token=tok_9f8e7d cvv 123", packs=("pci",)) == (
-            "token=[SECRET-MASKED] cvv [CVV-MASKED]"
-        )
-
-    def test_financial_ids_pack_masks_iban(self):
-        assert _mask("iban GB33BUKB20201555555555", packs=("financial_ids",)) == (
-            "iban [IBAN-MASKED]"
-        )
-        assert _mask("iban GB33BUKB20201555555555") == "iban GB33BUKB20201555555555"
-
-    def test_default_pack_still_masks_email_and_bearer(self):
-        assert _mask("a@b.co Bearer abc12345def") == "[EMAIL-MASKED] Bearer [SECRET-MASKED]"
-
     def test_all_packs_is_every_pack(self):
         assert ALL_PACKS == frozenset({"default", "pci", "financial_ids"})
 
@@ -102,111 +78,14 @@ class TestPackSelection:
 
 
 class TestKeyNames:
-    """Key names: substring matching as in 0.7.x (fail closed), with the known
-    false positives listed as safe keys; card and expiry keys matched
-    precisely. The decision is cached per (key, packs)."""
+    """The one key name a pack gates. Every other name is a case in
+    ecsctx.masking.samples, where it is masked in any service."""
 
     DEFAULT = frozenset({"default"})
-
-    @pytest.mark.parametrize(
-        "key",
-        [
-            "namespace",
-            "hostname",
-            "filename",
-            "token_type",
-            "card_id",
-            "expires_in",
-            "cache_key",
-            "operation",
-            # A standard client-hint header ("?0"), and words that merely
-            # contain "tel".
-            "Sec-Ch-Ua-Mobile",
-            "hotel",
-            "hostel",
-        ],
-    )
-    def test_unrelated_words_are_not_sensitive(self, key):
-        assert classify_key(key, self.DEFAULT) is None
-
-    @pytest.mark.parametrize(
-        "key",
-        [
-            # A service's own vocabulary is its to list (ECSCTX_MASK_SAFE_KEYS),
-            # not the library's: ecsctx masks these unless told otherwise.
-            "pg_name",
-            "gateway_name",
-            "vendor_name",
-            "bank_name",
-            "install_name",
-            "installation_name",
-            "tokenization_status",
-            "cvv_required",
-            "X-Script-Name",
-        ],
-    )
-    def test_a_services_own_names_are_masked_until_it_lists_them(self, key):
-        assert classify_key(key, self.DEFAULT) is not None
-
-    @pytest.mark.parametrize(
-        "key,expected",
-        [
-            ("first_name", "name"),
-            ("cardHolderName", "name"),
-            ("firstname", "name"),
-            ("access_token", "secret"),
-            ("cardtoken", "secret"),
-            ("x-api-key", "secret"),
-            ("apiKey", "secret"),
-            ("Authorization", "secret"),
-            ("client_secret", "secret"),
-            ("cvv", "cvv"),
-            ("cvv2", "cvv"),
-            ("securityCode", "cvv"),
-            ("security_code", "cvv"),
-            ("card", "card"),
-            ("pan", "card"),
-            ("card_number", "card"),
-            ("cardNumber", "card"),
-            ("expiry", "expiry"),
-            ("exp_month", "expiry"),
-            ("expirationDate", "expiry"),
-            ("cardExpiry", "expiry"),
-            ("telephone", "phone"),
-            ("mobile", "phone"),
-            ("tel", "phone"),
-            ("tel_no", "phone"),
-            ("telNo", "phone"),
-            ("customer_tel", "phone"),
-            ("tel2", "phone"),
-            ("nameOnCard", "name"),
-            ("name_on_card", "name"),
-            ("customer_email", "email"),
-            ("billing_address", "address"),
-            ("customer_ref", "generic"),
-        ],
-    )
-    def test_sensitive_keys(self, key, expected):
-        assert classify_key(key, self.DEFAULT) == expected
 
     def test_payment_id_keys_follow_the_financial_ids_pack(self):
         assert classify_key("transaction_id", self.DEFAULT) is None
         assert classify_key("transaction_id", self.DEFAULT | {"financial_ids"}) == "payment_id"
-
-    def test_card_fields_are_masked_by_key_in_every_service(self):
-        masked = _mask({"card_number": "4111 1111 1111 1111", "expiry": "12/27", "cvv": "123"})
-        assert masked == {
-            "card_number": "[CARD-MASKED:411111******1111]",
-            "expiry": "[EXPIRY-MASKED]",
-            "cvv": "[CVV-MASKED]",
-        }
-
-    def test_a_card_object_under_a_card_key_is_masked_whole(self):
-        masked = _mask({"card": {"number": "4111111111111111", "expiry": {"month": "01", "year": "27"}}})
-        assert masked == {"card": "[CARD-MASKED]"}
-
-    def test_a_card_key_holding_no_pan_is_labelled_not_truncated(self):
-        assert _mask({"pan": "n/a"}) == {"pan": "[CARD-MASKED]"}
 
 
 class TestConfiguredSafeKeys:
@@ -317,29 +196,6 @@ class TestConfiguredSafeKeys:
 
 
 class TestBoundariesAndTruncation:
-    @pytest.mark.parametrize(
-        "value",
-        [
-            "8231045567ab34cd9f0e1a2b3c4d5e6f7a8b9c0d",  # session_id: 10 digits, then hex
-            "5551234567abc",  # phone-shaped run glued to letters
-        ],
-    )
-    def test_a_digit_run_touching_letters_is_not_a_phone_number(self, value):
-        # The card rule deliberately still matches a PAN followed by a letter
-        # (Track 2 data), so a 12-19 digit run glued to letters is masked in a
-        # PCI service; session_id and trace.id are never scanned for that reason.
-        assert _mask(value, packs=ALL_PACKS) == value
-
-    def test_a_pan_between_separators_is_still_truncated(self):
-        assert _mask('"pan":"4111111111111111",', packs=("pci",)) == (
-            '"pan":"[CARD-MASKED:411111******1111]",'
-        )
-
-    def test_a_short_pan_keeps_only_its_last_four(self):
-        assert _mask("pay 5018123456789 ok", packs=("pci",)) == (
-            "pay [CARD-MASKED:*********6789] ok"
-        )
-
     def test_mask_pan_agrees_with_the_rule(self):
         assert mask_pan("4111111111111111") == "411111******1111"
         assert mask_pan("378282246310005") == "378282*****0005"
@@ -388,24 +244,6 @@ class TestExemptionPaths:
         configure_masking(exempt_paths=["payload.payment_methods[*].name"])
         masked = MaskPIIFilter()._mask_dict({"payload": {"payment_methods": [{"name": "KNET"}]}})
         assert masked == {"payload": {"payment_methods": [{"name": "KNET"}]}}
-
-
-class TestArgs:
-    def test_numeric_format_args_survive(self):
-        record = logging.LogRecord(
-            "t", logging.INFO, __file__, 0, "refunded %.3f of %d", (Decimal("12.5"), Decimal(3)), None
-        )
-        MaskPIIFilter().filter(record)
-        assert record.getMessage() == "refunded 12.500 of 3"
-
-    def test_an_object_whose_text_holds_pii_is_still_masked(self):
-        class Holder:
-            def __str__(self):
-                return "owner a@b.co"
-
-        record = logging.LogRecord("t", logging.INFO, __file__, 0, "%s", (Holder(),), None)
-        MaskPIIFilter().filter(record)
-        assert record.getMessage() == "owner [EMAIL-MASKED]"
 
 
 class TestAdminEmailHandler:

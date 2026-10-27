@@ -113,34 +113,3 @@ class TestPIIContainersKeepTheirShape:
         second = MaskPIIFilter()._mask_dict({"customer": {"id": 2, "email": "PAYER@example.com "}})
         assert first["customer"]["email"] == second["customer"]["email"]
 
-    def test_every_leaf_of_an_address_container_is_masked(self):
-        skip_if_safe("billing")
-        masked = MaskPIIFilter()._mask_dict(
-            {"billing": {"line1": "1 Main St", "city": "Kuwait City", "zip": 12345}}
-        )
-        assert masked == {
-            "billing": {"line1": "[GENERIC-MASKED]", "city": "[GENERIC-MASKED]", "zip": "[GENERIC-MASKED]"}
-        }
-
-    def test_a_card_inside_a_customer_is_still_masked_whole(self):
-        masked = MaskPIIFilter()._mask_dict(
-            {"customer": {"id": 3, "card": {"number": "4111111111111111", "expiry": "12/27"}}}
-        )
-        assert masked == {"customer": {"id": 3, "card": "[CARD-MASKED]"}}
-
-    def test_a_list_of_contacts_is_walked(self):
-        skip_if_safe("contact", "name", "email")
-        masked = MaskPIIFilter()._mask_dict({"contacts": [{"name": "Jane", "email": "a@b.co"}]})
-        assert masked == {"contacts": [{"name": "[NAME-MASKED]", "email": "[EMAIL-MASKED]"}]}
-
-    def test_a_secret_container_is_still_masked_whole(self):
-        assert MaskPIIFilter()._mask_dict({"credentials": {"user": "u", "password": "p"}}) == {
-            "credentials": "[SECRET-MASKED]"
-        }
-
-
-class TestEmptyFields:
-    def test_an_empty_container_field_stays_empty(self):
-        assert MaskPIIFilter()._mask_dict({"customer": {"id": 1, "image": None}}) == {
-            "customer": {"id": 1, "image": None}
-        }

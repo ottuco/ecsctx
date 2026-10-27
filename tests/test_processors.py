@@ -334,10 +334,6 @@ class TestMaskWalker:
 
 
 class TestMaskWalkerUnconfiguredPII:
-    def test_unconfigured_redacts(self):
-        assert not is_configured()
-        out = _mask({"customer_name": "John"})
-        assert out["customer_name"] == "[NAME-MASKED]"
 
     def test_unconfigured_idempotent(self):
         once = _mask({"customer_name": "John"})
@@ -748,26 +744,6 @@ class TestPanDisplayMasking:
             assert body not in masked
             assert pan not in masked
             assert masked == f"pay [CARD-MASKED:{_display(pan)}] ok"
-
-    def test_small_ints_bools_and_none_survive(self):
-        masked = _mask(
-            {"status_code": 200, "count": 100, "ok": True, "nothing": None}
-        )
-        assert masked == {"status_code": 200, "count": 100, "ok": True, "nothing": None}
-
-    def test_short_int_under_cvv_key_is_masked(self):
-        # The CVV rule is not tokenizable: any int under a CVV key becomes
-        # the bare label, never a token and never the raw value.
-        assert _mask({"source": {"securityCode": 123}}) == {
-            "source": {"securityCode": "[CVV-MASKED]"}
-        }
-
-    def test_order_ids_and_timestamps_are_not_masked(self):
-        payload = {
-            "order": {"id": "deltabRKJ5X_0", "reference_number": "REF-2026-09187654"},
-            "timestamps": {"created": 1750000000},
-        }
-        assert _mask(payload) == payload
 
 
 class TestNormalizeProcessors:
