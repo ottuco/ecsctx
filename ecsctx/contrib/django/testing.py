@@ -663,6 +663,9 @@ class MaskingTestsMixin:
     def test_masks_sensitive_dict_keys(self):
         self.assert_samples_masked(samples.DICT_KEY_VALUE_MASKING_CASES, group="dict_key")
 
+    def test_masks_keys_inside_json_text(self):
+        self.assert_samples_masked(samples.JSON_TEXT_CASES, group="json_text")
+
     def test_masks_objects_and_leaves_primitives(self):
         self.assert_samples_masked(samples.OBJECT_AND_PRIMITIVE_CASES, group="object_and_primitive")
 

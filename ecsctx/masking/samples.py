@@ -18,12 +18,21 @@ Content rules come in packs: "default" is always on, "pci" and
 a case needs, so a project is only held to the packs it has turned on.
 """
 
+from decimal import Decimal
+
 
 class _FakeCard:
     """Stand-in for a model whose ``__repr__`` embeds sensitive data (PAN/token)."""
 
     def __repr__(self) -> str:
         return "<Card(VISA, 512345******0008, 9584184138614802)>"
+
+
+class _Owner:
+    """Stand-in for an object whose text holds PII."""
+
+    def __str__(self) -> str:
+        return "owner a@b.co"
 
 
 def _pem(kind: str, body: str) -> str:
@@ -201,6 +210,18 @@ CREDENTIAL_MASKED_CASES = [
     ("key-name-api-key", {"api_key": "value1"}, {"api_key": "[SECRET-MASKED]"}, ("api_key",)),
     ("key-name-access-token", {"access_token": "value1"}, {"access_token": "[SECRET-MASKED]"}, ("access_token",)),
     ("key-name-password", {"password": "value1"}, {"password": "[SECRET-MASKED]"}, ("password",)),
+    # a service's own vocabulary: masked until the service lists it
+    ("key-tokenization-status", {"tokenization_status": "value1"}, {"tokenization_status": "[SECRET-MASKED]"}, ("tokenization_status",)),
+    # more spellings of a sensitive key name
+    ("key-cardtoken", {"cardtoken": "value1"}, {"cardtoken": "[SECRET-MASKED]"}, ("cardtoken",)),
+    ("key-x-api-key", {"x-api-key": "value1"}, {"x-api-key": "[SECRET-MASKED]"}, ("x-api-key",)),
+    ("key-apikey", {"apiKey": "value1"}, {"apiKey": "[SECRET-MASKED]"}, ("apiKey",)),
+    ("key-client-secret", {"client_secret": "value1"}, {"client_secret": "[SECRET-MASKED]"}, ("client_secret",)),
+    ("cred-email-and-bearer-in-one-line", "a@b.co Bearer abc12345def", "[EMAIL-MASKED] Bearer [SECRET-MASKED]"),
+    # glued and plural spellings a payload uses
+    ("key-tokens", {"tokens": "value1"}, {"tokens": "[SECRET-MASKED]"}, ("tokens",)),
+    ("key-passwordhash", {"passwordhash": "value1"}, {"passwordhash": "[SECRET-MASKED]"}, ("passwordhash",)),
+    ("key-merchantapikey", {"merchantapikey": "value1"}, {"merchantapikey": "[SECRET-MASKED]"}, ("merchantapikey",)),
 ]
 
 
@@ -248,6 +269,19 @@ CVV_KEYWORD_CASES = [
     ("key-name-cvv", {"cvv": "value1"}, {"cvv": "[CVV-MASKED]"}, ("cvv",)),
     ("key-name-cvc", {"cvc": "value1"}, {"cvc": "[CVV-MASKED]"}, ("cvc",)),
     ("key-name-security-code", {"security_code": "value1"}, {"security_code": "[CVV-MASKED]"}, ("security_code",)),
+    # a service's own vocabulary: masked until the service lists it
+    ("key-cvv-required", {"cvv_required": "value1"}, {"cvv_required": "[CVV-MASKED]"}, ("cvv_required",)),
+    # more spellings of a sensitive key name
+    ("key-cvv2", {"cvv2": "value1"}, {"cvv2": "[CVV-MASKED]"}, ("cvv2",)),
+    ("key-securitycode", {"securityCode": "value1"}, {"securityCode": "[CVV-MASKED]"}, ("securityCode",)),
+    ("cvv-with-a-saved-card-token", "token=tok_9f8e7d cvv 123", "token=[SECRET-MASKED] cvv [CVV-MASKED]"),
+    # glued and plural spellings a payload uses
+    ("key-cardcvv", {"cardcvv": "value1"}, {"cardcvv": "[CVV-MASKED]"}, ("cardcvv",)),
+    ("key-cvvnumber", {"cvvnumber": "value1"}, {"cvvnumber": "[CVV-MASKED]"}, ("cvvnumber",)),
+    ("key-cvvcode", {"CVVCode": "value1"}, {"CVVCode": "[CVV-MASKED]"}, ("CVVCode",)),
+    ("key-cardsecuritycode", {"cardsecuritycode": "value1"}, {"cardsecuritycode": "[CVV-MASKED]"}, ("cardsecuritycode",)),
+    # a CVV key inside JSON text: the content pack is what parses it
+    ("cvv-key-in-json-text", 'data {"cvv": 123}', 'data {"cvv": "[CVV-MASKED]"}', ("cvv",)),
 ]
 
 
@@ -321,6 +355,7 @@ IBAN_MASKED_CASES = [
     ("iban-digit-run-16-classic-pan-length", "acct GB3412345678901234 debited", "acct [IBAN-MASKED] debited"),
     ("iban-digit-run-19-top-of-card-range", "acct GB5612345678901234567 debited", "acct [IBAN-MASKED] debited"),
     ("iban-digit-run-20-past-card-range", "acct GB78123456789012345678 debited", "acct [IBAN-MASKED] debited"),
+    ("iban-keyworded", "iban GB33BUKB20201555555555", "iban [IBAN-MASKED]"),
 ]
 
 
@@ -344,6 +379,16 @@ PHONE_MASKED_CASES = [
     ("key-name-phone", {"phone": "value1"}, {"phone": "[PHONE-MASKED]"}, ("phone",)),
     ("key-name-mobile", {"mobile": "value1"}, {"mobile": "[PHONE-MASKED]"}, ("mobile",)),
     ("key-name-tel", {"tel": "value1"}, {"tel": "[PHONE-MASKED]"}, ("tel",)),
+    # more spellings of a sensitive key name
+    ("key-telephone", {"telephone": "value1"}, {"telephone": "[PHONE-MASKED]"}, ("telephone",)),
+    ("key-tel-no", {"tel_no": "value1"}, {"tel_no": "[PHONE-MASKED]"}, ("tel_no",)),
+    ("key-telno", {"telNo": "value1"}, {"telNo": "[PHONE-MASKED]"}, ("telNo",)),
+    ("key-customer-tel", {"customer_tel": "value1"}, {"customer_tel": "[PHONE-MASKED]"}, ("customer_tel",)),
+    ("key-tel2", {"tel2": "value1"}, {"tel2": "[PHONE-MASKED]"}, ("tel2",)),
+    # glued and plural spellings a payload uses
+    ("key-phonenumber", {"phonenumber": "value1"}, {"phonenumber": "[PHONE-MASKED]"}, ("phonenumber",)),
+    ("key-mobileno", {"mobileno": "value1"}, {"mobileno": "[PHONE-MASKED]"}, ("mobileno",)),
+    ("key-customerphone", {"customerphone": "value1"}, {"customerphone": "[PHONE-MASKED]"}, ("customerphone",)),
 ]
 
 
@@ -375,6 +420,14 @@ EMAIL_MASKED_CASES = [
     ),
     # one case per key name of this type, masked by the name alone
     ("key-name-email", {"email": "value1"}, {"email": "[EMAIL-MASKED]"}, ("email",)),
+    ("email-bare", "a@b.com", "[EMAIL-MASKED]"),
+    ("email-in-a-sentence", "contact a@b.com please", "contact [EMAIL-MASKED] please"),
+    ("email-after-a-masked-like-fragment", "ha-MASKED] contact me at attacker@evil.com", "ha-MASKED] contact me at [EMAIL-MASKED]"),
+    ("email-in-text-that-is-not-json", "{not json} a@b.com", "{not json} [EMAIL-MASKED]"),
+    ("email-as-a-json-scalar", '"a@b.com"', '"[EMAIL-MASKED]"'),
+    # glued and plural spellings a payload uses
+    ("key-email", {"eMail": "value1"}, {"eMail": "[EMAIL-MASKED]"}, ("eMail",)),
+    ("key-emailid", {"emailid": "value1"}, {"emailid": "[EMAIL-MASKED]"}, ("emailid",)),
 ]
 
 
@@ -508,6 +561,24 @@ CARD_NUMBER_CASES = [
     ("key-name-pan", {"pan": "value1"}, {"pan": "[CARD-MASKED]"}, ("pan",)),
     ("key-name-card-number", {"card_number": "value1"}, {"card_number": "[CARD-MASKED]"}, ("card_number",)),
     ("key-name-cardno", {"cardno": "value1"}, {"cardno": "[CARD-MASKED]"}, ("cardno",)),
+    # separators do not matter, and a truncated marker survives a second pass
+    ("card-spaced-groups", "4111 1111 1111 1111", "[CARD-MASKED:411111******1111]"),
+    ("card-dashed-groups", "4111-1111-1111-1111", "[CARD-MASKED:411111******1111]"),
+    ("card-contiguous", "4111111111111111", "[CARD-MASKED:411111******1111]"),
+    ("card-marker-unchanged", "[CARD-MASKED:411111******1111]", "[CARD-MASKED:411111******1111]"),
+    # a PAN logged as a JSON number: the key rules leave it, the content rules take it
+    (
+        "card-json-number-in-text",
+        '{"nameOnCard": "Jane Payer", "ref": 4111111111111111}',
+        '{"nameOnCard": "[NAME-MASKED]", "ref": [CARD-MASKED:411111******1111]}',
+    ),
+    # more spellings of a sensitive key name
+    ("key-cardnumber", {"cardNumber": "value1"}, {"cardNumber": "[CARD-MASKED]"}, ("cardNumber",)),
+    # what the pci pack adds: PAN truncation in free text
+    ("card-pan-and-cvv-in-text", "card 4111111111111111 cvv 123", "card [CARD-MASKED:411111******1111] cvv [CVV-MASKED]"),
+    ("card-pan-between-separators", '"pan":"4111111111111111",', '"pan":"[CARD-MASKED:411111******1111]",'),
+    ("card-short-pan-keeps-last-four", "pay 5018123456789 ok", "pay [CARD-MASKED:*********6789] ok"),
+    ("card-track-2-data", "5413330089020011D2512601079360805F", "[CARD-MASKED:541333******0011]D2512601079360805F"),
 ]
 
 
@@ -593,6 +664,90 @@ DICT_KEY_VALUE_MASKING_CASES = [
     ("key-name-customer", {"customer": "value1"}, {"customer": "[GENERIC-MASKED]"}, ("customer",)),
     ("key-name-contact", {"contact": "value1"}, {"contact": "[GENERIC-MASKED]"}, ("contact",)),
     ("key-name-udf", {"udf": "value1"}, {"udf": "[GENERIC-MASKED]"}, ("udf",)),
+    ("key-customer-email", {"customer_email": "user@example.com"}, {"customer_email": "[EMAIL-MASKED]"}, ("customer_email",)),
+    # a PII container keeps its shape: the email field is masked as an email
+    (
+        "key-email-under-a-container",
+        {"contact": {"email": "user@example.com"}},
+        {"contact": {"email": "[EMAIL-MASKED]"}},
+        ("contact", "email"),
+    ),
+    (
+        "key-never-tokenized-types-keep-their-label",
+        {"cvv": "123", "expiry": "12/28", "card_number": "4111111111111111"},
+        {"cvv": "[CVV-MASKED]", "expiry": "[EXPIRY-MASKED]", "card_number": "[CARD-MASKED:411111******1111]"},
+        ("cvv", "expiry", "card_number"),
+    ),
+    ("nested-containers-are-walked", {"items": [{"notes": ["a@b.com"]}]}, {"items": [{"notes": ["[EMAIL-MASKED]"]}]}),
+    # a service's own vocabulary: masked until the service lists it
+    ("key-pg-name", {"pg_name": "value1"}, {"pg_name": "[NAME-MASKED]"}, ("pg_name",)),
+    ("key-gateway-name", {"gateway_name": "value1"}, {"gateway_name": "[NAME-MASKED]"}, ("gateway_name",)),
+    ("key-vendor-name", {"vendor_name": "value1"}, {"vendor_name": "[NAME-MASKED]"}, ("vendor_name",)),
+    ("key-bank-name", {"bank_name": "value1"}, {"bank_name": "[NAME-MASKED]"}, ("bank_name",)),
+    ("key-install-name", {"install_name": "value1"}, {"install_name": "[NAME-MASKED]"}, ("install_name",)),
+    ("key-installation-name", {"installation_name": "value1"}, {"installation_name": "[NAME-MASKED]"}, ("installation_name",)),
+    ("key-x-script-name", {"X-Script-Name": "value1"}, {"X-Script-Name": "[NAME-MASKED]"}, ("X-Script-Name",)),
+    # more spellings of a sensitive key name
+    ("key-first-name", {"first_name": "value1"}, {"first_name": "[NAME-MASKED]"}, ("first_name",)),
+    ("key-cardholdername", {"cardHolderName": "value1"}, {"cardHolderName": "[NAME-MASKED]"}, ("cardHolderName",)),
+    ("key-firstname", {"firstname": "value1"}, {"firstname": "[NAME-MASKED]"}, ("firstname",)),
+    ("key-exp-month", {"exp_month": "value1"}, {"exp_month": "[EXPIRY-MASKED]"}, ("exp_month",)),
+    ("key-expirationdate", {"expirationDate": "value1"}, {"expirationDate": "[EXPIRY-MASKED]"}, ("expirationDate",)),
+    ("key-cardexpiry", {"cardExpiry": "value1"}, {"cardExpiry": "[EXPIRY-MASKED]"}, ("cardExpiry",)),
+    ("key-nameoncard", {"nameOnCard": "value1"}, {"nameOnCard": "[NAME-MASKED]"}, ("nameOnCard",)),
+    ("key-name-on-card", {"name_on_card": "value1"}, {"name_on_card": "[NAME-MASKED]"}, ("name_on_card",)),
+    ("key-billing-address", {"billing_address": "value1"}, {"billing_address": "[ADDRESS-MASKED]"}, ("billing_address",)),
+    ("key-customer-ref", {"customer_ref": "value1"}, {"customer_ref": "[GENERIC-MASKED]"}, ("customer_ref",)),
+    # card, expiry and CVV keys mask in every service, pack or no pack
+    (
+        "key-card-fields-of-a-payment",
+        {"card_number": "4111 1111 1111 1111", "expiry": "12/27", "cvv": "123"},
+        {"card_number": "[CARD-MASKED:411111******1111]", "expiry": "[EXPIRY-MASKED]", "cvv": "[CVV-MASKED]"},
+        ("card_number", "expiry", "cvv"),
+    ),
+    (
+        "key-card-object-masked-whole",
+        {"card": {"number": "4111111111111111", "expiry": {"month": "01", "year": "27"}}},
+        {"card": "[CARD-MASKED]"},
+        ("card",),
+    ),
+    ("key-card-without-a-number", {"pan": "n/a"}, {"pan": "[CARD-MASKED]"}, ("pan",)),
+    # glued and plural spellings a payload uses
+    ("key-nameoncard", {"nameoncard": "value1"}, {"nameoncard": "[NAME-MASKED]"}, ("nameoncard",)),
+    ("key-customername", {"customername": "value1"}, {"customername": "[NAME-MASKED]"}, ("customername",)),
+    ("key-accountholdername", {"accountholdername": "value1"}, {"accountholdername": "[NAME-MASKED]"}, ("accountholdername",)),
+    ("key-addressline1", {"addressline1": "value1"}, {"addressline1": "[ADDRESS-MASKED]"}, ("addressline1",)),
+    ("key-billingdetails", {"billingdetails": "value1"}, {"billingdetails": "[GENERIC-MASKED]"}, ("billingdetails",)),
+    ("decimal-field-renders-as-text", {"amount": Decimal("100.000")}, {"amount": "100.000"}),
+    # a PII container keeps its shape, and every leaf is masked on its own
+    (
+        "container-address-leaves",
+        {"billing": {"line1": "1 Main St", "city": "Kuwait City", "zip": 12345}},
+        {"billing": {"line1": "[GENERIC-MASKED]", "city": "[GENERIC-MASKED]", "zip": "[GENERIC-MASKED]"}},
+        ("billing",),
+    ),
+    (
+        "container-card-masked-whole",
+        {"customer": {"id": 3, "card": {"number": "4111111111111111", "expiry": "12/27"}}},
+        {"customer": {"id": 3, "card": "[CARD-MASKED]"}},
+        ("customer", "card"),
+    ),
+    (
+        "container-list-of-contacts",
+        {"contacts": [{"name": "Jane", "email": "a@b.co"}]},
+        {"contacts": [{"name": "[NAME-MASKED]", "email": "[EMAIL-MASKED]"}]},
+        ("name", "email"),
+    ),
+    (
+        "container-secret-masked-whole",
+        {"credentials": {"user": "u", "password": "p"}},
+        {"credentials": "[SECRET-MASKED]"},
+        ("credentials",),
+    ),
+    ("container-empty-field-stays-empty", {"customer": {"id": 1, "image": None}}, {"customer": {"id": 1, "image": None}}),
+    ("key-customer-name", {"customer_name": "John"}, {"customer_name": "[NAME-MASKED]"}, ("customer_name",)),
+    # an int under a CVV key is the bare label, never a token, never the value
+    ("key-cvv-int-under-a-container", {"source": {"securityCode": 123}}, {"source": {"securityCode": "[CVV-MASKED]"}}, ("securityCode",)),
 ]
 
 
@@ -672,6 +827,33 @@ NOT_MASKED = [
     ("email-single-char-tld", "user@example.c"),
     # not a sensitive key at all, regardless of value.
     ("key-cache-key-unaffected", {"cache_key": "user_profile_v2"}),
+    # already masked, so a second pass changes nothing
+    ("marker-email-token", "[EMAIL-MASKED:ptok:v1:abc]"),
+    # JSON text with no sensitive key and no sensitive content
+    ("json-text-nothing-to-mask", '{"status":"ok","count":3}'),
+    ("json-text-null-under-a-secret-key", 'body {"public_key": null, "a": 1}'),
+    # "service" is ecsctx metadata at the top of a record only
+    ("nested-service-key-is-ordinary", {"wrapper": {"service": "not really structural"}}),
+    # words that only look sensitive
+    ("key-namespace-unaffected", {"namespace": "value1"}),
+    ("key-hostname-unaffected", {"hostname": "value1"}),
+    ("key-filename-unaffected", {"filename": "value1"}),
+    ("key-token-type-unaffected", {"token_type": "value1"}),
+    ("key-card-id-unaffected", {"card_id": "value1"}),
+    ("key-expires-in-unaffected", {"expires_in": "value1"}),
+    ("key-cache-key-unaffected", {"cache_key": "value1"}),
+    ("key-operation-unaffected", {"operation": "value1"}),
+    ("key-sec-ch-ua-mobile-unaffected", {"Sec-Ch-Ua-Mobile": "value1"}),
+    ("key-hotel-unaffected", {"hotel": "value1"}),
+    ("key-hostel-unaffected", {"hostel": "value1"}),
+    # a digit run touching letters is an id, not a phone number
+    ("digits-then-hex-session-id", "8231045567ab34cd9f0e1a2b3c4d5e6f7a8b9c0d"),
+    ("phone-shaped-run-glued-to-letters", "5551234567abc"),
+    # order ids and timestamps a payment carries, none of them sensitive
+    (
+        "order-ids-and-timestamps",
+        {"order": {"id": "deltabRKJ5X_0", "reference_number": "REF-2026-09187654"}, "timestamps": {"created": 1750000000}},
+    ),
 ]
 
 
@@ -733,16 +915,88 @@ ACCEPTED_LEAK_CASES = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# A JSON object or list logged as a string gets the key-name rules a dict
+# gets. Before, only the content rules saw it, so a cardholder name or an
+# expiry date inside a callback body reached the index in clear.
+# ---------------------------------------------------------------------------
+JSON_TEXT_CASES = [
+    ("json-text-secret-key", 'body {"session_key": 12345}', 'body {"session_key": "[SECRET-MASKED]"}', ("session_key",)),
+    (
+        "json-message-masked-by-key",
+        '{"customer": {"nameOnCard": "Jane Payer"}}',
+        '{"customer": {"nameOnCard": "[NAME-MASKED]"}}',
+        ("customer", "nameOnCard"),
+    ),
+    # "log" is ecsctx metadata at the top of a record, not inside a payload
+    (
+        "json-message-under-a-record-skip-key",
+        '{"log": {"nameOnCard": "Jane Payer"}}',
+        '{"log": {"nameOnCard": "[NAME-MASKED]"}}',
+        ("nameOnCard",),
+    ),
+    # a PSP callback body, as a gateway view logs it
+    (
+        "json-payload-name-camel",
+        {"payload": '{"payer_details": {"nameOnCard": "Jane Payer"}, "status": "ok"}'},
+        {"payload": '{"payer_details": {"nameOnCard": "[NAME-MASKED]"}, "status": "ok"}'},
+        ("nameOnCard",),
+    ),
+    (
+        "json-payload-name-snake",
+        {"payload": '{"payer_details": {"name_on_card": "Jane Payer"}, "status": "ok"}'},
+        {"payload": '{"payer_details": {"name_on_card": "[NAME-MASKED]"}, "status": "ok"}'},
+        ("name_on_card",),
+    ),
+    (
+        "json-payload-expiry-object",
+        {"payload": '{"payer_details": {"expiry": {"month": "1", "year": "28"}}, "status": "ok"}'},
+        {"payload": '{"payer_details": {"expiry": "[EXPIRY-MASKED]"}, "status": "ok"}'},
+        ("expiry",),
+    ),
+    (
+        "json-payload-expiry-month",
+        {"payload": '{"payer_details": {"expiry_month": "01"}, "status": "ok"}'},
+        {"payload": '{"payer_details": {"expiry_month": "[EXPIRY-MASKED]"}, "status": "ok"}'},
+        ("expiry_month",),
+    ),
+    (
+        "json-payload-expiry-year",
+        {"payload": '{"payer_details": {"expiry_year": "39"}, "status": "ok"}'},
+        {"payload": '{"payer_details": {"expiry_year": "[EXPIRY-MASKED]"}, "status": "ok"}'},
+        ("expiry_year",),
+    ),
+]
+
+
 # Plain stdlib logging, where the handler interpolates the arguments:
 # (label, message, args, expected message, pack the case needs). Only a filter
 # on the handler sees these — a structlog processor runs too late.
-STDLIB_ARGS_CASES: list[tuple[str, str, tuple, str, str]] = []
+STDLIB_ARGS_CASES = [
+    ("stdlib-email-arg", "user %s signed in", ("bob@example.com",), "user [EMAIL-MASKED] signed in", "default"),
+    # a mapping arg, as logging's %(name)s form passes it
+    (
+        "stdlib-mapping-args",
+        "login %(first_name)s pw=%(password)s",
+        ({"first_name": "Jane", "password": "hunter2"},),
+        "login [NAME-MASKED] pw=[SECRET-MASKED]",
+        "default",
+        ("first_name", "password"),
+    ),
+    ("stdlib-numeric-args-survive", "refunded %.3f of %d", (Decimal("12.5"), Decimal(3)), "refunded 12.500 of 3", "default"),
+    ("stdlib-object-text-is-masked", "%s", (_Owner(),), "owner [EMAIL-MASKED]", "default"),
+    ("stdlib-decimal-arg-holding-a-pan", "ref %s", (Decimal("4111111111111111"),), "ref [CARD-MASKED:411111******1111]", "pci"),
+]
 
 
 # Text an opt-in pack would mask, listed for the services that leave that pack
 # off: (label, sample, the pack that must be off). Turning the pack on is what
 # masks it, so the case runs only where it is off.
-WITHOUT_PACK_CASES: list[tuple[str, object, str]] = []
+WITHOUT_PACK_CASES = [
+    ("card-and-cvv-text-without-pci", "card 4111111111111111 cvv 123 HTTP 200 OK took 1500 ms", "pci"),
+    ("iban-text-without-financial-ids", "iban GB33BUKB20201555555555", "financial_ids"),
+    ("payment-id-key-without-financial-ids", {"transaction_id": "value1"}, "financial_ids"),
+]
 
 
 MASKED_GROUPS = {
@@ -757,6 +1011,7 @@ MASKED_GROUPS = {
     "card": CARD_NUMBER_CASES,
     "ssn": SSN_MASKED_CASES,
     "dict_key": DICT_KEY_VALUE_MASKING_CASES,
+    "json_text": JSON_TEXT_CASES,
     "object_and_primitive": OBJECT_AND_PRIMITIVE_CASES,
 }
 
@@ -778,6 +1033,7 @@ CONTENT_PACK = {
     "card": "pci",
     "ssn": "financial_ids",
     "dict_key": "default",
+    "json_text": "default",
     "object_and_primitive": "pci",
 }
 
