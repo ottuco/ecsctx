@@ -7,6 +7,11 @@ name: Release
 # 2. Approve and merge that pull request. On the push to main, a version with no tag yet is
 #    built, tested, tagged, released on GitHub and published to PyPI.
 # PyPI's trusted publisher names this file and the `pypi` environment: keep both.
+#
+# Build and test code (uv, hatchling, pytest and the test dependencies) runs only in jobs with
+# a read-only token and no stored git credentials. The jobs that can write (push a branch or a
+# tag, create the GitHub release) or publish (OIDC id-token in the `pypi` environment) run no
+# build or test code: they only take the files the earlier job uploaded (#161532).
 
 on:
   workflow_dispatch:
@@ -30,12 +35,15 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
+    outputs:
+      new: ${{ steps.version.outputs.new }}
     permissions:
-      contents: write
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1  # zizmor: ignore[artipacked] the Push the release branch step pushes with the checkout credentials; nothing uploads the checkout as an artifact
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
@@ -110,16 +118,49 @@ jobs:
             } > CHANGELOG.md
           fi
 
+      # Upload before the tests, so the upload holds the files as they were before any test
+      # code ran. A failed test still fails this job, and the next job then never runs.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: |
+            pyproject.toml
+            ecsctx/__init__.py
+            CHANGELOG.md
+          if-no-files-found: error
+          retention-days: 1
+
+      # --frozen installs exactly the hash-pinned versions in uv.lock and never re-resolves.
       - name: Run tests
         run: |
-          uv sync --group test --extra django
-          uv run pytest tests/ -v
+          uv sync --frozen --group test --extra django
+          uv run --no-sync pytest tests/ -v
+
+  # Only git runs here: no build or test code next to the contents: write token.
+  release-branch:
+    needs: prepare
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # This job runs only git after the checkout (no build or test code) and uploads nothing;
+      # the push needs the checkout credentials.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true # zizmor: ignore[artipacked] see the comment above
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: .
 
       # Workflows may not open or approve pull requests in this organisation (#160364), so a
       # person opens it from the link below, and someone else approves it.
       - name: Push the release branch
         env:
-          NEW: ${{ steps.version.outputs.new }}
+          NEW: ${{ needs.prepare.outputs.new }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -158,20 +199,18 @@ jobs:
             echo "new=true" >> "$GITHUB_OUTPUT"
           fi
 
-  publish:
+  # Build and test with a read-only token; the next jobs only use the uploaded dist/.
+  build:
     needs: check
     if: needs.check.outputs.new == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
-    environment: pypi
-    concurrency: release-publish
     permissions:
-      contents: write
-      id-token: write
-    env:
-      VERSION: ${{ needs.check.outputs.version }}
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1  # zizmor: ignore[artipacked] the Tag step pushes the tag with the checkout credentials; nothing uploads the checkout as an artifact
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
@@ -181,10 +220,42 @@ jobs:
       - name: Build
         run: uv build
 
+      # Upload before the tests, so the upload holds the files as they were before any test
+      # code ran. A failed test still fails this job, and the next job then never runs.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+      # --frozen installs exactly the hash-pinned versions in uv.lock and never re-resolves.
       - name: Run tests
         run: |
-          uv sync --group test --extra django
-          uv run pytest tests/ -v
+          uv sync --frozen --group test --extra django
+          uv run --no-sync pytest tests/ -v
+
+  # Only git and gh run here: no build or test code next to the contents: write token.
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    concurrency: release-publish
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      # This job runs only git and gh after the checkout (no build or test code) and uploads
+      # nothing; the Tag step pushes with the checkout credentials.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true # zizmor: ignore[artipacked] see the comment above
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
 
       - name: Tag
         run: |
@@ -198,6 +269,21 @@ jobs:
           gh release create "v${VERSION}" dist/* \
             --title "v${VERSION}" \
             --generate-notes
+
+  # The only job with the PyPI OIDC token: no checkout, no build or test code, only the
+  # dist/ that the build job made.
+  publish:
+    needs: release
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
