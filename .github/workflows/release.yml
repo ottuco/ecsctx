@@ -12,6 +12,10 @@ name: Release
 # a read-only token and no stored git credentials. The jobs that can write (push a branch or a
 # tag, create the GitHub release) or publish (OIDC id-token in the `pypi` environment) run no
 # build or test code: they only take the files the earlier job uploaded (#161532).
+# Test code also never runs in a job that uploads files: the tests have jobs of their own
+# (prepare-test, test), and the later jobs download the uploads by artifact id, not by name.
+# Every job can delete and re-upload this run's artifacts, but a re-upload gets a new id, so
+# a replaced upload makes the release fail instead of shipping the new files.
 
 on:
   workflow_dispatch:
@@ -37,6 +41,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       new: ${{ steps.version.outputs.new }}
+      files-id: ${{ steps.upload.outputs.artifact-id }}
     permissions:
       contents: read
     steps:
@@ -45,17 +50,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          python-version: "3.12"
-          activate-environment: true
-
       - name: Calculate new version
         id: version
         env:
           BUMP: ${{ inputs.bump }}
         run: |
-          current=$(python -c "import re; print(re.search(r'version = \"(.+?)\"', open('pyproject.toml').read()).group(1))")
+          current=$(python3 -c "import re; print(re.search(r'version = \"(.+?)\"', open('pyproject.toml').read()).group(1))")
           IFS='.' read -r major minor patch <<< "$current"
           case "$BUMP" in
             major) major=$((major + 1)); minor=0; patch=0 ;;
@@ -118,9 +118,9 @@ jobs:
             } > CHANGELOG.md
           fi
 
-      # Upload before the tests, so the upload holds the files as they were before any test
-      # code ran. A failed test still fails this job, and the next job then never runs.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      # Nothing runs after this upload in this job.
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-files
           path: |
@@ -130,6 +130,28 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # The tests, on main with the bumped files, in a job that uploads nothing.
+  prepare-test:
+    needs: prepare
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.files-id }}
+          path: .
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          activate-environment: true
+
       # --frozen installs exactly the hash-pinned versions in uv.lock and never re-resolves.
       - name: Run tests
         run: |
@@ -138,7 +160,7 @@ jobs:
 
   # Only git runs here: no build or test code next to the contents: write token.
   release-branch:
-    needs: prepare
+    needs: [prepare, prepare-test]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -153,7 +175,7 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release-files
+          artifact-ids: ${{ needs.prepare.outputs.files-id }}
           path: .
 
       # Workflows may not open or approve pull requests in this organisation (#160364), so a
@@ -199,8 +221,40 @@ jobs:
             echo "new=true" >> "$GITHUB_OUTPUT"
           fi
 
-  # Build and test with a read-only token; the next jobs only use the uploaded dist/.
+  # Build with a read-only token; the next jobs only use the uploaded dist/.
   build:
+    needs: check
+    if: needs.check.outputs.new == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    outputs:
+      dist-id: ${{ steps.upload.outputs.artifact-id }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          activate-environment: true
+
+      - name: Build
+        run: uv build
+
+      # Nothing runs after this upload in this job.
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  # The tests, in a job that uploads nothing.
+  test:
     needs: check
     if: needs.check.outputs.new == 'true'
     runs-on: ubuntu-26.04
@@ -217,18 +271,6 @@ jobs:
           python-version: "3.12"
           activate-environment: true
 
-      - name: Build
-        run: uv build
-
-      # Upload before the tests, so the upload holds the files as they were before any test
-      # code ran. A failed test still fails this job, and the next job then never runs.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: dist
-          path: dist/
-          if-no-files-found: error
-          retention-days: 1
-
       # --frozen installs exactly the hash-pinned versions in uv.lock and never re-resolves.
       - name: Run tests
         run: |
@@ -237,7 +279,7 @@ jobs:
 
   # Only git and gh run here: no build or test code next to the contents: write token.
   release:
-    needs: [check, build]
+    needs: [check, build, test]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     concurrency: release-publish
@@ -254,7 +296,7 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: dist
+          artifact-ids: ${{ needs.build.outputs.dist-id }}
           path: dist/
 
       - name: Tag
@@ -273,7 +315,7 @@ jobs:
   # The only job with the PyPI OIDC token: no checkout, no build or test code, only the
   # dist/ that the build job made.
   publish:
-    needs: release
+    needs: [build, release]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     environment: pypi
@@ -282,7 +324,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: dist
+          artifact-ids: ${{ needs.build.outputs.dist-id }}
           path: dist/
 
       - name: Publish to PyPI
