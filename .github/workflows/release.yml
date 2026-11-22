@@ -33,11 +33,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1  # zizmor: ignore[artipacked] the Push the release branch step pushes with the checkout credentials; nothing uploads the checkout as an artifact
         with:
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.12"
           activate-environment: true
@@ -59,13 +59,18 @@ jobs:
           echo "new=$new" >> "$GITHUB_OUTPUT"
 
       - name: Bump version in pyproject.toml and __init__.py
+        env:
+          CURRENT: ${{ steps.version.outputs.current }}
+          NEW: ${{ steps.version.outputs.new }}
         run: |
-          sed -i "s/version = \"${{ steps.version.outputs.current }}\"/version = \"${{ steps.version.outputs.new }}\"/" pyproject.toml
-          sed -i "s/__version__ = \"${{ steps.version.outputs.current }}\"/__version__ = \"${{ steps.version.outputs.new }}\"/" ecsctx/__init__.py
+          sed -i "s/version = \"${CURRENT}\"/version = \"${NEW}\"/" pyproject.toml
+          sed -i "s/__version__ = \"${CURRENT}\"/__version__ = \"${NEW}\"/" ecsctx/__init__.py
 
       - name: Generate CHANGELOG entry
+        env:
+          NEW: ${{ steps.version.outputs.new }}
         run: |
-          NEW_VERSION="v${{ steps.version.outputs.new }}"
+          NEW_VERSION="v${NEW}"
           DATE=$(date +%Y-%m-%d)
 
           # Find previous tag
@@ -134,10 +139,13 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       new: ${{ steps.version.outputs.new }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Read the version
         id: version
@@ -163,9 +171,9 @@ jobs:
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1  # zizmor: ignore[artipacked] the Tag step pushes the tag with the checkout credentials; nothing uploads the checkout as an artifact
 
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.12"
           activate-environment: true
@@ -192,4 +200,4 @@ jobs:
             --generate-notes
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
