@@ -12,6 +12,9 @@ on:
   pull_request_review:
     types: [submitted]
 
+# No default token rights; the job below asks only for what it needs.
+permissions: {}
+
 jobs:
   claude:
     if: |
