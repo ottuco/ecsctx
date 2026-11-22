@@ -241,8 +241,10 @@ jobs:
           python-version: "3.12"
           activate-environment: true
 
+      # The build backend comes from build-constraints.txt, pinned with hashes (uv.lock does
+      # not cover it).
       - name: Build
-        run: uv build
+        run: uv build --build-constraints build-constraints.txt --require-hashes
 
       # Nothing runs after this upload in this job.
       - id: upload
