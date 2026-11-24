@@ -14,11 +14,37 @@ import ssl
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from ecsctx.pii.keyset import Keyset, parse_keyset
 
 logger = logging.getLogger(__name__)
+
+# Plain http is accepted only for a Vault on this machine (local development).
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _check_vault_addr(vault_addr: str) -> None:
+    """Refuse a Vault address that would send credentials in clear.
+
+    The AppRole role_id and secret_id, and later the Vault token, travel to
+    this address, so it must be https. Plain http is allowed only for
+    localhost, and any other scheme (``file:``, ``ftp:``) is refused, as
+    ``urlopen`` would follow it.
+    """
+    parts = urllib.parse.urlsplit(vault_addr)
+    scheme = parts.scheme.lower()
+    host = parts.hostname or ""
+    if scheme == "https" and host:
+        return
+    if scheme == "http" and host in _LOCAL_HOSTS:
+        return
+    # Name only the scheme and host: the address may carry user info.
+    raise ValueError(
+        "The Vault address (PII_VAULT_ADDR) must be an https:// URL (http:// is allowed only for "
+        f"localhost), got scheme {scheme or '(none)'!r} and host {host or '(none)'!r}."
+    )
 
 
 class VaultKeysetProvider:
@@ -26,6 +52,8 @@ class VaultKeysetProvider:
 
     Args:
         vault_addr: Vault server URL (e.g. "https://vault.example.com").
+            Must be https; http is accepted only for localhost, 127.0.0.1
+            or ::1. Anything else raises ``ValueError``.
         role_id_path: File path containing the AppRole role_id.
         secret_id_path: File path containing the AppRole secret_id.
         token_keyset_mount_path: Vault KV path for token keyset
@@ -54,6 +82,7 @@ class VaultKeysetProvider:
         refresh_seconds: float = 300.0,
         timeout: float = 10.0,
     ) -> None:
+        _check_vault_addr(vault_addr)
         self._vault_addr = vault_addr.rstrip("/")
         self._role_id_path = role_id_path
         self._secret_id_path = secret_id_path
