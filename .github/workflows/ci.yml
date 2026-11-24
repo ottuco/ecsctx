@@ -21,13 +21,12 @@ jobs:
     timeout-minutes: 15
     strategy:
       matrix:
-        # Explicit Django dimension: 5.2 LTS covers the django>=5.2.17 floor
-        # (djangorestframework>=3.18.2 needs it) and is what consuming
-        # projects run, 6.0 is the highest supported.
-        # Pairings follow Django's own python support (5.2: >=3.10;
-        # 6.0: >=3.12).
+        # Explicit Django dimension: 4.2 covers the django>=4.0 floor,
+        # 5.2 LTS is what consuming projects run, 6.0 is current.
+        # Pairings follow Django's own python support (4.2/5.2: <=3.12 and
+        # >=3.10 here; 6.0: >=3.12).
         python-version: ["3.10", "3.12"]
-        django-version: ["5.2", "6.0"]
+        django-version: ["4.2", "5.2", "6.0"]
         exclude:
           - python-version: "3.10"
             django-version: "6.0"
@@ -41,7 +40,12 @@ jobs:
       # The pip install overrides the lock's Django; every later step MUST
       # use --no-sync (a plain `uv run` or second `uv sync` re-syncs the
       # venv to the lock and silently reverts the matrix pin).
-      - run: uv pip install "Django~=${{ matrix.django-version }}.0"
+      # DRF is resolved with it: the lock's DRF 3.18 needs Django 5.2, so the
+      # 4.2 job falls back to DRF 3.17.x (the django extra's floor is 3.17.2).
+      - run: >-
+          uv pip install "Django~=${{ matrix.django-version }}.0"
+          "djangorestframework>=3.17.2" --upgrade-package djangorestframework
+      - run: uv pip check
       - run: uv run --no-sync pytest tests/ -v
 
   build:

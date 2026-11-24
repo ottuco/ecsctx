@@ -416,11 +416,11 @@ test = [
 requires-dist = [
     { name = "celery", marker = "extra == 'celery'", specifier = ">=5.6.2" },
     { name = "cryptography", specifier = ">=50.0.0" },
-    { name = "django", marker = "extra == 'django'", specifier = ">=5.2.17" },
+    { name = "django", marker = "extra == 'django'", specifier = ">=4.2.30" },
     { name = "django-auditlog", marker = "extra == 'auditlog'", specifier = ">=3.0" },
     { name = "django-cid", specifier = ">=3.0" },
     { name = "django-ipware", marker = "extra == 'django'", specifier = ">=5.0.0" },
-    { name = "djangorestframework", marker = "extra == 'django'", specifier = ">=3.18.2" },
+    { name = "djangorestframework", marker = "extra == 'django'", specifier = ">=3.17.2" },
     { name = "ecs-logging", specifier = ">=2.1.0" },
     { name = "rq", marker = "extra == 'rq'", specifier = "==1.16.2" },
     { name = "sentry-sdk", marker = "extra == 'django'", specifier = ">=2.8.0" },

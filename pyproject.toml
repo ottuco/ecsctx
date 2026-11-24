@@ -36,9 +36,9 @@ Issues = "https://github.com/ottuco/ecsctx/issues"
 
 [project.optional-dependencies]
 django = [
-    "django>=5.2.17",
+    "django>=4.2.30",
     "django-ipware>=5.0.0",
-    "djangorestframework>=3.18.2",
+    "djangorestframework>=3.17.2",
     "sentry-sdk>=2.8.0",
 ]
 auditlog = [
