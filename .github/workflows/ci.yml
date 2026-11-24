@@ -21,12 +21,13 @@ jobs:
     timeout-minutes: 15
     strategy:
       matrix:
-        # Explicit Django dimension: 4.2 covers the django>=4.0 floor,
-        # 5.2 LTS is what consuming projects run, 6.0 is current.
-        # Pairings follow Django's own python support (4.2/5.2: <=3.12 and
-        # >=3.10 here; 6.0: >=3.12).
+        # Explicit Django dimension: 5.2 LTS covers the django>=5.2.17 floor
+        # (djangorestframework>=3.18.2 needs it) and is what consuming
+        # projects run, 6.0 is the highest supported.
+        # Pairings follow Django's own python support (5.2: >=3.10;
+        # 6.0: >=3.12).
         python-version: ["3.10", "3.12"]
-        django-version: ["4.2", "5.2", "6.0"]
+        django-version: ["5.2", "6.0"]
         exclude:
           - python-version: "3.10"
             django-version: "6.0"
