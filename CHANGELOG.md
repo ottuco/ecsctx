@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.17.3 (2026-11-25)
+
+### Fixes
+- Merge pull request #92 from ottuco/security/161533-vault-https (7e25d54)
+- fix(pii): refuse a Vault address that is not https (#161533) (0acec73)
+
+### Other
+- build: cryptography floor at 46.0.2, what event_backend locks (#161533) (f73ddfd)
+- build: keep the DRF floor at 3.15.2 so Django 4.2 services can take this release (#161533) (eaf58a9)
+- build(deps): keep Django 4.2 supported (#161533) (3ae1050)
+- build(deps): raise dependency floors past known advisories (#161533) (026c526)
+- chore: secure coding rules and PR template from RUL-SD-003 1.0 (#160366) (#90) (013277b)
+- Merge pull request #89 from ottuco/task/161044-ci-runners (5bad977)
+- chore(ci): pin ubuntu-26.04 and move actions off Node 20 (#161044) (62434a9)
+- chore: secure coding rules and PR template from RUL-SD-003 1.0 (#160366) [skip ci] (5b2b7c0)
+- ci: dismiss approvals from bots (#87) (f69a03e)
+- chore: secure coding rules and PR template from RUL-SD-003 1.0 (#160366) [skip ci] (21302ac)
+- Merge pull request #85 from ottuco/ci/draft-pr-skip (433331a)
+- ci: skip draft PRs and run checks on ready_for_review (7bb86bb)
+- Merge pull request #80 from ottuco/ci/job-timeouts (d778716)
+- Merge pull request #79 from ottuco/chore/ci-test-triggers (f4147f7)
+- Merge pull request #82 from ottuco/test/xml-linear-time-budget (3090e2f)
+- chore: secure coding rules and PR template from RUL-SD-003 1.0 (#160366) [skip ci] (1f4beb9)
+- test: give the XML end-tag linear-time check a CI-safe budget (a6856c4)
+- test: give the XML end-tag linear-time check a CI-safe budget (a018b87)
+- test: give the XML end-tag linear-time check a CI-safe budget (ea97bda)
+- ci: add timeout-minutes to jobs that had none (5f41b1a)
+- ci: cancel superseded CI runs and cap job time (5dd1536)
+
+
 ## v0.17.2 (2026-10-13)
 
 ### Fixes
