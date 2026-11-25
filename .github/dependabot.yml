@@ -1,0 +1,16 @@
+# Actions are pinned to commit SHAs (security epic #161366, #161532).
+# Dependabot opens one grouped PR a week that moves the pins (and their tag comments) forward,
+# so a pinned action that gets a security fix does not stay behind. Same setup as agora.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait 7 days after a release before proposing it.
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - "*"

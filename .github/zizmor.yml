@@ -1,0 +1,9 @@
+# Our own org's reusable workflows are called at their moving tag on purpose: every repo runs the
+# latest ottuco/.github workflow, as its callers there do (Moj, ecsctx#91). Third-party actions stay
+# pinned to a full SHA.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "ottuco/*": ref-pin
+        "*": hash-pin

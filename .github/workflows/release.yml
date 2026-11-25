@@ -7,6 +7,15 @@ name: Release
 # 2. Approve and merge that pull request. On the push to main, a version with no tag yet is
 #    built, tested, tagged, released on GitHub and published to PyPI.
 # PyPI's trusted publisher names this file and the `pypi` environment: keep both.
+#
+# Build and test code (uv, hatchling, pytest and the test dependencies) runs only in jobs with
+# a read-only token and no stored git credentials. The jobs that can write (push a branch or a
+# tag, create the GitHub release) or publish (OIDC id-token in the `pypi` environment) run no
+# build or test code: they only take the files the earlier job uploaded (#161532).
+# Test code also never runs in a job that uploads files: the tests have jobs of their own
+# (prepare-test, test), and the later jobs download the uploads by artifact id, not by name.
+# Every job can delete and re-upload this run's artifacts, but a re-upload gets a new id, so
+# a replaced upload makes the release fail instead of shipping the new files.
 
 on:
   workflow_dispatch:
@@ -30,24 +39,23 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
+    outputs:
+      new: ${{ steps.version.outputs.new }}
+      files-id: ${{ steps.upload.outputs.artifact-id }}
     permissions:
-      contents: write
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-
-      - uses: astral-sh/setup-uv@v10.3.3
-        with:
-          python-version: "3.12"
-          activate-environment: true
+          persist-credentials: false
 
       - name: Calculate new version
         id: version
         env:
           BUMP: ${{ inputs.bump }}
         run: |
-          current=$(python -c "import re; print(re.search(r'version = \"(.+?)\"', open('pyproject.toml').read()).group(1))")
+          current=$(python3 -c "import re; print(re.search(r'version = \"(.+?)\"', open('pyproject.toml').read()).group(1))")
           IFS='.' read -r major minor patch <<< "$current"
           case "$BUMP" in
             major) major=$((major + 1)); minor=0; patch=0 ;;
@@ -59,13 +67,18 @@ jobs:
           echo "new=$new" >> "$GITHUB_OUTPUT"
 
       - name: Bump version in pyproject.toml and __init__.py
+        env:
+          CURRENT: ${{ steps.version.outputs.current }}
+          NEW: ${{ steps.version.outputs.new }}
         run: |
-          sed -i "s/version = \"${{ steps.version.outputs.current }}\"/version = \"${{ steps.version.outputs.new }}\"/" pyproject.toml
-          sed -i "s/__version__ = \"${{ steps.version.outputs.current }}\"/__version__ = \"${{ steps.version.outputs.new }}\"/" ecsctx/__init__.py
+          sed -i "s/version = \"${CURRENT}\"/version = \"${NEW}\"/" pyproject.toml
+          sed -i "s/__version__ = \"${CURRENT}\"/__version__ = \"${NEW}\"/" ecsctx/__init__.py
 
       - name: Generate CHANGELOG entry
+        env:
+          NEW: ${{ steps.version.outputs.new }}
         run: |
-          NEW_VERSION="v${{ steps.version.outputs.new }}"
+          NEW_VERSION="v${NEW}"
           DATE=$(date +%Y-%m-%d)
 
           # Find previous tag
@@ -105,16 +118,71 @@ jobs:
             } > CHANGELOG.md
           fi
 
+      # Nothing runs after this upload in this job.
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: |
+            pyproject.toml
+            ecsctx/__init__.py
+            CHANGELOG.md
+          if-no-files-found: error
+          retention-days: 1
+
+  # The tests, on main with the bumped files, in a job that uploads nothing.
+  prepare-test:
+    needs: prepare
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.files-id }}
+          path: .
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          activate-environment: true
+
+      # --frozen installs exactly the hash-pinned versions in uv.lock and never re-resolves.
       - name: Run tests
         run: |
-          uv sync --group test --extra django
-          uv run pytest tests/ -v
+          uv sync --frozen --group test --extra django
+          uv run --no-sync pytest tests/ -v
+
+  # Only git runs here: no build or test code next to the contents: write token.
+  release-branch:
+    needs: [prepare, prepare-test]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # This job runs only git after the checkout (no build or test code) and uploads nothing;
+      # the push needs the checkout credentials.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true # zizmor: ignore[artipacked] see the comment above
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.files-id }}
+          path: .
 
       # Workflows may not open or approve pull requests in this organisation (#160364), so a
       # person opens it from the link below, and someone else approves it.
       - name: Push the release branch
         env:
-          NEW: ${{ steps.version.outputs.new }}
+          NEW: ${{ needs.prepare.outputs.new }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -134,10 +202,13 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       new: ${{ steps.version.outputs.new }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Read the version
         id: version
@@ -150,33 +221,85 @@ jobs:
             echo "new=true" >> "$GITHUB_OUTPUT"
           fi
 
-  publish:
+  # Build with a read-only token; the next jobs only use the uploaded dist/.
+  build:
     needs: check
     if: needs.check.outputs.new == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
-    environment: pypi
-    concurrency: release-publish
+    outputs:
+      dist-id: ${{ steps.upload.outputs.artifact-id }}
     permissions:
-      contents: write
-      id-token: write
-    env:
-      VERSION: ${{ needs.check.outputs.version }}
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.12"
           activate-environment: true
 
+      # The build backend comes from build-constraints.txt, pinned with hashes (uv.lock does
+      # not cover it).
       - name: Build
-        run: uv build
+        run: uv build --build-constraints build-constraints.txt --require-hashes
 
+      # Nothing runs after this upload in this job.
+      - id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  # The tests, in a job that uploads nothing.
+  test:
+    needs: check
+    if: needs.check.outputs.new == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          activate-environment: true
+
+      # --frozen installs exactly the hash-pinned versions in uv.lock and never re-resolves.
       - name: Run tests
         run: |
-          uv sync --group test --extra django
-          uv run pytest tests/ -v
+          uv sync --frozen --group test --extra django
+          uv run --no-sync pytest tests/ -v
+
+  # Only git and gh run here: no build or test code next to the contents: write token.
+  release:
+    needs: [check, build, test]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    concurrency: release-publish
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      # This job runs only git and gh after the checkout (no build or test code) and uploads
+      # nothing; the Tag step pushes with the checkout credentials.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true # zizmor: ignore[artipacked] see the comment above
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.dist-id }}
+          path: dist/
 
       - name: Tag
         run: |
@@ -191,5 +314,20 @@ jobs:
             --title "v${VERSION}" \
             --generate-notes
 
+  # The only job with the PyPI OIDC token: no checkout, no build or test code, only the
+  # dist/ that the build job made.
+  publish:
+    needs: [build, release]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.dist-id }}
+          path: dist/
+
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
