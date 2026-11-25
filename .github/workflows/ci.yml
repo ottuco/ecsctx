@@ -40,7 +40,22 @@ jobs:
       # The pip install overrides the lock's Django; every later step MUST
       # use --no-sync (a plain `uv run` or second `uv sync` re-syncs the
       # venv to the lock and silently reverts the matrix pin).
-      - run: uv pip install "Django~=${{ matrix.django-version }}.0"
+      # DRF is resolved with it: the lock's DRF 3.18 needs Django 5.2. The
+      # Python 3.10 + Django 4.2 job runs the floors, DRF 3.15.2 and
+      # cryptography 46.0.2 (what event_backend runs); every other job takes the
+      # newest DRF its Django allows (3.17.x on 4.2) and the lock's cryptography.
+      - env:
+          DJANGO_VERSION: ${{ matrix.django-version }}
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: |
+          drf="djangorestframework>=3.15.2"
+          floors=""
+          if [ "$PYTHON_VERSION" = "3.10" ] && [ "$DJANGO_VERSION" = "4.2" ]; then
+            drf="djangorestframework==3.15.2"
+            floors="cryptography==46.0.2"
+          fi
+          uv pip install "Django~=${DJANGO_VERSION}.0" "$drf" $floors --upgrade-package djangorestframework
+      - run: uv pip check
       - run: uv run --no-sync pytest tests/ -v
 
   build:

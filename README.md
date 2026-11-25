@@ -2255,7 +2255,7 @@ If you use a `common-logs` ingest pipeline, it can enforce ECS field types so ma
 | `PII_ENV` | Environment name for token domain separation | `"unknown"` | Recommended |
 | `PII_TOKEN_KEYSET_PATH` | Path to HMAC token keyset file (file provider) | — | **Yes** for `file` |
 | `PII_REVEAL_KEYSET_PATH` | Path to AES-GCM reveal keyset file (file provider) | — | Only if `PII_ACCESS=full` |
-| `PII_VAULT_ADDR` | Vault server URL (vault provider) | — | **Yes** for `vault` |
+| `PII_VAULT_ADDR` | Vault server URL (vault provider). Must be `https://`; `http://` only for localhost, 127.0.0.1 or ::1 | — | **Yes** for `vault` |
 | `PII_VAULT_ROLE_ID_PATH` | File containing AppRole role_id (vault provider) | — | **Yes** for `vault` |
 | `PII_VAULT_SECRET_ID_PATH` | File containing AppRole secret_id (vault provider) | — | **Yes** for `vault` |
 | `PII_VAULT_TOKEN_KEYSET_PATH` | Vault KV path for token keyset (vault provider) | — | **Yes** for `vault` |

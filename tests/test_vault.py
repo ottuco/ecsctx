@@ -173,3 +173,77 @@ class TestVaultProperties:
         # With a cacert_path, it would try to load the cert
         # We skip actual cert creation as ssl.create_default_context
         # would fail with an invalid cert file
+
+
+def _provider_at(tmp_path, vault_addr):
+    """Construct a provider at ``vault_addr`` (credential files are not read)."""
+    return VaultKeysetProvider(
+        vault_addr=vault_addr,
+        role_id_path=str(tmp_path / "role-id"),
+        secret_id_path=str(tmp_path / "secret-id"),
+        token_keyset_mount_path="secret/data/pii/token-keyset",
+        env="test",
+    )
+
+
+class TestVaultAddr:
+    """The AppRole credentials and the Vault token only travel over https (#161533)."""
+
+    @pytest.mark.parametrize(
+        "vault_addr",
+        [
+            "http://vault.example.com",
+            "http://vault.example.com:8200/",
+            "file:///etc/passwd",
+            "ftp://vault.example.com",
+            "vault.example.com",
+            "https://",
+            "http://localhost.evil.example",
+            "http://127.0.0.2:8200",
+        ],
+    )
+    def test_refuses_an_address_that_is_not_https(self, tmp_path, vault_addr):
+        with pytest.raises(ValueError, match="must be an https:// URL"):
+            _provider_at(tmp_path, vault_addr)
+
+    @pytest.mark.parametrize(
+        "vault_addr",
+        [
+            "https://vault.example.com",
+            "https://vault.example.com:8200/",
+            "HTTPS://Vault.Example.com",
+            "http://localhost:8200",
+            "http://127.0.0.1:8200",
+            "http://[::1]:8200",
+        ],
+    )
+    def test_accepts_https_and_local_http(self, tmp_path, vault_addr):
+        provider = _provider_at(tmp_path, vault_addr)
+        assert provider._vault_addr == vault_addr.rstrip("/")
+
+    def test_error_does_not_show_user_info(self, tmp_path):
+        with pytest.raises(ValueError) as excinfo:
+            _provider_at(tmp_path, "http://admin:s3cret@vault.example.com")
+        assert "s3cret" not in str(excinfo.value)
+        assert "'vault.example.com'" in str(excinfo.value)
+
+    def test_refused_address_never_reaches_the_network(self, tmp_path):
+        with patch("urllib.request.urlopen") as urlopen:
+            with pytest.raises(ValueError):
+                _provider_at(tmp_path, "http://vault.example.com")
+        urlopen.assert_not_called()
+
+    def test_env_configuration_refuses_http(self, tmp_path, monkeypatch):
+        import ecsctx.pii as pii
+
+        monkeypatch.setattr(pii, "_provider", None)
+        monkeypatch.setattr(pii, "_auto_configure_attempted", False)
+        monkeypatch.setenv("PII_PROVIDER", "vault")
+        monkeypatch.setenv("PII_VAULT_ADDR", "http://vault.example.com")
+        monkeypatch.setenv("PII_VAULT_ROLE_ID_PATH", str(tmp_path / "role-id"))
+        monkeypatch.setenv("PII_VAULT_SECRET_ID_PATH", str(tmp_path / "secret-id"))
+        monkeypatch.setenv("PII_VAULT_TOKEN_KEYSET_PATH", "secret/data/pii/token-keyset")
+
+        with pytest.raises(ValueError, match="PII_VAULT_ADDR"):
+            pii.configure_pii_from_env()
+        assert pii._provider is None
