@@ -8,7 +8,8 @@ from django.contrib.auth.models import AnonymousUser
 from django.urls import path, re_path
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed, Throttled, ValidationError
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.renderers import BrowsableAPIRenderer, JSONRenderer
 from rest_framework.response import Response
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 from rest_framework.views import APIView
@@ -260,32 +261,74 @@ class _CrashedView(_RefusedView):
     authentication_classes = [_CrashingAuth]
 
 
-_LoggedRefusedView = api_logging(_RefusedView)
-_LoggedCrashedView = api_logging(_CrashedView)
+class _NegotiatingRefusedView(_RefusedView):
+    renderer_classes = [BrowsableAPIRenderer, JSONRenderer]
 
 
-def _answer(view):
-    response = view.as_view()(APIRequestFactory().get("/ping/"))
-    return response.status_code, response.data, response["WWW-Authenticate"]
+class _OpenRefusedView(_RefusedView):
+    permission_classes = [AllowAny]
+
+
+def _outcome(view, **headers):
+    response = view.as_view()(APIRequestFactory().get("/ping/", **headers))
+    return (
+        response.status_code,
+        response.data,
+        response.accepted_media_type,
+        response.get("WWW-Authenticate"),
+    )
 
 
 class TestAuthenticationRefusal:
     """Logging must not change how a request is answered: a refused token gets
-    the authenticator's reason, not DRF's generic NotAuthenticated (#162363)."""
+    the authenticator's reason, not DRF's generic NotAuthenticated, and DRF
+    keeps its own order of content negotiation, versioning and authentication
+    (#162363). Each case compares the view with and without the decorator."""
 
-    def test_a_decorated_view_answers_as_an_undecorated_one(self):
-        expected = (
-            401,
-            {"detail": REFUSAL},
-            'Bearer realm="api"',
-        )
-        assert _answer(_RefusedView) == expected
-        assert _answer(_LoggedRefusedView) == expected
+    @pytest.mark.parametrize(
+        ("view", "headers", "expected"),
+        [
+            pytest.param(
+                _RefusedView,
+                {},
+                (401, {"detail": REFUSAL}, "application/json", 'Bearer realm="api"'),
+                id="refused-token",
+            ),
+            pytest.param(
+                _NegotiatingRefusedView,
+                {"HTTP_ACCEPT": "application/json"},
+                (401, {"detail": REFUSAL}, "application/json", 'Bearer realm="api"'),
+                id="accept-header-still-picks-the-renderer",
+            ),
+            pytest.param(
+                _RefusedView,
+                {"HTTP_ACCEPT": "application/xml"},
+                (
+                    406,
+                    {"detail": 'Could not satisfy the request Accept header.'},
+                    "application/json",
+                    None,
+                ),
+                id="unacceptable-accept-answers-406-before-401",
+            ),
+            pytest.param(
+                _OpenRefusedView,
+                {},
+                (401, {"detail": REFUSAL}, "application/json", 'Bearer realm="api"'),
+                # An open view used to serve a refused credential as anonymous;
+                # undecorated DRF refuses it, and so does the decorated view now.
+                id="open-view-refuses-a-bad-credential",
+            ),
+        ],
+    )
+    def test_a_decorated_view_answers_as_an_undecorated_one(self, view, headers, expected):
+        assert _outcome(view, **headers) == expected
+        assert _outcome(api_logging(view), **headers) == expected
 
     def test_the_refused_request_is_logged_once_without_a_user(self):
         request = APIRequestFactory().get("/ping/")
         with patch("ecsctx.contrib.django.decorators.logger") as mock_logger:
-            _LoggedRefusedView.as_view()(request)
+            api_logging(_RefusedView).as_view()(request)
 
         received = [
             call
@@ -301,9 +344,9 @@ class TestAuthenticationRefusal:
         assert warning.kwargs["http"]["response"]["body"] == {"detail": REFUSAL}
 
     def test_an_authenticator_crash_is_the_same_with_and_without_the_decorator(self):
-        for view in (_CrashedView, _LoggedCrashedView):
+        for view in (_CrashedView, api_logging(_CrashedView)):
             with pytest.raises(RuntimeError, match="authenticator crashed"):
-                _answer(view)
+                _outcome(view)
 
 
 @api_logging

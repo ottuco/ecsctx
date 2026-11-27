@@ -35,6 +35,16 @@ def _log_user(user):
     return fields
 
 
+def _resolved_user(request):
+    """The user DRF's authentication resolved for ``request``, or ``None``.
+
+    Never ``request.user``: before authentication has run (a request refused
+    earlier, by content negotiation or versioning) that property authenticates,
+    and a refusal raised from a logging line would replace the response.
+    """
+    return vars(request).get("_user") if request is not None else None
+
+
 def _route(request):
     """The URL pattern the request matched, e.g. ``/v1/cards/<str:token>/``.
 
@@ -152,16 +162,16 @@ def api_logging(view_cls):
             if user_agent:
                 log_kwargs["user_agent"] = {"original": user_agent}
 
-            # `request.user` triggers DRF's lazy authentication, which can raise.
-            # Logging must not change how a request is answered, so the error
-            # propagates unchanged and the line is still emitted. Swallowing it
-            # made DRF's permission check answer NotAuthenticated instead of the
-            # authenticator's own reason (and WWW-Authenticate header).
-            user = None
+            # Logging must not change how a request is answered, so DRF
+            # authenticates in its own order (content negotiation, versioning,
+            # then authentication) and the line names the user it resolved.
+            # Reading `request.user` up front ran authentication first and
+            # swallowed its refusal: DRF then answered NotAuthenticated instead of
+            # the authenticator's reason (#162363).
             try:
-                user = request.user
+                return super().initial(request, *args, **kwargs)
             finally:
-                if fields := _log_user(user):
+                if fields := _log_user(_resolved_user(request)):
                     log_kwargs["user"] = fields
 
                 logger.info(
@@ -170,7 +180,6 @@ def api_logging(view_cls):
                     _route(request),
                     **log_kwargs,
                 )
-            return super().initial(request, *args, **kwargs)
 
         def dispatch(self, request, *args, **kwargs):
             if request.method == "OPTIONS":
@@ -254,10 +263,11 @@ def api_logging(view_cls):
             if exception_type:
                 log_payload["error"] = {"type": exception_type}
 
-            # Use the DRF request (self.request), whose `.user` is set by
-            # authentication during dispatch — the raw Django `request.user` is not
-            # updated for token/JWT auth.
-            user = getattr(getattr(self, "request", None), "user", None)
+            # The DRF request (self.request) carries the user authentication
+            # resolved during dispatch; the raw Django `request.user` is not
+            # updated for token/JWT auth. Read without authenticating: a request
+            # refused before authentication ran must keep that answer.
+            user = _resolved_user(getattr(self, "request", None))
             if fields := _log_user(user):
                 log_payload["user"] = fields
 
