@@ -152,22 +152,24 @@ def api_logging(view_cls):
             if user_agent:
                 log_kwargs["user_agent"] = {"original": user_agent}
 
-            # `request.user` triggers DRF's lazy authentication, which can raise
-            # (AuthenticationFailed) before super().initial() handles it — guard so
-            # logging never alters request handling.
+            # `request.user` triggers DRF's lazy authentication, which can raise.
+            # Logging must not change how a request is answered, so the error
+            # propagates unchanged and the line is still emitted. Swallowing it
+            # made DRF's permission check answer NotAuthenticated instead of the
+            # authenticator's own reason (and WWW-Authenticate header).
+            user = None
             try:
                 user = request.user
-            except Exception:
-                user = None
-            if fields := _log_user(user):
-                log_kwargs["user"] = fields
+            finally:
+                if fields := _log_user(user):
+                    log_kwargs["user"] = fields
 
-            logger.info(
-                "api request received: %s %s",
-                request.method,
-                _route(request),
-                **log_kwargs,
-            )
+                logger.info(
+                    "api request received: %s %s",
+                    request.method,
+                    _route(request),
+                    **log_kwargs,
+                )
             return super().initial(request, *args, **kwargs)
 
         def dispatch(self, request, *args, **kwargs):

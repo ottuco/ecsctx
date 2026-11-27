@@ -6,7 +6,9 @@ from unittest.mock import patch
 import pytest
 from django.contrib.auth.models import AnonymousUser
 from django.urls import path, re_path
-from rest_framework.exceptions import Throttled, ValidationError
+from rest_framework.authentication import BaseAuthentication
+from rest_framework.exceptions import AuthenticationFailed, Throttled, ValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 from rest_framework.views import APIView
@@ -228,6 +230,80 @@ class TestErrorTypeOnRejections:
                 pass
         closing = [k for _n, _a, k in mock_logger.method_calls if "ecs_event" in k][-1]
         assert closing["error"] == {"type": "RuntimeError"}
+
+
+REFUSAL = "Token issuer is not an allowed Keycloak realm."
+
+
+class _RefusingAuth(BaseAuthentication):
+    def authenticate(self, request):
+        raise AuthenticationFailed(REFUSAL)
+
+    def authenticate_header(self, request):
+        return 'Bearer realm="api"'
+
+
+class _CrashingAuth(BaseAuthentication):
+    def authenticate(self, request):
+        raise RuntimeError("authenticator crashed")
+
+
+class _RefusedView(APIView):
+    authentication_classes = [_RefusingAuth]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({"ok": True})
+
+
+class _CrashedView(_RefusedView):
+    authentication_classes = [_CrashingAuth]
+
+
+_LoggedRefusedView = api_logging(_RefusedView)
+_LoggedCrashedView = api_logging(_CrashedView)
+
+
+def _answer(view):
+    response = view.as_view()(APIRequestFactory().get("/ping/"))
+    return response.status_code, response.data, response["WWW-Authenticate"]
+
+
+class TestAuthenticationRefusal:
+    """Logging must not change how a request is answered: a refused token gets
+    the authenticator's reason, not DRF's generic NotAuthenticated (#162363)."""
+
+    def test_a_decorated_view_answers_as_an_undecorated_one(self):
+        expected = (
+            401,
+            {"detail": REFUSAL},
+            'Bearer realm="api"',
+        )
+        assert _answer(_RefusedView) == expected
+        assert _answer(_LoggedRefusedView) == expected
+
+    def test_the_refused_request_is_logged_once_without_a_user(self):
+        request = APIRequestFactory().get("/ping/")
+        with patch("ecsctx.contrib.django.decorators.logger") as mock_logger:
+            _LoggedRefusedView.as_view()(request)
+
+        received = [
+            call
+            for call in mock_logger.info.call_args_list
+            if call.kwargs["ecs_event"]["action"] == "api.request_received"
+        ]
+        assert [(c.args, "user" in c.kwargs) for c in received] == [
+            (("api request received: %s %s", "GET", "/ping/"), False)
+        ]
+        warning = mock_logger.warning.call_args
+        assert warning.args == ("api response sent: %s %s (%s)", "GET", "/ping/", 401)
+        assert warning.kwargs["http"]["response"]["status_code"] == 401
+        assert warning.kwargs["http"]["response"]["body"] == {"detail": REFUSAL}
+
+    def test_an_authenticator_crash_is_the_same_with_and_without_the_decorator(self):
+        for view in (_CrashedView, _LoggedCrashedView):
+            with pytest.raises(RuntimeError, match="authenticator crashed"):
+                _answer(view)
 
 
 @api_logging
